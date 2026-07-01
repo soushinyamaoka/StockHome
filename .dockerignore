@@ -1,0 +1,12 @@
+# API イメージのビルドコンテキストを小さく保つ
+**/node_modules
+**/dist
+**/.expo
+.git
+*.log
+homegear-migration-*.json
+
+# 秘密情報はコンテキストに含めない（example は除外しない）
+**/.env
+**/.env.*
+!**/.env.production.example

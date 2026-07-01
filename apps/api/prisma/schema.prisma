@@ -1,0 +1,289 @@
+// StockHome DB スキーマ
+// PostgreSQL + Prisma
+// GAS 版のスプレッドシート構成（Config.js SHEET_HEADERS）を移植
+// 家庭単位 (household_id) でデータを分離する
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Household {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  members             HouseholdMember[]
+  items               Item[]
+  purchaseLogs        PurchaseLog[]
+  stockSnapshots      StockSnapshot[]
+  itemRuntimeStates   ItemRuntimeState[]
+  notificationLogs    NotificationLog[]
+  importCandidates    ImportOrderCandidate[]
+  stockCorrectionLogs StockCorrectionLog[]
+  appConfigs          AppConfig[]
+
+  @@map("households")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String   @map("password_hash")
+  // GAS 版 users シートの user_id（購入者参照等の移行用）
+  legacyId     String?  @unique @map("legacy_id")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  memberships HouseholdMember[]
+
+  @@map("users")
+}
+
+model HouseholdMember {
+  id          String   @id @default(cuid())
+  householdId String   @map("household_id")
+  userId      String   @map("user_id")
+  role        String   @default("member") // admin | member
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([householdId, userId])
+  @@index([userId])
+  @@map("household_members")
+}
+
+// 消耗品マスタ（GAS: items シート）
+model Item {
+  id                   String    @id @default(cuid())
+  householdId          String    @map("household_id")
+  legacyId             String?   @unique @map("legacy_id")
+  itemName             String    @map("item_name")
+  category             String?
+  unit                 String?
+  defaultPurchaseQty   Float     @default(1) @map("default_purchase_qty")
+  daysPerUnit          Float     @map("days_per_unit") // 1単位あたり消費日数
+  leadDays             Int       @default(0) @map("lead_days") // 通知何日前
+  safetyDays           Int       @default(0) @map("safety_days")
+  lowStockThresholdQty Float?    @map("low_stock_threshold_qty")
+  purchaseUrl          String?   @map("purchase_url")
+  alternatives         Json      @default("[]") // [{name, url?, note?}] 最大10件
+  itemMemo             String?   @map("item_memo")
+  notifyTargetType     String    @default("all") @map("notify_target_type") // all | representative | specific_user
+  notifyTargetUserId   String?   @map("notify_target_user_id")
+  notificationEnabled  Boolean   @default(true) @map("notification_enabled")
+  isInventoryUnknown   Boolean   @default(false) @map("is_inventory_unknown")
+  isActive             Boolean   @default(true) @map("is_active") // 論理削除
+  deletedAt            DateTime? @map("deleted_at")
+  deletedBy            String?   @map("deleted_by")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  household        Household             @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  purchaseLogs     PurchaseLog[]
+  stockSnapshot    StockSnapshot?
+  runtimeState     ItemRuntimeState?
+  notificationLogs NotificationLog[]
+  correctionLogs   StockCorrectionLog[]
+  importCandidates ImportOrderCandidate[]
+
+  @@index([householdId])
+  @@map("items")
+}
+
+// 購入履歴（GAS: purchase_log シート）
+model PurchaseLog {
+  id                   String    @id @default(cuid())
+  householdId          String    @map("household_id")
+  legacyId             String?   @unique @map("legacy_id")
+  itemId               String    @map("item_id")
+  purchasedAt          DateTime  @map("purchased_at") @db.Date
+  qty                  Float
+  price                Float? // 1箱（1セット）の単価
+  source               String    @default("manual") // manual | line | gmail
+  sourceType           String    @default("manual") @map("source_type")
+  externalVendor       String?   @map("external_vendor") // amazon | matsukiyo
+  externalOrderId      String?   @map("external_order_id")
+  importCandidateId    String?   @map("import_candidate_id")
+  purchasedByUserId    String?   @map("purchased_by_user_id")
+  purchasedByUserName  String?   @map("purchased_by_user_name")
+  note                 String?
+  fulfillmentStatus    String?   @map("fulfillment_status") // ordered | shipped | received | cancelled
+  shippedAt            DateTime? @map("shipped_at") @db.Date
+  inventoryEffectiveAt DateTime? @map("inventory_effective_at") @db.Date
+  countedInInventory   Boolean   @default(false) @map("counted_in_inventory")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  item      Item      @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([householdId])
+  @@index([itemId, countedInInventory, inventoryEffectiveAt])
+  @@map("purchase_logs")
+}
+
+// 在庫計算結果（GAS: stock_snapshot シート、品目ごと1行）
+model StockSnapshot {
+  id                      String    @id @default(cuid())
+  householdId             String    @map("household_id")
+  itemId                  String    @unique @map("item_id")
+  calculatedAt            DateTime  @map("calculated_at")
+  latestPurchaseDate      DateTime? @map("latest_purchase_date") @db.Date
+  latestPurchaseQty       Float?    @map("latest_purchase_qty")
+  estimatedRemainingQty   Float?    @map("estimated_remaining_qty")
+  estimatedDaysLeft       Float?    @map("estimated_days_left")
+  predictedOutOfStockDate DateTime? @map("predicted_out_of_stock_date") @db.Date
+  lowStockThresholdQty    Float?    @map("low_stock_threshold_qty")
+  daysAlertNeeded         Boolean   @default(false) @map("days_alert_needed")
+  qtyAlertNeeded          Boolean   @default(false) @map("qty_alert_needed")
+  alertNeeded             Boolean   @default(false) @map("alert_needed")
+  updatedAt               DateTime  @updatedAt @map("updated_at")
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  item      Item      @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([householdId])
+  @@map("stock_snapshots")
+}
+
+// 品目ごとの運用状態（GAS: item_runtime_state シート）
+model ItemRuntimeState {
+  id                     String    @id @default(cuid())
+  householdId            String    @map("household_id")
+  itemId                 String    @unique @map("item_id")
+  manualOverrideQty      Float?    @map("manual_override_qty")
+  manualOverrideAt       DateTime? @map("manual_override_at")
+  manualOverrideByUserId String?   @map("manual_override_by_user_id")
+  manualOverrideReason   String?   @map("manual_override_reason")
+  snoozeUntil            DateTime? @map("snooze_until")
+  lastNotificationReason String?   @map("last_notification_reason")
+  lastNotificationAt     DateTime? @map("last_notification_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  item      Item      @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([householdId])
+  @@map("item_runtime_states")
+}
+
+// 通知履歴（GAS: notification_log シート）
+model NotificationLog {
+  id                 String   @id @default(cuid())
+  householdId        String   @map("household_id")
+  legacyId           String?  @unique @map("legacy_id")
+  itemId             String   @map("item_id")
+  notificationType   String   @map("notification_type")
+  notificationReason String   @map("notification_reason") // days_threshold | qty_threshold | both
+  targetUserId       String   @default("broadcast") @map("target_user_id")
+  message            String
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  item      Item      @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([householdId, createdAt])
+  @@map("notification_logs")
+}
+
+// Gmail 自動取込候補（GAS: import_order_candidates シート）
+model ImportOrderCandidate {
+  id                String   @id @default(cuid())
+  householdId       String   @map("household_id")
+  legacyId          String?  @unique @map("legacy_id")
+  vendor            String // amazon | matsukiyo
+  // 重複排除キーは (mail_message_id, item_name_raw) の組。
+  // 複数商品を含む1通のメールは商品ごとに候補行が作られるため、message_id 単独では一意にならない
+  mailMessageId     String   @map("mail_message_id")
+  gmailThreadId     String?  @map("gmail_thread_id")
+  importedByUserId  String?  @map("imported_by_user_id")
+  importedByEmail   String?  @map("imported_by_email")
+  mailDate          DateTime @map("mail_date")
+  orderId           String?  @map("order_id")
+  mailType          String   @map("mail_type") // order_confirm | shipment | other
+  mailPhase         String   @map("mail_phase") // ordered | shipped | delivered_optional | other
+  fulfillmentStatus String?  @map("fulfillment_status")
+  candidateGroupKey String?  @map("candidate_group_key") // 同一注文・同一商品行の突合用
+  itemNameRaw       String?  @map("item_name_raw")
+  detectedQty       Float?   @map("detected_qty")
+  detectedPrice     Float?   @map("detected_price")
+  candidateStatus   String   @default("detected") @map("candidate_status")
+  matchedItemId     String?  @map("matched_item_id")
+  rawSubject        String?  @map("raw_subject")
+  rawSnippet        String?  @map("raw_snippet")
+  parseResult       String?  @map("parse_result")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  household   Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  matchedItem Item?     @relation(fields: [matchedItemId], references: [id], onDelete: SetNull)
+
+  @@index([mailMessageId])
+  @@index([householdId, candidateStatus])
+  @@index([vendor, orderId])
+  @@map("import_order_candidates")
+}
+
+// 在庫補正履歴（GAS: stock_correction_log シート）
+model StockCorrectionLog {
+  id                  String   @id @default(cuid())
+  householdId         String   @map("household_id")
+  legacyId            String?  @unique @map("legacy_id")
+  itemId              String   @map("item_id")
+  correctedAt         DateTime @map("corrected_at")
+  correctedByUserId   String?  @map("corrected_by_user_id")
+  correctedByUserName String?  @map("corrected_by_user_name")
+  beforeEstimatedQty  Float?   @map("before_estimated_qty")
+  correctedQty        Float    @map("corrected_qty")
+  correctionReason    String   @map("correction_reason")
+  note                String?
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  item      Item      @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([householdId])
+  @@index([itemId])
+  @@map("stock_correction_logs")
+}
+
+// ReadyGo 配信待ちキュー
+// 夜間バッチが集約メッセージを積み、GAS の夜間トリガーが取得して
+// ReadyGo スプレッドシートの Inbox に行追加 → ACK で delivered になる
+model ReadyGoOutbox {
+  id          String    @id @default(cuid())
+  householdId String    @map("household_id")
+  body        String // ReadyGo Inbox に投入する集約メッセージ本文
+  alertsJson  Json      @map("alerts_json") // [{itemId, reason, line}] ACK時の notification_log 記録用
+  status      String    @default("pending") // pending | delivered
+  createdAt   DateTime  @default(now()) @map("created_at")
+  deliveredAt DateTime? @map("delivered_at")
+
+  @@index([status])
+  @@map("readygo_outbox")
+}
+
+// アプリ設定（GAS: app_config シート）
+model AppConfig {
+  id          String   @id @default(cuid())
+  householdId String   @map("household_id")
+  key         String
+  value       String
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@unique([householdId, key])
+  @@map("app_configs")
+}

@@ -1,0 +1,17 @@
+node_modules
+dist
+.env
+.env.local
+.env.production
+*.log
+.expo
+.DS_Store
+.run
+deploy.tgz
+backups/
+exports/
+scripts/_*.sql
+
+# その他
+.data/
+todo.txt

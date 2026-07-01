@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: stockhome-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stockhome
+      POSTGRES_PASSWORD: stockhome_dev_password
+      POSTGRES_DB: stockhome
+      TZ: Asia/Tokyo
+    ports:
+      - "5434:5432"
+    volumes:
+      - stockhome_pgdata:/var/lib/postgresql/data
+
+volumes:
+  stockhome_pgdata:

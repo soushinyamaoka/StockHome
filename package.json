@@ -1,0 +1,38 @@
+{
+  "name": "stockhome",
+  "version": "0.1.0",
+  "private": true,
+  "description": "家庭用 消耗品在庫管理アプリ StockHome（モバイル + API モノレポ）",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "overrides": {
+    "expo-font": "14.0.11",
+    "@expo/vector-icons": {
+      "expo-font": "14.0.11"
+    },
+    "expo": {
+      "expo-font": "14.0.11"
+    }
+  },
+  "scripts": {
+    "app:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/app.ps1 start vps",
+    "app:start:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/app.ps1 start local",
+    "app:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/app.ps1 stop",
+    "app:restart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/app.ps1 restart vps",
+    "app:restart:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/app.ps1 restart local",
+    "app:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/app.ps1 status",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f postgres",
+    "api:dev": "npm run dev --workspace=@stockhome/api",
+    "api:migrate": "npm run prisma:migrate --workspace=@stockhome/api",
+    "api:seed": "npm run prisma:seed --workspace=@stockhome/api",
+    "mobile:start": "npm run start --workspace=@stockhome/mobile",
+    "mobile:android": "npm run android --workspace=@stockhome/mobile",
+    "mobile:ios": "npm run ios --workspace=@stockhome/mobile",
+    "migrate:sheet": "npm run migrate:sheet --workspace=@stockhome/api --",
+    "deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy.ps1"
+  }
+}
