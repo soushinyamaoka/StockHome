@@ -39,7 +39,9 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       BRIDGE_TOKEN: ${BRIDGE_TOKEN}
     ports:
-      - "4002:4002"
+      # Nginx(HTTPS)経由のみに限定し、ホスト外部からの4002直接到達を遮断する
+      # Nginxは proxy_pass http://127.0.0.1:4002 で参照する
+      - "127.0.0.1:4002:4002"
 
 volumes:
   stockhome_pgdata:
