@@ -17,6 +17,14 @@
     },
     "production": {
       "channel": "default"
+    },
+    "android-internal": {
+      "distribution": "internal",
+      "channel": "android-internal",
+      "environment": "preview",
+      "android": {
+        "buildType": "apk"
+      }
     }
   }
 }
