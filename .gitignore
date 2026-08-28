@@ -16,3 +16,6 @@ scripts/_*.sql
 .data/
 data/
 todo.txt
+
+# ChatGPT Work / AIファイル受け渡し
+/work/ai_handoff/
