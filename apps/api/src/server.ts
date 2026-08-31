@@ -21,6 +21,7 @@ import {
   appLogger,
   ERROR_KINDS,
   LOG_EVENTS,
+  safeErr,
   type AppLogger,
 } from './lib/logger';
 import { runDailyBatch } from './services/batch';
@@ -67,7 +68,6 @@ async function buildServer(logger: AppLogger) {
       candidateStatus && candidateStatus >= 400 && candidateStatus < 600
         ? candidateStatus
         : 500;
-    const isDbError = isDatabaseError(error);
 
     request.log.error({
       event: LOG_EVENTS.REQUEST_FAILED,
@@ -75,9 +75,7 @@ async function buildServer(logger: AppLogger) {
       route: routePattern(request),
       status: statusCode,
       error_kind: errorKind(error, statusCode),
-      err: isDbError
-        ? { name: error.name, code: (error as { code?: string }).code }
-        : error,
+      err: safeErr(error),
     });
 
     const clientMessage =

@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { bridgeCandidatesPayloadSchema } from '@stockhome/shared';
-import { ERROR_KINDS, LOG_EVENTS } from '../lib/logger';
+import { ERROR_KINDS, LOG_EVENTS, safeErr } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { parseBody } from '../utils/validate';
 import { processBridgeCandidates } from '../services/candidateIntake';
@@ -90,7 +90,7 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
             event: LOG_EVENTS.READYGO_ACK_FAILED,
             item_id: a.itemId,
             error_kind: ERROR_KINDS.DB,
-            err: e,
+            err: safeErr(e),
           });
         }
       }

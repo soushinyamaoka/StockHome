@@ -7,7 +7,7 @@
 //   - 候補確定時の purchase_log 反映（Section 11.3, 11.4）
 import type { ImportOrderCandidate, Prisma } from '@prisma/client';
 import { APP_CONFIG_KEYS, DEFAULTS, type BridgeCandidate } from '@stockhome/shared';
-import { appLogger, ERROR_KINDS, LOG_EVENTS } from '../lib/logger';
+import { appLogger, ERROR_KINDS, LOG_EVENTS, safeErr } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { refreshStockSnapshotForItem, todayDateOnly } from './stockCalc';
 
@@ -243,7 +243,7 @@ export async function processBridgeCandidates(
         event: LOG_EVENTS.CANDIDATE_INTAKE_FAILED,
         candidate_index: candidateIndex,
         error_kind: ERROR_KINDS.INTERNAL,
-        err: e,
+        err: safeErr(e),
       });
     }
   }

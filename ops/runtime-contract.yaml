@@ -1,40 +1,129 @@
 # StockHome runtime contract
 #
-# 本ファイルは共通ログ規約対応（task_id: 20260831-004、2026-08-31）に伴い新規作成した。
-# vps-server-management の runtime_contract_and_intake_v1.md §3 が定義する
-# 全体スキーマ（runtime / network / config / data / jobs / dependencies / deploy 等）の作成は
-# 別作業（同文書 §8「段階3: アプリ別 runtime contract の作成」、StockHomeは未着手）であり、
-# 本タスクの範囲外。ここでは application_logging_implementation_spec.md §7 が要求する
-# logging セクションのみを、実機検証済みの内容で記録する。
+# 本ファイルは vps-server-management の runtime_contract_and_intake_v1.md §3 が定義する
+# schema v1 に従う。値が不明な項目は推測で埋めず null のままにする（同文書の方針）。
 #
-# 検証方法（2026-08-31、Claudeが対話セッションでローカル実行して確認）:
-#   - npm run db:up でローカルPostgreSQLを起動し、npm run api:dev でAPIを起動
-#   - curl で /health を呼び、出力行を1行取り出して JSON.parse で構文確認
-#   - runDailyBatch() を直接実行し、job_start/job_end の対応（同一run_id、status: success）を確認
-#   - docker compose stop postgres でDBを止めた状態で再実行し、job_end が status: failure で
-#     欠落なく出ることを確認（try/finallyによる保証）
-#   - task_id: 20260831-005 の修正後、再起動して "Server listening at..." の unclassified ログが
-#     0件になったことを確認（構造化された startup 1行のみ）
-#   - task_id: 20260831-006 の修正後、DB停止状態で /api/auth/login を叩き、
-#     レスポンスの message が汎用文言のみで生のDBエラーメッセージを含まないことを確認
-#   - task_id: 20260831-008 の修正後、DB停止状態で再度確認し、Prismaの内部ログが
-#     非JSONの直接出力ではなく db_client_log（message/meta/stackなし）になったこと、
-#     バッチ失敗時の job_end に error_name が入ることを確認
-#   - task_id: 20260831-009 の修正後、db_client_log の出力に level キーの重複が
-#     無くなったことを確認
+# 更新履歴:
+#   2026-08-31 (task_id: 20260831-004): logging セクションのみで新規作成
+#   2026-09-01: VPS管理側の再review（notice_id: 20260831-STOCKHOME-001、
+#     2026-09-01 StockHome 再review、blocker 4）を受け、Claudeが対話セッションで
+#     全体schema（runtime/network/config/data/jobs/dependencies/deploy/user_impact）へ拡張。
+#     production側の実機確認はしていない（VPSへ接続していない）ため、既知の正本
+#     （CLAUDE.md、docker-compose.prod.yml、apps/api/Dockerfile、scripts/deploy.ps1）と
+#     ローカルDocker環境での検証結果のみに基づく。verified_against_runtime は null のまま。
+
+schema_version: 1
+app: stockhome
+
+canonical_repo: https://github.com/soushinyamaoka/StockHome.git
+canonical_ref: main
+updated_at: 2026-09-01
+verified_against_runtime: null   # production実機との照合は未実施（VPSへは接続していない）。ローカルDocker環境でのみ検証。
+
+runtime:
+  type: docker-compose
+  unit: api                       # docker-compose.prod.yml のservice名
+  working_directory: /app/apps/api  # apps/api/Dockerfile runtimeステージの WORKDIR
+  user: root                      # apps/api/Dockerfile に USER 指定がなく、ベースイメージ既定のまま（明示的な非rootユーザーへの切り替えなし）
+  group: null
+  language_runtime: node:20-bookworm-slim  # apps/api/Dockerfile FROM
+  os_packages: [openssl]           # Prismaのクエリエンジンが必要とするため apt-get install
+  restart_policy: unless-stopped   # docker-compose.prod.yml api/postgres 両サービス共通
+
+network:
+  listeners:
+    - bind: 0.0.0.0                # コンテナ内部でのbind（HOST環境変数未設定のためserver.tsの既定値）
+      port: 4002
+      protocol: http
+      # ホスト側の公開範囲は docker-compose.prod.yml の port mapping "127.0.0.1:4002:4002" で
+      # 127.0.0.1 のみに制限している（ホスト外部からの直接到達を遮断。CLAUDE.mdのコミット履歴に記載）。
+  public:
+    - url: null                    # Nginx等のHTTPS入口ドメインはこのrepositoryに設定が無く、VPS側の正本を未確認のため null
+      upstream: 127.0.0.1:4002
+      tls: null                   # 同上、方式未確認
+  health:
+    internal:
+      path: /health
+      expected_status: 200
+      auth_required: false
+    public:
+      path: null                  # 公開経路のhealth pathは未確認
+      expected_status: null
+
+config:
+  env_file: .env                  # リポジトリルート。docker composeの変数展開（${POSTGRES_USER}等）に使われる。値はコミットしない
+  env_vars:
+    - { name: NODE_ENV, required: true, secret: false }
+    - { name: TZ, required: true, secret: false }
+    - { name: PORT, required: true, secret: false }
+    - { name: DATABASE_URL, required: true, secret: true }
+    - { name: JWT_SECRET, required: true, secret: true }
+    - { name: BRIDGE_TOKEN, required: true, secret: true }
+    - { name: POSTGRES_USER, required: true, secret: true }
+    - { name: POSTGRES_PASSWORD, required: true, secret: true }
+    - { name: POSTGRES_DB, required: true, secret: false }
+  secret_provisioning: manual     # .env.production.example を cp して手動設定（README記載）
+
+data:
+  databases:
+    - { engine: postgres, version: 16, name: null }  # イメージは postgres:16-alpine。DB名はPOSTGRES_DB（値は秘匿のため未記載）
+  persistent_paths:
+    - path: stockhome_pgdata（named volume。コンテナ内マウント先 /var/lib/postgresql/data）
+      backup_required: true
+      regenerable: false
+  migrations: automatic            # apps/api/Dockerfile の CMD が起動の都度 `prisma migrate deploy` を実行する
+
+jobs:
+  - name: daily_batch
+    mechanism: in-process           # OS cron/systemd-timerではなく、Node.jsプロセス内蔵の node-cron によるスケジューリング（schema既定の enum: cron|systemd-timer とは異なる実態のため、ありのまま記録）
+    definition: apps/api/src/server.ts 内の node-cron スケジュール定義（コード内。OS側のcron/timerファイルは無い）
+    schedule: "55 19 * * *"        # JST（node-cron の timezone: 'Asia/Tokyo' 指定）
+    success_signal: >-
+      構造化ログの event: job_start と job_end（同一 run_id）の対で判定できる。
+      job_end.status が success/failure、job_start はあるが job_end が無ければ異常終了、
+      予定時刻に job_start が無ければ未実行、と区別できる（task_id: 20260831-004 で実装、動的確認済み）。
+
+dependencies:
+  internal: []                     # 内部API依存なし（確認済み）
+  external: []                     # 本APIは外部HTTPを一切呼び出さない（fetch/axios/undici等いずれも apps/api/src に無いことを確認済み）。
+                                    # GAS（Gmail取込・ReadyGo通知）はGAS側からのアウトバウンドで本APIを呼ぶ関係であり、本APIからの外部依存ではない
+
+deploy:
+  entry: npm run deploy（scripts/deploy.ps1）  # tar化 → scp → VPS上で docker compose -f docker-compose.prod.yml up -d --build api → /health ポーリング確認
+  downtime: brief-restart          # api コンテナのみ再ビルド・入れ替え。postgresコンテナ・DBデータは変更しない
+  rollback: >-
+    正式なイメージバージョン管理・ロールバック手順は現状未整備（2026-09-01再review時点の既知の課題）。
+    実際にproduction反映する際の暫定手順: (1) deploy直前にVPS管理側が稼働中containerのimage ID
+    （docker inspect --format '{{.Image}}' stockhome-api-prod）を記録する。(2) 新イメージのhealth確認
+    （GET /health が200、かつ event: startup の構造化ログ1行が出ること）に失敗した場合、記録した
+    image IDから手動で再起動するか、直前のgit commitへ戻して npm run deploy を再実行する。
+    (3) 本変更はDB schemaを変更しないため、DBのロールバックは不要。
 
 logging:
   destinations: [stdout]     # Docker Compose (docker-compose.prod.yml) の logging driver が収集する。アプリ独自のログファイルは無い
-  format: structured         # 1行1JSON。pino既定のpid/hostnameを app: "stockhome" に置換し、ts(ISO8601+オフセット)/level(文字列)/eventを付与。
-                              # Prismaクライアントのログも $on イベント購読経由でpinoへ統一済み（非JSON直接出力なし、task_id: 20260831-008）
-  schema_version: 1          # 共通ログ規約v1準拠。予約6語のうち startup/shutdown/job_start/job_end を実装。
-                              # external_call_failed / dependency_failed は該当箇所なし（本APIは外部HTTP呼び出しを行わず、内部API依存も無い）ため未実装
-  contains_pii: false        # 実装済みの全ログ呼び出し箇所をコードレビュー・動的確認で検証: password/token/APIキー/メール本文・アドレス/メッセージID/品目名/query文字列付きURL/リクエスト・レスポンスボディを渡していない。
+  format: plain               # コンテナ全体のstdoutとしては非準拠。apps/api/Dockerfile の CMD が
+                              # `npx prisma migrate deploy ... && node dist/server.js` で、
+                              # application logger起動前に実行される Prisma CLI（migrate deploy）と
+                              # npm自体の出力（例: npm notice のバージョン通知）が非JSONのまま混在する。
+                              # アプリ自身が出すログ（node起動後）は1行1JSON準拠だが、コンテナ全体の
+                              # ストリームとしては非準拠のため、正直に plain とする（HomeAssetの
+                              # 20260831-HOMEASSET-001 で同種の事象があり、同じ理由で plain/null 表記とした前例に合わせる）。
+                              # 修正（起動シーケンス全体のJSON化）は別notice・別task・別のproduction承認が必要な変更として扱う。
+  schema_version: null        # 上記のとおりコンテナ全体としては未準拠のため null（アプリ自身のログ行は仕様書§1.2-1.7に準拠しているが、
+                              # 起動時のCLI/npm出力が混在する限り「準拠」と断定しない）
+  contains_pii: false         # 実装済みの全ログ呼び出し箇所をコードレビュー・動的確認で検証: password/token/APIキー/メール本文・アドレス/メッセージID/品目名/query文字列付きURL/リクエスト・レスポンスボディを渡していない。
                               # DBエラー（Prismaエラー）はHTTPエラーハンドラで name/code のみをログへ渡し、5xxレスポンスも汎用メッセージのみを返す（task_id: 20260831-006、動的確認済み）。
                               # Prismaクライアント自身のerror/warnイベントもtarget（内部コンポーネント名）のみを渡し、message/metaは渡さない（task_id: 20260831-008、動的確認済み）。
-                              # 残存リスク: DBエラー以外（Fastify組み込み・JWT・予期しない例外）はerrオブジェクトをそのままpino標準errシリアライザへ渡している。
-                              # これらは開発者コード・ライブラリ由来の安全なメッセージである想定だが、将来的な変更で値を含むメッセージが混入する可能性は理論上残る（未発生・未検証）
+                              # DBエラー以外（Fastify組み込み・JWT・予期しない例外）も含め、全てのエラーログ呼び出し箇所（server.ts/
+                              # candidateIntake.ts/bridge.ts）を共通の許可リスト変換 safeErr()（name/文字列型codeのみ）へ統一済み
+                              # （task_id: 20260831-010）。利用者値（メールアドレス・パスワード等）を含むError/非Errorでの
+                              # 非混入を直接検証・実機のDB停止状態での検証の両方で確認済み。
   rotation: null              # アプリ側でローテーションを持たない（Docker/OS側に委ねる）
+
+user_impact:
+  direct_users: true           # 家庭内の利用者がモバイルアプリから直接使う
+  client_apps: [stockhome-mobile]
+  user_facing_functions: ["購入登録", "在庫予測", "在庫アラート通知（ReadyGo経由）"]
 
 # 既知の未解決事項（隠さずそのまま記録する）
 known_gaps:
@@ -45,8 +134,16 @@ known_gaps:
     shutdownイベント出力は動的確認できていない（コードレビューのみ）。production はDocker/Linux
     コンテナで稼働し、`docker compose stop`/`down` はコンテナへ正しくSIGTERMを送るため、この制約は
     Windows開発環境固有のテスト限界であり、production動作への疑義ではない。
+  - コンテナ起動時のPrisma CLI（`prisma migrate deploy`）・npm自体の非JSON出力（logging.format参照）。
+    別notice・別production承認が必要な変更として、別途対応する。
+  - 正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
+    正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
+  - `network.public.url`・`network.health.public` はVPS側（Nginx等）の正本を未確認のため null。
+  - `verified_against_runtime` は null。本ファイルの runtime/network/config/data/jobs/dependencies/deploy
+    はリポジトリ内の正本（Dockerfile、docker-compose.prod.yml、deploy.ps1、CLAUDE.md）から作成した宣言であり、
+    VPS実機との照合はVPS管理側の別作業（OPS-DOC-01）を要する。
 
-# 2026-08-31 時点で解消済みの事項
+# 2026-08-31〜09-01 時点で解消済みの事項
 resolved_gaps:
   - task_id: 20260831-005 で解消。Fastifyの listen() が内部的に出す "Server listening at <address>"
     （bind先アドレスごと、event: "unclassified" になっていた）を、listen()前後だけ logger level を
@@ -63,3 +160,7 @@ resolved_gaps:
   - task_id: 20260831-009 で解消。上記008の db_client_log 出力で、pino自動付与の level と
     手動付与の level フィールドが重複していた冗長な記述を削除。実機確認でキー重複が
     無くなったことを確認済み。
+  - task_id: 20260831-010 で解消。server.ts の non-DB error、candidateIntake.ts、bridge.ts の
+    raw Error を pino へ渡していた問題を、共通の safeErr()（name/文字列型codeのみ）へ統一した。
+    利用者値を含むError/非Errorでの非混入をローカルで直接検証し、DB停止状態での実機確認でも
+    メールアドレス等が漏れないことを確認済み（VPS管理側の2026-09-01再review blocker 2への対応）。

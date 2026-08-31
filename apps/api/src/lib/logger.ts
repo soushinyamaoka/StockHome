@@ -26,6 +26,17 @@ export const ERROR_KINDS = {
   INTERNAL: 'internal',
 } as const;
 
+export function safeErr(e: unknown): { name?: string; code?: string } {
+  if (e instanceof Error) {
+    const code = (e as { code?: unknown }).code;
+    return {
+      name: e.name,
+      ...(typeof code === 'string' ? { code } : {}),
+    };
+  }
+  return {};
+}
+
 function pad(value: number): string {
   return String(value).padStart(2, '0');
 }
