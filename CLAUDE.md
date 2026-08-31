@@ -17,6 +17,12 @@ GAS 版（`C:\work\PRG\GAS\StockHome`）からの移行プロジェクト。仕�
 - 機能の追加・変更時は API・mobile・shared のどこにまたがるかを先に整理すること。Zod スキーマや型の変更は `packages/shared` を起点に検討する。
 - スマホ片手操作を最重視。フォームは `Section` でセクション分けし、必須入力は最小限に。
 
+## モデル使い分けルール
+
+- 通常の設計整理・ドキュメント作成: Sonnet
+- アーキテクチャ判断、複数案のトレードオフ検討: Opus
+- 方針決定から設計文書化まで一括で任せる場合: opusplan モード
+
 ## データ層ルール
 
 - 主要テーブルは `household_id` を持ち、API は必ず `req.auth.householdId` で絞り込む。
