@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { bridgeCandidatesPayloadSchema } from '@stockhome/shared';
+import { ERROR_KINDS, LOG_EVENTS } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { parseBody } from '../utils/validate';
 import { processBridgeCandidates } from '../services/candidateIntake';
@@ -85,7 +86,12 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
           });
           notified++;
         } catch (e) {
-          console.error('[bridge] notification_log 記録失敗:', a.itemId, e);
+          app.log.warn({
+            event: LOG_EVENTS.READYGO_ACK_FAILED,
+            item_id: a.itemId,
+            error_kind: ERROR_KINDS.DB,
+            err: e,
+          });
         }
       }
     }

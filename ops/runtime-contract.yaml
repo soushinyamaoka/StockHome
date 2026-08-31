@@ -1,0 +1,43 @@
+# StockHome runtime contract
+#
+# 本ファイルは共通ログ規約対応（task_id: 20260831-004、2026-08-31）に伴い新規作成した。
+# vps-server-management の runtime_contract_and_intake_v1.md §3 が定義する
+# 全体スキーマ（runtime / network / config / data / jobs / dependencies / deploy 等）の作成は
+# 別作業（同文書 §8「段階3: アプリ別 runtime contract の作成」、StockHomeは未着手）であり、
+# 本タスクの範囲外。ここでは application_logging_implementation_spec.md §7 が要求する
+# logging セクションのみを、実機検証済みの内容で記録する。
+#
+# 検証方法（2026-08-31、Claudeが対話セッションでローカル実行して確認）:
+#   - npm run db:up でローカルPostgreSQLを起動し、npm run api:dev でAPIを起動
+#   - curl で /health を呼び、出力行を1行取り出して JSON.parse で構文確認
+#   - runDailyBatch() を直接実行し、job_start/job_end の対応（同一run_id、status: success）を確認
+#   - docker compose stop postgres でDBを止めた状態で再実行し、job_end が status: failure で
+#     欠落なく出ることを確認（try/finallyによる保証）
+#   - task_id: 20260831-005 の修正後、再起動して "Server listening at..." の unclassified ログが
+#     0件になったことを確認（構造化された startup 1行のみ）
+
+logging:
+  destinations: [stdout]     # Docker Compose (docker-compose.prod.yml) の logging driver が収集する。アプリ独自のログファイルは無い
+  format: structured         # 1行1JSON。pino既定のpid/hostnameを app: "stockhome" に置換し、ts(ISO8601+オフセット)/level(文字列)/eventを付与
+  schema_version: 1          # 共通ログ規約v1準拠。予約6語のうち startup/shutdown/job_start/job_end を実装。
+                              # external_call_failed / dependency_failed は該当箇所なし（本APIは外部HTTP呼び出しを行わず、内部API依存も無い）ため未実装
+  contains_pii: false        # 実装済みの全ログ呼び出し箇所をコードレビューで確認: password/token/APIキー/メール本文・アドレス/メッセージID/品目名/query文字列付きURL/リクエスト・レスポンスボディを渡していない。
+                              # 既知の残存リスク: エラーオブジェクト(err)をそのままpinoの標準errシリアライザへ渡している箇所があり、
+                              # 将来Prisma/Zod等が生成するエラーメッセージに利用者由来の値が含まれた場合は理論上混入し得る（未発生・未検証）
+  rotation: null              # アプリ側でローテーションを持たない（Docker/OS側に委ねる）
+
+# 既知の未解決事項（隠さずそのまま記録する）
+known_gaps:
+  - graceful shutdown（SIGTERM/SIGINT → shutdown イベント → app.close）は実装・コードレビュー確認済みで、
+    プロセスを通常終了させた場合の動作パス（try/finallyの構造、二重実行防止フラグ）は問題ない。
+    ただしWindows開発環境では外部プロセスへSIGTERM相当を配送する標準手段がなく（Node.jsのシグナル
+    処理はWindows上ではCtrl+C由来のSIGINTのみ確実に動作する制約があるため）、実際のSIGTERM経路での
+    shutdownイベント出力は動的確認できていない（コードレビューのみ）。production はDocker/Linux
+    コンテナで稼働し、`docker compose stop`/`down` はコンテナへ正しくSIGTERMを送るため、この制約は
+    Windows開発環境固有のテスト限界であり、production動作への疑義ではない。
+
+# 2026-08-31 時点で解消済みの事項
+resolved_gaps:
+  - task_id: 20260831-005 で解消。Fastifyの listen() が内部的に出す "Server listening at <address>"
+    （bind先アドレスごと、event: "unclassified" になっていた）を、listen()前後だけ logger level を
+    一時的に silent にすることで抑制した。再起動して unclassified ログが0件になったことを確認済み。

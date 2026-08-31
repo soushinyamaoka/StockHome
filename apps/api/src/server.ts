@@ -1,8 +1,10 @@
 import 'dotenv/config';
 import Fastify from 'fastify';
+import type { FastifyError, FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import sensible from '@fastify/sensible';
-import cron from 'node-cron';
+import cron, { type ScheduledTask } from 'node-cron';
+import { STATUS_CODES } from 'node:http';
 import authPlugin from './plugins/auth';
 import authRoutes from './routes/auth';
 import userRoutes from './routes/users';
@@ -15,13 +17,66 @@ import notificationRoutes from './routes/notifications';
 import dashboardRoutes from './routes/dashboard';
 import appConfigRoutes from './routes/appConfig';
 import bridgeRoutes from './routes/bridge';
+import {
+  appLogger,
+  ERROR_KINDS,
+  LOG_EVENTS,
+  type AppLogger,
+} from './lib/logger';
 import { runDailyBatch } from './services/batch';
 
-async function buildServer() {
+function routePattern(request: FastifyRequest): string {
+  return request.routeOptions.url || 'unmatched';
+}
+
+function errorKind(statusCode: number) {
+  if (statusCode === 401 || statusCode === 403) return ERROR_KINDS.AUTH;
+  if (statusCode >= 400 && statusCode < 500) return ERROR_KINDS.VALIDATION;
+  return ERROR_KINDS.INTERNAL;
+}
+
+async function buildServer(logger: AppLogger) {
   const app = Fastify({
-    logger: {
-      level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
-    },
+    loggerInstance: logger,
+    disableRequestLogging: true,
+  });
+
+  app.addHook('onResponse', async (request, reply) => {
+    const line = {
+      event: LOG_EVENTS.HTTP_REQUEST,
+      method: request.method,
+      route: routePattern(request),
+      status: reply.statusCode,
+      duration_ms: Math.round(reply.elapsedTime),
+    };
+    if (reply.statusCode >= 500) {
+      request.log.error(line);
+    } else {
+      request.log.info(line);
+    }
+  });
+
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    const candidateStatus = error.statusCode;
+    const statusCode =
+      candidateStatus && candidateStatus >= 400 && candidateStatus < 600
+        ? candidateStatus
+        : 500;
+
+    request.log.error({
+      event: LOG_EVENTS.REQUEST_FAILED,
+      method: request.method,
+      route: routePattern(request),
+      status: statusCode,
+      error_kind: errorKind(statusCode),
+      err: error,
+    });
+
+    return reply.status(statusCode).send({
+      statusCode,
+      error: STATUS_CODES[statusCode] ?? 'Internal Server Error',
+      message: error.message,
+    });
   });
 
   // fastify@5 の既定JSONパーサは空ボディを拒否するので、空文字を{}として扱う
@@ -68,29 +123,58 @@ async function buildServer() {
   return app;
 }
 
+let app: Awaited<ReturnType<typeof buildServer>> | undefined;
+let dailyBatchTask: ScheduledTask | undefined;
+let shuttingDown = false;
+
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  appLogger.info({ event: LOG_EVENTS.SHUTDOWN });
+  dailyBatchTask?.stop();
+  if (app) await app.close();
+  process.exit(0);
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+process.on('uncaughtException', (err) => {
+  appLogger.critical({ event: LOG_EVENTS.UNCAUGHT_EXCEPTION, err });
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  const err = reason instanceof Error ? reason : new Error('Unhandled rejection');
+  appLogger.critical({ event: LOG_EVENTS.UNCAUGHT_EXCEPTION, err });
+  process.exit(1);
+});
+
 (async () => {
   try {
-    const app = await buildServer();
+    app = await buildServer(appLogger);
     const port = Number(process.env.PORT) || 4002;
     const host = process.env.HOST || '0.0.0.0';
-    await app.listen({ port, host });
-    app.log.info(`StockHome API listening on http://${host}:${port}`);
+    const previousLevel = appLogger.level;
+    appLogger.level = 'silent';
+    try {
+      await app.listen({ port, host });
+    } finally {
+      appLogger.level = previousLevel;
+    }
+    app.log.info({ event: LOG_EVENTS.STARTUP });
 
     // 夜間バッチ: 毎日 19:55 JST
     // （GAS の夜間トリガー(20時台)がキューを取得 → ReadyGo の 21:00 LINE 配信に載る）
-    cron.schedule(
+    dailyBatchTask = cron.schedule(
       '55 19 * * *',
       async () => {
         try {
-          await runDailyBatch();
-        } catch (e) {
-          app.log.error(e, '夜間バッチでエラー');
-        }
+          await runDailyBatch(appLogger);
+        } catch {}
       },
       { timezone: 'Asia/Tokyo' }
     );
   } catch (err) {
-    console.error(err);
+    appLogger.critical({ event: LOG_EVENTS.STARTUP_FAILED, err });
     process.exit(1);
   }
 })();
