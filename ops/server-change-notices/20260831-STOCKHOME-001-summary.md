@@ -6,7 +6,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: e98f124c6d54a0e5bf21a7f8bebefb6c7a756d17
+source_commit: a21a19e7e5ebfda321e740082d4aecf59a9121b6
 
 impact_level: L1
 
