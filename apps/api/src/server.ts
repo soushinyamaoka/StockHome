@@ -29,7 +29,12 @@ function routePattern(request: FastifyRequest): string {
   return request.routeOptions.url || 'unmatched';
 }
 
-function errorKind(statusCode: number) {
+function isDatabaseError(error: FastifyError): boolean {
+  return typeof error.name === 'string' && error.name.startsWith('PrismaClient');
+}
+
+function errorKind(error: FastifyError, statusCode: number) {
+  if (isDatabaseError(error)) return ERROR_KINDS.DB;
   if (statusCode === 401 || statusCode === 403) return ERROR_KINDS.AUTH;
   if (statusCode >= 400 && statusCode < 500) return ERROR_KINDS.VALIDATION;
   return ERROR_KINDS.INTERNAL;
@@ -62,20 +67,26 @@ async function buildServer(logger: AppLogger) {
       candidateStatus && candidateStatus >= 400 && candidateStatus < 600
         ? candidateStatus
         : 500;
+    const isDbError = isDatabaseError(error);
 
     request.log.error({
       event: LOG_EVENTS.REQUEST_FAILED,
       method: request.method,
       route: routePattern(request),
       status: statusCode,
-      error_kind: errorKind(statusCode),
-      err: error,
+      error_kind: errorKind(error, statusCode),
+      err: isDbError
+        ? { name: error.name, code: (error as { code?: string }).code }
+        : error,
     });
+
+    const clientMessage =
+      statusCode >= 500 ? (STATUS_CODES[statusCode] ?? 'Internal Server Error') : error.message;
 
     return reply.status(statusCode).send({
       statusCode,
       error: STATUS_CODES[statusCode] ?? 'Internal Server Error',
-      message: error.message,
+      message: clientMessage,
     });
   });
 

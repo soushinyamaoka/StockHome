@@ -98,6 +98,8 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
   };
   let queuedHouseholds = 0;
   let status: 'success' | 'failure' = 'failure';
+  let failureName: string | undefined;
+  let failureCode: string | undefined;
 
   logger.info({ event: LOG_EVENTS.JOB_START, job: 'daily_batch', run_id: runId });
 
@@ -194,6 +196,12 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
 
     status = 'success';
     return result;
+  } catch (e) {
+    if (e instanceof Error) {
+      failureName = e.name;
+      failureCode = (e as { code?: string }).code;
+    }
+    throw e;
   } finally {
     const line = {
       event: LOG_EVENTS.JOB_END,
@@ -207,6 +215,7 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
       alerts: result.alerts,
       households: queuedHouseholds,
       queued: result.queued,
+      ...(status === 'failure' ? { error_name: failureName, error_code: failureCode } : {}),
     };
     if (status === 'success') logger.info(line);
     else logger.error(line);

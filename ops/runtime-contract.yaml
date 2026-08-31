@@ -15,15 +15,25 @@
 #     欠落なく出ることを確認（try/finallyによる保証）
 #   - task_id: 20260831-005 の修正後、再起動して "Server listening at..." の unclassified ログが
 #     0件になったことを確認（構造化された startup 1行のみ）
+#   - task_id: 20260831-006 の修正後、DB停止状態で /api/auth/login を叩き、
+#     レスポンスの message が汎用文言のみで生のDBエラーメッセージを含まないことを確認
+#   - task_id: 20260831-008 の修正後、DB停止状態で再度確認し、Prismaの内部ログが
+#     非JSONの直接出力ではなく db_client_log（message/meta/stackなし）になったこと、
+#     バッチ失敗時の job_end に error_name が入ることを確認
+#   - task_id: 20260831-009 の修正後、db_client_log の出力に level キーの重複が
+#     無くなったことを確認
 
 logging:
   destinations: [stdout]     # Docker Compose (docker-compose.prod.yml) の logging driver が収集する。アプリ独自のログファイルは無い
-  format: structured         # 1行1JSON。pino既定のpid/hostnameを app: "stockhome" に置換し、ts(ISO8601+オフセット)/level(文字列)/eventを付与
+  format: structured         # 1行1JSON。pino既定のpid/hostnameを app: "stockhome" に置換し、ts(ISO8601+オフセット)/level(文字列)/eventを付与。
+                              # Prismaクライアントのログも $on イベント購読経由でpinoへ統一済み（非JSON直接出力なし、task_id: 20260831-008）
   schema_version: 1          # 共通ログ規約v1準拠。予約6語のうち startup/shutdown/job_start/job_end を実装。
                               # external_call_failed / dependency_failed は該当箇所なし（本APIは外部HTTP呼び出しを行わず、内部API依存も無い）ため未実装
-  contains_pii: false        # 実装済みの全ログ呼び出し箇所をコードレビューで確認: password/token/APIキー/メール本文・アドレス/メッセージID/品目名/query文字列付きURL/リクエスト・レスポンスボディを渡していない。
-                              # 既知の残存リスク: エラーオブジェクト(err)をそのままpinoの標準errシリアライザへ渡している箇所があり、
-                              # 将来Prisma/Zod等が生成するエラーメッセージに利用者由来の値が含まれた場合は理論上混入し得る（未発生・未検証）
+  contains_pii: false        # 実装済みの全ログ呼び出し箇所をコードレビュー・動的確認で検証: password/token/APIキー/メール本文・アドレス/メッセージID/品目名/query文字列付きURL/リクエスト・レスポンスボディを渡していない。
+                              # DBエラー（Prismaエラー）はHTTPエラーハンドラで name/code のみをログへ渡し、5xxレスポンスも汎用メッセージのみを返す（task_id: 20260831-006、動的確認済み）。
+                              # Prismaクライアント自身のerror/warnイベントもtarget（内部コンポーネント名）のみを渡し、message/metaは渡さない（task_id: 20260831-008、動的確認済み）。
+                              # 残存リスク: DBエラー以外（Fastify組み込み・JWT・予期しない例外）はerrオブジェクトをそのままpino標準errシリアライザへ渡している。
+                              # これらは開発者コード・ライブラリ由来の安全なメッセージである想定だが、将来的な変更で値を含むメッセージが混入する可能性は理論上残る（未発生・未検証）
   rotation: null              # アプリ側でローテーションを持たない（Docker/OS側に委ねる）
 
 # 既知の未解決事項（隠さずそのまま記録する）
@@ -41,3 +51,15 @@ resolved_gaps:
   - task_id: 20260831-005 で解消。Fastifyの listen() が内部的に出す "Server listening at <address>"
     （bind先アドレスごと、event: "unclassified" になっていた）を、listen()前後だけ logger level を
     一時的に silent にすることで抑制した。再起動して unclassified ログが0件になったことを確認済み。
+  - task_id: 20260831-006 で解消。自動セキュリティレビューで、HTTPエラーハンドラが
+    Prismaエラーの message をログとレスポンスへそのまま渡していた問題（DB制約違反等で
+    利用者由来の値が漏洩し得た）を発見。DBエラーはログへ name/code のみ、5xxレスポンスは
+    常に汎用メッセージのみを返すよう修正し、DB停止状態での実機確認で解消を確認済み。
+  - task_id: 20260831-008 で解消。Prismaクライアント自身の内部ログが pino を経由せず
+    非JSONで直接stdoutへ出力されていた問題（1行1JSON MUST違反）を発見。event購読方式へ
+    変更し、target（安全な内部コンポーネント名）のみをpino経由で構造化ログ化した。
+    合わせて、夜間バッチ失敗時に原因情報が皆無だった点も、安全な範囲（error_name/error_code）
+    のみ job_end へ追加する形で解消。いずれもDB停止状態での実機確認で解消を確認済み。
+  - task_id: 20260831-009 で解消。上記008の db_client_log 出力で、pino自動付与の level と
+    手動付与の level フィールドが重複していた冗長な記述を削除。実機確認でキー重複が
+    無くなったことを確認済み。

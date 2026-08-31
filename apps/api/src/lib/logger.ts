@@ -14,6 +14,7 @@ export const LOG_EVENTS = {
   READYGO_QUEUED: 'readygo_queued',
   READYGO_ACK_FAILED: 'readygo_ack_failed',
   CANDIDATE_INTAKE_FAILED: 'candidate_intake_failed',
+  DB_CLIENT_LOG: 'db_client_log',
 } as const;
 
 export const ERROR_KINDS = {
@@ -63,6 +64,9 @@ export const loggerOptions: LoggerOptions<'critical'> = {
       'jwt',
       '*.password',
       '*.token',
+      'err.meta',
+      'req.body.token',
+      'body.token',
     ],
     remove: true,
   },
