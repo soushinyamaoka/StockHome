@@ -68,7 +68,7 @@ data:
   databases:
     - { engine: postgres, version: 16, name: null }  # イメージは postgres:16-alpine。DB名はPOSTGRES_DB（値は秘匿のため未記載）
   persistent_paths:
-    - path: stockhome_pgdata（named volume。コンテナ内マウント先 /var/lib/postgresql/data）
+    - path: /var/lib/postgresql/data  # container内の正確なmount先。Docker named volumeはstockhome_pgdata
       backup_required: true
       regenerable: false
   migrations: automatic            # apps/api/Dockerfile の CMD が起動の都度 `prisma migrate deploy` を実行する
@@ -93,11 +93,12 @@ deploy:
   downtime: brief-restart          # api コンテナのみ再ビルド・入れ替え。postgresコンテナ・DBデータは変更しない
   rollback: >-
     正式なイメージバージョン管理・ロールバック手順は現状未整備（2026-09-01再review時点の既知の課題）。
-    実際にproduction反映する際の暫定手順: (1) deploy直前にVPS管理側が稼働中containerのimage ID
-    （docker inspect --format '{{.Image}}' stockhome-api-prod）を記録する。(2) 新イメージのhealth確認
-    （GET /health が200、かつ event: startup の構造化ログ1行が出ること）に失敗した場合、記録した
-    image IDから手動で再起動するか、直前のgit commitへ戻して npm run deploy を再実行する。
-    (3) 本変更はDB schemaを変更しないため、DBのロールバックは不要。
+    production反映前にVPS上の現行sourceをsecret除外archiveとして退避し、稼働中image IDを記録して
+    一時rollback tagを付ける。新imageのhealth確認に失敗した場合は、退避した旧sourceを一時directoryへ
+    展開し、既存のVPS上.envを変更せず、旧sourceのCompose定義からAPIを再build・起動する。
+    復旧後にGET /healthが200であることとcontainer状態を確認する。実行command、退避先、tag名は
+    production計画で確定し、確定するまでscheduledへ進めない。本変更はDB schemaを変更しないため、
+    DBのrollbackは不要。
 
 logging:
   destinations: [stdout]     # Docker Compose (docker-compose.prod.yml) の logging driver が収集する。アプリ独自のログファイルは無い
@@ -127,40 +128,50 @@ user_impact:
 
 # 既知の未解決事項（隠さずそのまま記録する）
 known_gaps:
-  - graceful shutdown（SIGTERM/SIGINT → shutdown イベント → app.close）は実装・コードレビュー確認済みで、
+  - >-
+    graceful shutdown（SIGTERM/SIGINT → shutdown イベント → app.close）は実装・コードレビュー確認済みで、
     プロセスを通常終了させた場合の動作パス（try/finallyの構造、二重実行防止フラグ）は問題ない。
     ただしWindows開発環境では外部プロセスへSIGTERM相当を配送する標準手段がなく（Node.jsのシグナル
     処理はWindows上ではCtrl+C由来のSIGINTのみ確実に動作する制約があるため）、実際のSIGTERM経路での
     shutdownイベント出力は動的確認できていない（コードレビューのみ）。production はDocker/Linux
     コンテナで稼働し、`docker compose stop`/`down` はコンテナへ正しくSIGTERMを送るため、この制約は
     Windows開発環境固有のテスト限界であり、production動作への疑義ではない。
-  - コンテナ起動時のPrisma CLI（`prisma migrate deploy`）・npm自体の非JSON出力（logging.format参照）。
+  - >-
+    コンテナ起動時のPrisma CLI（`prisma migrate deploy`）・npm自体の非JSON出力（logging.format参照）。
     別notice・別production承認が必要な変更として、別途対応する。
-  - 正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
+  - >-
+    正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
-  - `network.public.url`・`network.health.public` はVPS側（Nginx等）の正本を未確認のため null。
-  - `verified_against_runtime` は null。本ファイルの runtime/network/config/data/jobs/dependencies/deploy
+  - >-
+    `network.public.url`・`network.health.public` はVPS側（Nginx等）の正本を未確認のため null。
+  - >-
+    `verified_against_runtime` は null。本ファイルの runtime/network/config/data/jobs/dependencies/deploy
     はリポジトリ内の正本（Dockerfile、docker-compose.prod.yml、deploy.ps1、CLAUDE.md）から作成した宣言であり、
     VPS実機との照合はVPS管理側の別作業（OPS-DOC-01）を要する。
 
 # 2026-08-31〜09-01 時点で解消済みの事項
 resolved_gaps:
-  - task_id: 20260831-005 で解消。Fastifyの listen() が内部的に出す "Server listening at <address>"
+  - >-
+    task_id: 20260831-005 で解消。Fastifyの listen() が内部的に出す "Server listening at <address>"
     （bind先アドレスごと、event: "unclassified" になっていた）を、listen()前後だけ logger level を
     一時的に silent にすることで抑制した。再起動して unclassified ログが0件になったことを確認済み。
-  - task_id: 20260831-006 で解消。自動セキュリティレビューで、HTTPエラーハンドラが
+  - >-
+    task_id: 20260831-006 で解消。自動セキュリティレビューで、HTTPエラーハンドラが
     Prismaエラーの message をログとレスポンスへそのまま渡していた問題（DB制約違反等で
     利用者由来の値が漏洩し得た）を発見。DBエラーはログへ name/code のみ、5xxレスポンスは
     常に汎用メッセージのみを返すよう修正し、DB停止状態での実機確認で解消を確認済み。
-  - task_id: 20260831-008 で解消。Prismaクライアント自身の内部ログが pino を経由せず
+  - >-
+    task_id: 20260831-008 で解消。Prismaクライアント自身の内部ログが pino を経由せず
     非JSONで直接stdoutへ出力されていた問題（1行1JSON MUST違反）を発見。event購読方式へ
     変更し、target（安全な内部コンポーネント名）のみをpino経由で構造化ログ化した。
     合わせて、夜間バッチ失敗時に原因情報が皆無だった点も、安全な範囲（error_name/error_code）
     のみ job_end へ追加する形で解消。いずれもDB停止状態での実機確認で解消を確認済み。
-  - task_id: 20260831-009 で解消。上記008の db_client_log 出力で、pino自動付与の level と
+  - >-
+    task_id: 20260831-009 で解消。上記008の db_client_log 出力で、pino自動付与の level と
     手動付与の level フィールドが重複していた冗長な記述を削除。実機確認でキー重複が
     無くなったことを確認済み。
-  - task_id: 20260831-010 で解消。server.ts の non-DB error、candidateIntake.ts、bridge.ts の
+  - >-
+    task_id: 20260831-010 で解消。server.ts の non-DB error、candidateIntake.ts、bridge.ts の
     raw Error を pino へ渡していた問題を、共通の safeErr()（name/文字列型codeのみ）へ統一した。
     利用者値を含むError/非Errorでの非混入をローカルで直接検証し、DB停止状態での実機確認でも
     メールアドレス等が漏れないことを確認済み（VPS管理側の2026-09-01再review blocker 2への対応）。

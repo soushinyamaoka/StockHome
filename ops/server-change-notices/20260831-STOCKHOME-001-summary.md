@@ -8,7 +8,7 @@ source_branch: main
 
 source_commit: a21a19e7e5ebfda321e740082d4aecf59a9121b6
 
-impact_level: L1
+impact_level: L2
 
 status: ready_for_review
 
@@ -22,7 +22,7 @@ deployment_status: not_started
 
 ## 変更概要
 
-StockHome API に共通ログ規約 v1 準拠の構造化ログを実装した。ログは引き続き stdout へ1行1JSONで出力し、`ts`、`app`、`level`、`event` を全行に付与する設計とした。定期処理には同一 `run_id` の `job_start` / `job_end` を追加し、SIGTERM / SIGINT の graceful shutdown を新設した。Prismaクライアントの内部ログ出力を、pinoを経由しない直接stdout出力からイベント購読経由の構造化ログ（`db_client_log`）へ変更した。夜間バッチは失敗時に安全な範囲（`error_name` / `error_code`）の情報を `job_end` へ含めるようにした。また、push後の自動セキュリティレビューで発見した2件を追加修正した: (1) HTTPエラーハンドラが5xx時にDBエラーの生メッセージ（例: unique制約違反時の入力値を含む文字列）をクライアントへそのまま返していた問題を、5xx時は汎用メッセージのみを返すよう修正、(2) 同じくDBエラーをログへ渡す際に`message`/`meta`を含めていた問題を、`name`/`code`のみに限定するよう修正した。
+StockHome API のapplication loggerに共通ログ規約 v1 準拠の構造化ログを実装した。application loggerが出す各行はstdoutへの1行1JSONで、`ts`、`app`、`level`、`event`を持つ。ただし、application起動前のPrisma CLI / npmによる非JSON行が同じcontainer streamへ混在するため、container全体のloggingは現時点で`plain` / `schema_version: null`である。定期処理には同一 `run_id` の `job_start` / `job_end` を追加し、SIGTERM / SIGINT の graceful shutdown を新設した。Prismaクライアントの内部ログ出力を、pinoを経由しない直接stdout出力からイベント購読経由の構造化ログ（`db_client_log`）へ変更した。夜間バッチは失敗時に安全な範囲（`error_name` / `error_code`）の情報を `job_end` へ含めるようにした。また、push後の自動セキュリティレビューで発見した2件を追加修正した: (1) HTTPエラーハンドラが5xx時にDBエラーの生メッセージ（例: unique制約違反時の入力値を含む文字列）をクライアントへそのまま返していた問題を、5xx時は汎用メッセージのみを返すよう修正、(2) 同じくDBエラーをログへ渡す際に`message`/`meta`を含めていた問題を、`name`/`code`のみに限定するよう修正した。
 
 ## 変更理由
 
@@ -49,7 +49,7 @@ server_impact: notify
 | 項目 | 現在 | 変更後 |
 |---|---|---|
 | 出力先 | stdout | stdout（変更なし） |
-| ログ形式 | pino 既定JSON | 共通ログ規約 v1 準拠の1行1JSON |
+| ログ形式 | pino 既定JSON | application loggerの各行は共通ログ規約 v1 準拠の1行1JSON。Prisma CLI / npmの非JSON行が混在するcontainer stream全体は`plain` |
 | 必須フィールド | 共通必須フィールドなし | `ts` / `app` / `level` / `event` |
 | HTTPリクエストログ | Fastify既定の1リクエスト2行 | 応答完了時の `http_request` 1行 |
 | 夜間バッチ | 成否を機械判定できる開始・終了ログなし | 同一 `run_id` の `job_start` / `job_end` |
@@ -76,9 +76,9 @@ server_impact: notify
 
 ## 利用者への影響
 
-- user_maintenance_impact: none
-- 対象利用者・機能: なし。既存APIルート、レスポンス形状、認証方式は変更しない
-- 通知方法: 利用者向け通知は不要
+- user_maintenance_impact: possible
+- 対象利用者・機能: 家庭内利用者が使用するStockHome mobileのAPI機能。APIルート、レスポンス形状、認証方式は変更しないが、container入れ替え中の短時間はAPI requestが失敗する可能性がある
+- 通知方法: 事前通知が必要かは、実施時刻と想定停止時間を含むproduction計画をVPS管理側で作成する際に判断する
 
 ## env・secret contract
 
@@ -100,7 +100,7 @@ secret値は記載しない。
 
 - deploy前提: 本notice更新時点ではdeployしない。production反映はVPS管理側の個別承認（`scheduled`遷移）を経てから実施する
 - deploy手順の変更: なし（既存の`scripts/deploy.ps1`／`docker compose -f docker-compose.prod.yml up -d --build api`をそのまま使う）
-- rollback方法: 正式なイメージバージョン管理・ロールバック手順は現状未整備（既知の課題として`ops/runtime-contract.yaml`の`known_gaps`に記録）。暫定手順: (1) deploy直前にVPS管理側が稼働中containerのimage ID（`docker inspect --format '{{.Image}}' stockhome-api-prod`）を記録する。(2) 新イメージのhealth確認（`GET /health`が200、かつ`event: startup`の構造化ログ1行が出ること）に失敗した場合、記録したimage IDから手動で再起動するか、直前のgit commitへ戻して`npm run deploy`を再実行する。
+- rollback方法: 正式なversioned releaseは未整備。production実施前に、VPS上の現行sourceをsecretを除外したarchiveとして退避し、稼働中image IDを記録して一時rollback tagを付ける。新imageのhealth確認に失敗した場合は、退避した旧sourceを一時directoryへ展開し、既存のVPS上`.env`を変更せず、旧sourceのCompose定義からAPIを再build・起動する。復旧後に`GET /health`が200であることとcontainer状態を確認する。実行command、退避先、tag名はproduction計画で確定し、確定するまで`scheduled`へ進めない。
 - rollback不能条件: なし（DB schema・永続データの変更を伴わないため、DBロールバックは不要）
 
 ## Health・テスト
@@ -113,7 +113,7 @@ secret値は記載しない。
 
 ## Log・監視
 
-- log量/形式/保存先変更: 保存先はstdoutのまま。既定のHTTPログは1リクエスト2行から1行へ減り、バッチは1実行あたり数行増える。形式は共通ログ規約 v1 準拠JSONへ変更。Prismaクライアントが直接出力していた非JSON行を廃止し、全てpino経由の1行1JSONへ統一した
+- log量/形式/保存先変更: 保存先はstdoutのまま。既定のHTTPログは1リクエスト2行から1行へ減り、バッチは1実行あたり数行増える。application loggerの出力は共通ログ規約 v1 準拠JSONへ変更し、Prismaクライアント内部ログもpino経由の1行1JSONへ統一した。Prisma CLI / npmの非JSON起動行は残るため、container stream全体は`plain` / `schema_version: null`として扱う
 - 新しいalert条件: 本タスクでは監視条件を変更しない。固定 `event` と `job_end.status` を監視に利用可能
 - secret/個人情報対策: 禁止データをログ呼び出しへ渡さず、共通loggerに認証情報等を削除するredact保険を設定。server側のマスク規則は変更しない
 
