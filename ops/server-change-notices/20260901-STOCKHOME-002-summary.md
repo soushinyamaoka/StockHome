@@ -8,7 +8,7 @@ source_branch: main
 
 source_commit: 48e271634ecf4c52b07725fd349077965e2f1545
 
-impact_level: L1
+impact_level: L2
 
 status: ready_for_review
 
@@ -161,7 +161,7 @@ secret値は記載しない。
 
 ## Approval
 
-- app owner: 未承認（ユーザー本人の確認待ち）
-- VPS management review: 未実施
+- app owner: アプリ側作業完了とVPS管理への引き渡しをユーザーが確認（2026-09-01）
+- VPS management review: accepted（2026-09-01。production承認とは別）
 - production approval: 未承認
 - related task_id: 20260901-002
