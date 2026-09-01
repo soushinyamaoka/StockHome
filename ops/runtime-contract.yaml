@@ -8,9 +8,8 @@
 #   2026-09-01: VPS管理側の再review（notice_id: 20260831-STOCKHOME-001、
 #     2026-09-01 StockHome 再review、blocker 4）を受け、Claudeが対話セッションで
 #     全体schema（runtime/network/config/data/jobs/dependencies/deploy/user_impact）へ拡張。
-#     production側の実機確認はしていない（VPSへ接続していない）ため、既知の正本
-#     （CLAUDE.md、docker-compose.prod.yml、apps/api/Dockerfile、scripts/deploy.ps1）と
-#     ローカルDocker環境での検証結果のみに基づく。verified_against_runtime は null のまま。
+#     初版はrepository内の正本とローカルDocker環境だけに基づいて作成した。
+#   2026-09-01: VPS管理側がproduction反映後にruntime、network、health、volume、loggingを実機照合。
 
 schema_version: 1
 app: stockhome
@@ -18,7 +17,7 @@ app: stockhome
 canonical_repo: https://github.com/soushinyamaoka/StockHome.git
 canonical_ref: main
 updated_at: 2026-09-01
-verified_against_runtime: null   # production実機との照合は未実施（VPSへは接続していない）。ローカルDocker環境でのみ検証。
+verified_against_runtime: 2026-09-01
 
 runtime:
   type: docker-compose
@@ -38,17 +37,17 @@ network:
       # ホスト側の公開範囲は docker-compose.prod.yml の port mapping "127.0.0.1:4002:4002" で
       # 127.0.0.1 のみに制限している（ホスト外部からの直接到達を遮断。CLAUDE.mdのコミット履歴に記載）。
   public:
-    - url: null                    # Nginx等のHTTPS入口ドメインはこのrepositoryに設定が無く、VPS側の正本を未確認のため null
+    - url: https://stockhome.homehub-tools.dedyn.io
       upstream: 127.0.0.1:4002
-      tls: null                   # 同上、方式未確認
+      tls: letsencrypt
   health:
     internal:
       path: /health
       expected_status: 200
       auth_required: false
     public:
-      path: null                  # 公開経路のhealth pathは未確認
-      expected_status: null
+      path: /health
+      expected_status: 200
 
 config:
   env_file: .env                  # リポジトリルート。docker composeの変数展開（${POSTGRES_USER}等）に使われる。値はコミットしない
@@ -68,7 +67,7 @@ data:
   databases:
     - { engine: postgres, version: 16, name: null }  # イメージは postgres:16-alpine。DB名はPOSTGRES_DB（値は秘匿のため未記載）
   persistent_paths:
-    - path: /var/lib/postgresql/data  # container内の正確なmount先。Docker named volumeはstockhome_pgdata
+    - path: /var/lib/postgresql/data  # container内のmount先。実機named volumeはstockhome_stockhome_pgdata
       backup_required: true
       regenerable: false
   migrations: automatic            # apps/api/Dockerfile の CMD が起動の都度 `prisma migrate deploy` を実行する
@@ -92,13 +91,11 @@ deploy:
   entry: npm run deploy（scripts/deploy.ps1）  # tar化 → scp → VPS上で docker compose -f docker-compose.prod.yml up -d --build api → /health ポーリング確認
   downtime: brief-restart          # api コンテナのみ再ビルド・入れ替え。postgresコンテナ・DBデータは変更しない
   rollback: >-
-    正式なイメージバージョン管理・ロールバック手順は現状未整備（2026-09-01再review時点の既知の課題）。
-    production反映前にVPS上の現行sourceをsecret除外archiveとして退避し、稼働中image IDを記録して
-    一時rollback tagを付ける。新imageのhealth確認に失敗した場合は、退避した旧sourceを一時directoryへ
-    展開し、既存のVPS上.envを変更せず、旧sourceのCompose定義からAPIを再build・起動する。
-    復旧後にGET /healthが200であることとcontainer状態を確認する。実行command、退避先、tag名は
-    production計画で確定し、確定するまでscheduledへ進めない。本変更はDB schemaを変更しないため、
-    DBのrollbackは不要。
+    正式なversioned releaseは未整備。2026-09-01のproduction反映では、実行前に現行source archive、
+    PostgreSQL論理dump、旧API image tagを作成し、size、gzip整合、SHA-256を確認した。
+    health失敗時は旧image tagをCompose overrideで起動し、成立しない場合は旧source archiveを
+    別directoryへ展開して同じCompose project名で再buildする。DB schema変更はないため、通常rollbackで
+    DB restoreは行わない。詳細はvps-server-managementのtask 20260901-001実行記録を正本とする。
 
 logging:
   destinations: [stdout]     # Docker Compose (docker-compose.prod.yml) の logging driver が収集する。アプリ独自のログファイルは無い
@@ -142,15 +139,12 @@ known_gaps:
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
-  - >-
-    `network.public.url`・`network.health.public` はVPS側（Nginx等）の正本を未確認のため null。
-  - >-
-    `verified_against_runtime` は null。本ファイルの runtime/network/config/data/jobs/dependencies/deploy
-    はリポジトリ内の正本（Dockerfile、docker-compose.prod.yml、deploy.ps1、CLAUDE.md）から作成した宣言であり、
-    VPS実機との照合はVPS管理側の別作業（OPS-DOC-01）を要する。
 
 # 2026-08-31〜09-01 時点で解消済みの事項
 resolved_gaps:
+  - >-
+    2026-09-01にVPS管理側がproduction実機を照合し、public URL、TLS、public health、loopback PortBinding、
+    DB volume、runtime、health、loggingの現在値を確認した。verified_against_runtimeを同日へ更新した。
   - >-
     task_id: 20260831-005 で解消。Fastifyの listen() が内部的に出す "Server listening at <address>"
     （bind先アドレスごと、event: "unclassified" になっていた）を、listen()前後だけ logger level を

@@ -18,7 +18,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_started
+deployment_status: verified
 
 ## 変更概要
 
@@ -32,7 +32,7 @@ VPS管理側がアプリ固有のパーサーを持たずにログを判定で�
 
 `change_notice_ledger.md`「2026-09-01 StockHome 再review」で指摘された5件への対応。
 
-1. **production判定の誤り**: 「今回deployしない」ことと「このcodeを将来反映するのにproduction変更が不要」を混同していた。`production_change`を`none`から`required`へ訂正した（container rebuild・入れ替えが必要なため）。`deployment_status: not_started`は維持。
+1. **production判定の誤り**: 「今回deployしない」ことと「このcodeを将来反映するのにproduction変更が不要」を混同していた。`production_change`を`none`から`required`へ訂正した（container rebuild・入れ替えが必要なため）。この再review対応時点では`deployment_status: not_started`を維持し、後日の個別承認・実施結果は本書のProduction実施結果へ追記した。
 2. **raw error残存**: `server.ts`のnon-DB error、`candidateIntake.ts`、`bridge.ts`で raw `Error` を `err` へ渡していた箇所を、`task_id: 20260831-010` で許可リスト方式（`logger.ts`の`safeErr()`、`name`/`code`のみ）へ統一した。利用者値を含むエラーでの非混入テストをClaudeが実施済み（詳細は「Health・テスト」参照）。
 3. **container起動時の非JSON出力**: `apps/api/Dockerfile`のCMDが`npx prisma migrate deploy && node dist/server.js`で、application logger起動前のPrisma CLI/npm出力が非JSONのまま残る。**本notice・今回の一連の修正では対応しない。** `ops/runtime-contract.yaml`の`logging.format`を`plain`/`schema_version: null`へ正直に訂正し、既知の未解決事項として記録した。修正する場合は別notice・別production承認が必要な変更として扱う（HomeAssetの同種事象と同じ整理）。
 4. **runtime contract全体schema未整備**: `ops/runtime-contract.yaml`を`runtime_contract_and_intake_v1.md`§3のschema v1に沿って全体（runtime/network/config/data/jobs/dependencies/deploy/user_impact）へ拡張した。不明値は推測せず`null`のまま残した（`network.public.url`、`verified_against_runtime`等）。
@@ -69,10 +69,10 @@ server_impact: notify
 
 ## production変更
 
-- 必要性: あり（将来この変更をproductionへ反映する際、apiコンテナのrebuild・入れ替えが必要。今回のnotice更新・commit自体はdeployを伴わない）
-- 想定作業: `scripts/deploy.ps1`（`npm run deploy`）によるcontainer rebuild・入れ替え。本notice時点では未実施
-- downtime: brief-restart（apiコンテナのみ再起動。postgresコンテナ・DBデータは変更しない）
-- maintenance window: 未定（実施判断はVPS管理側の承認後）
+- 必要性: あり。2026-09-01にVPS管理側が個別承認後、API containerをrebuild・入れ替え済み
+- 実施作業: `scripts/deploy.ps1`（`npm run deploy`）によるcontainer rebuild・入れ替え
+- downtime: brief-restart（API containerのみ。PostgreSQL container・DB dataは無変更）
+- maintenance window: 2026-09-01 09:27〜09:30 JST。妻への事前通知・不使用確認済み
 
 ## 利用者への影響
 
@@ -98,9 +98,9 @@ secret値は記載しない。
 
 ## Deploy・rollback
 
-- deploy前提: 本notice更新時点ではdeployしない。production反映はVPS管理側の個別承認（`scheduled`遷移）を経てから実施する
+- deploy前提: 2026-09-01 09:25 JSTにユーザーが個別承認し、VPS管理台帳を`scheduled`へ進めてから実施した
 - deploy手順の変更: なし（既存の`scripts/deploy.ps1`／`docker compose -f docker-compose.prod.yml up -d --build api`をそのまま使う）
-- rollback方法: 正式なversioned releaseは未整備。production実施前に、VPS上の現行sourceをsecretを除外したarchiveとして退避し、稼働中image IDを記録して一時rollback tagを付ける。新imageのhealth確認に失敗した場合は、退避した旧sourceを一時directoryへ展開し、既存のVPS上`.env`を変更せず、旧sourceのCompose定義からAPIを再build・起動する。復旧後に`GET /health`が200であることとcontainer状態を確認する。実行command、退避先、tag名はproduction計画で確定し、確定するまで`scheduled`へ進めない。
+- rollback方法: deploy前にsecret除外source archive、PostgreSQL論理dump、旧API image tagを作成し、size、gzip整合、SHA-256を確認済み。health失敗時は旧image tagのCompose override、次に旧sourceの別directory再buildを使う。今回はrollback条件に該当しなかった
 - rollback不能条件: なし（DB schema・永続データの変更を伴わないため、DBロールバックは不要）
 
 ## Health・テスト
@@ -117,14 +117,27 @@ secret値は記載しない。
 - 新しいalert条件: 本タスクでは監視条件を変更しない。固定 `event` と `job_end.status` を監視に利用可能
 - secret/個人情報対策: 禁止データをログ呼び出しへ渡さず、共通loggerに認証情報等を削除するredact保険を設定。server側のマスク規則は変更しない
 
+## Production実施結果
+
+- production task_id: `20260901-001`
+- 実施日時: 2026-09-01 09:27〜09:30 JST
+- repository HEAD: `0794ce2`（runtime code commit `a21a19e`を含む、`origin/main`と一致）
+- 結果: deploy script正常終了、API image更新、container restart count 0
+- health: internal 200、public 200、未認証bridge 401
+- runtime: API / DB running、DB healthy、PortBinding `127.0.0.1:4002`、DB volume `stockhome_stockhome_pgdata`を維持
+- config: VPS `.env`のowner / group / mode / size / mtimeを維持。値は確認・記録していない
+- source: VPS上の`server.ts`、Dockerfile、Compose SHA-256がlocalと一致
+- log: 直近19行中JSON 7行、非JSON 9行、空行3行。JSON 7行は必須4項目を全て保持。`startup` 1件、`http_request` 6件、機微情報pattern 0件
+- rollback: 条件に該当せず未実施。rollback資材はVPS内へ保全
+- pending: 定期jobの次回19:55 JST実行で`job_start` / `job_end`とstatusを確認するまで`closed`にしない
+
 ## 未解決事項
 
 - `external_call_failed` / `dependency_failed` は、`apps/api/src` に該当する外部HTTP呼び出し・内部API依存がないため実装していない。
 - graceful shutdown のSIGTERM経路の動的確認のみ未実施（Windows開発環境の制約。上記「Health・テスト」参照）。
 - コンテナ起動時のPrisma CLI（`prisma migrate deploy`）・npm自体の非JSON出力が残っている。`ops/runtime-contract.yaml`の`logging.format: plain`／`schema_version: null`で正直に記録済み。修正は別notice・別production承認が必要な変更として扱う。
 - 正式なイメージバージョン管理・ロールバック手順が未整備。暫定手順は「Deploy・rollback」に記載済みだが、正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
-- `network.public.url`・`network.health.public`はVPS側（Nginx等）の正本を未確認のため`ops/runtime-contract.yaml`で`null`のまま。
-- `verified_against_runtime`は`null`。本notice・runtime-contractの内容はリポジトリ内の正本とローカルDocker環境の検証に基づき、production実機との照合はしていない（VPS管理側の別作業を要する）。
+- production実機のpublic URL、health、PortBinding、DB volume、runtime、loggingは2026-09-01にVPS管理側が照合済み。
 
 ## 希望時期
 
@@ -138,7 +151,7 @@ secret値は記載しない。
 
 ## Approval
 
-- app owner: 未承認（ユーザー本人の確認待ち）
-- VPS management review: blocked（2026-09-01 再review。詳細は`change_notice_ledger.md`「2026-09-01 StockHome 再review」）
-- production approval: 未承認
-- related task_id: 20260831-004, 20260831-005, 20260831-006, 20260831-008, 20260831-009, 20260831-010（20260831-002/003/007はblockedで未実装のため含まない）
+- app owner: 承認済み（文書修正commit `0794ce2`）
+- VPS management review: accepted、production反映後verified（2026-09-01）
+- production approval: 承認済み（2026-09-01 09:25 JST、即時実施）
+- related task_id: 20260831-004, 20260831-005, 20260831-006, 20260831-008, 20260831-009, 20260831-010, 20260901-001（20260831-002/003/007はblockedで未実装のため含まない）
