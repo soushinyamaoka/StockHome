@@ -91,11 +91,12 @@ deploy:
   entry: npm run deploy（scripts/deploy.ps1）  # tar化 → scp → VPS上で docker compose -f docker-compose.prod.yml up -d --build api → /health ポーリング確認
   downtime: brief-restart          # api コンテナのみ再ビルド・入れ替え。postgresコンテナ・DBデータは変更しない
   rollback: >-
-    正式なversioned releaseは未整備。2026-09-01のproduction反映では、実行前に現行source archive、
-    PostgreSQL論理dump、旧API image tagを作成し、size、gzip整合、SHA-256を確認した。
+    正式なversioned releaseは未整備。2026-09-01のtask 20260901-001では、実行前に現行source archive、
+    PostgreSQL論理dump、旧API image tagを作成し、size、gzip整合、SHA-256を確認した。task 20260901-002では、
+    DB/schema/data変更がないためDB dumpを省略し、現行source archiveと旧API image tagを保全した。
     health失敗時は旧image tagをCompose overrideで起動し、成立しない場合は旧source archiveを
     別directoryへ展開して同じCompose project名で再buildする。DB schema変更はないため、通常rollbackで
-    DB restoreは行わない。詳細はvps-server-managementのtask 20260901-001実行記録を正本とする。
+    DB restoreは行わない。詳細はvps-server-managementのtask 20260901-001 / 20260901-002実行記録を正本とする。
 
 logging:
   destinations: [stdout]     # Docker Compose (docker-compose.prod.yml) の logging driver が収集する。アプリ独自のログファイルは無い
@@ -139,9 +140,17 @@ known_gaps:
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
+  - >-
+    OPS-P1-08のPhase Aで解消可能なdependencyを更新した後も、node-cron 3.0.3 / uuid 8.3.2のmoderateと、
+    xlsx 0.18.5のhighが残る。現構成での到達可能性は低いが、node-cron major update、xlsxの期限付き
+    リスク受容・代替library化・runtime imageからのdevDependencies除外を個別に判断する必要がある。
 
 # 2026-08-31〜09-01 時点で解消済みの事項
 resolved_gaps:
+  - >-
+    task_id: 20260901-002 でOPS-P1-08 Phase Aをproduction反映。esbuild 0.28.2、fast-uri 3.1.6、
+    find-my-way 9.9.0をruntime image内で確認し、API/shared scopeのnpm auditを6件から3件へ削減した。
+    API/DB、health、bind、volume、logを検証し、DB/schema/data変更がないことを確認した。
   - >-
     2026-09-01にVPS管理側がproduction実機を照合し、public URL、TLS、public health、loopback PortBinding、
     DB volume、runtime、health、loggingの現在値を確認した。verified_against_runtimeを同日へ更新した。
