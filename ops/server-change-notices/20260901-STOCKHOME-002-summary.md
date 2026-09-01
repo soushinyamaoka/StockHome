@@ -6,7 +6,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 未確定（未commit）
+source_commit: 48e271634ecf4c52b07725fd349077965e2f1545
 
 impact_level: L1
 
