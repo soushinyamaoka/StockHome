@@ -112,6 +112,10 @@ export default function SettingsScreen() {
           {linkRow('notifications-outline', 'お知らせのきろく', () =>
             navigation.navigate('NotificationLog')
           )}
+          <View style={styles.divider} />
+          {linkRow('swap-horizontal-outline', '購入の反映きろく', () =>
+            navigation.navigate('ReflectionLog')
+          )}
         </Card>
       </Section>
 

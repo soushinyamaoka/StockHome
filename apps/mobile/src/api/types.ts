@@ -142,3 +142,14 @@ export interface DashboardData {
   todayNotifications: number;
   totalActiveItems: number;
 }
+
+export interface ReflectionDto {
+  id: string;
+  occurredAt: string | null;
+  itemNameRaw: string | null;
+  matchedItemName: string;
+  qty: number;
+  unit: string | null;
+  category: 'auto' | 'manual';
+  vendor: string | null;
+}

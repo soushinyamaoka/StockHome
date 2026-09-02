@@ -29,6 +29,7 @@ export type CandidatesStackParamList = {
 export type SettingsStackParamList = {
   Settings: undefined;
   NotificationLog: undefined;
+  ReflectionLog: undefined;
   ChangePassword: undefined;
   Family: undefined;
 };

@@ -21,6 +21,7 @@ import PurchaseFormScreen from '../screens/purchases/PurchaseFormScreen';
 import CandidateListScreen from '../screens/candidates/CandidateListScreen';
 import SettingsScreen from '../screens/settings/SettingsScreen';
 import NotificationLogScreen from '../screens/settings/NotificationLogScreen';
+import ReflectionLogScreen from '../screens/settings/ReflectionLogScreen';
 import ChangePasswordScreen from '../screens/settings/ChangePasswordScreen';
 import FamilyScreen from '../screens/settings/FamilyScreen';
 
@@ -126,6 +127,7 @@ function SettingsNavigator() {
         component={NotificationLogScreen}
         options={{ title: 'お知らせのきろく' }}
       />
+      <SettingsStack.Screen name="ReflectionLog" component={ReflectionLogScreen} options={{ title: '反映のきろく' }} />
       <SettingsStack.Screen
         name="ChangePassword"
         component={ChangePasswordScreen}

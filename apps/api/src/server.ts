@@ -13,6 +13,7 @@ import purchaseRoutes from './routes/purchases';
 import stockRoutes from './routes/stocks';
 import correctionRoutes from './routes/corrections';
 import importCandidateRoutes from './routes/importCandidates';
+import reflectionRoutes from './routes/reflections';
 import notificationRoutes from './routes/notifications';
 import dashboardRoutes from './routes/dashboard';
 import appConfigRoutes from './routes/appConfig';
@@ -124,6 +125,7 @@ async function buildServer(logger: AppLogger) {
     await instance.register(stockRoutes, { prefix: '/api/stocks' });
     await instance.register(correctionRoutes, { prefix: '/api' });
     await instance.register(importCandidateRoutes, { prefix: '/api/import-candidates' });
+    await instance.register(reflectionRoutes, { prefix: '/api/reflections' });
     await instance.register(notificationRoutes, { prefix: '/api/notifications' });
     await instance.register(dashboardRoutes, { prefix: '/api/dashboard' });
     await instance.register(appConfigRoutes, { prefix: '/api/app-config' });

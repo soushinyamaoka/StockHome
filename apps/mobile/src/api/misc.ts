@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { CandidateDto, DashboardData, FamilyUser, NotificationDto, PurchaseDto } from './types';
+import type { CandidateDto, DashboardData, FamilyUser, NotificationDto, PurchaseDto, ReflectionDto } from './types';
 
 // --- ダッシュボード ---
 export async function fetchDashboard(): Promise<DashboardData> {
@@ -77,4 +77,10 @@ export async function fetchAppConfig(): Promise<{
 
 export async function updateDeliveryBuffer(days: number): Promise<void> {
   await api.put('/api/app-config/delivery-buffer', { days });
+}
+
+// --- 反映記録ログ ---
+export async function fetchReflections(limit = 100): Promise<{ reflections: ReflectionDto[] }> {
+  const res = await api.get('/api/reflections', { params: { limit } });
+  return res.data;
 }
