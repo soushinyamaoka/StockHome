@@ -1,3 +1,9 @@
+-- VPS管理レビューB07対応: このPrismaのバージョン・実行経路ではmigration.sqlが
+-- 既定でtransactionに包まれる保証がないため、明示的にBEGIN/COMMITで囲み、
+-- 途中の文が失敗した場合に本tableと関連index/外部キーが中途半端な状態で
+-- 残らないようにする（全部成功するか、何も作られないかのどちらかにする）
+BEGIN;
+
 -- CreateTable
 CREATE TABLE "push_devices" (
     "id" TEXT NOT NULL,
@@ -27,3 +33,5 @@ ALTER TABLE "push_devices" ADD CONSTRAINT "push_devices_household_id_fkey" FOREI
 
 -- AddForeignKey
 ALTER TABLE "push_devices" ADD CONSTRAINT "push_devices_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+COMMIT;

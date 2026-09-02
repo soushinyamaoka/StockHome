@@ -12,6 +12,8 @@ const EXPO_RECEIPT_ENDPOINT = 'https://exp.host/--/api/v2/push/getReceipts';
 const MAX_TOKENS_PER_REQUEST = 100;
 const MAX_RECEIPT_IDS_PER_REQUEST = 300;
 const RECEIPT_LOOKBACK_HOURS = 24;
+// 確定済み(ok/error) ticketを残す期間。デバッグ・監査用の参照期間で、これを過ぎたら削除する
+const TICKET_RETENTION_DAYS = 7;
 
 // 外部サービス待ちで夜間バッチを長時間止めないための上限。
 // 1リクエストのtimeoutと、retryを含めた1チャンクあたりの総時間を分けて制限する。
@@ -32,6 +34,10 @@ export interface ReceiptCheckResult {
   ok: number;
   errored: number;
   deactivated: number;
+}
+
+export interface TicketCleanupResult {
+  deleted: number;
 }
 
 interface PostJsonResult {
@@ -198,6 +204,24 @@ export async function checkPushReceipts(
     deactivated: result.deactivated,
   });
   return result;
+}
+
+// 確定済み(ok/error) ticketのうち、確認から一定期間を過ぎたものを削除する。
+// pendingのまま残っているticketは（receipt未確認のため）対象にしない。
+// 夜間バッチとは独立したscheduleから呼ぶ想定
+export async function cleanupPushTickets(
+  logger: AppLogger = appLogger
+): Promise<TicketCleanupResult> {
+  const cutoff = new Date(Date.now() - TICKET_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  const deleted = await prisma.pushTicket.deleteMany({
+    where: { status: { not: 'pending' }, checkedAt: { lt: cutoff } },
+  });
+  logger.info({
+    event: LOG_EVENTS.PUSH_TICKETS_CLEANED,
+    deleted: deleted.count,
+    retention_days: TICKET_RETENTION_DAYS,
+  });
+  return { deleted: deleted.count };
 }
 
 export async function sendPushToHousehold(

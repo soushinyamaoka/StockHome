@@ -6,7 +6,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: d25f929
+source_commit: 未確定（B07〜B10対応commit後に確定する）
 
 impact_level: L3
 
@@ -22,11 +22,28 @@ deployment_status: not_started
 
 ## 変更概要
 
-VPS管理側の再レビュー（`stockhome_push_notification_review_20260902.md`、
-notice `blocked`、blocker B01〜B06）を受けて全面改訂した。
+VPS管理側の第2回レビュー（`stockhome_push_notification_review_20260902.md`、
+notice `blocked`、blocker B07〜B10）を受けて改訂した（第1回レビューのB01〜B06は
+既に対応済み、`task_id: 20260902-007`）。
 
-本noticeは、前回production反映（notice `20260902-STOCKHOME-003`、
-source_commit `ade30be`、`verified`）以降の**未反映変更すべて**をまとめて対象とする
+**第2回レビュー対応（B07〜B10、`task_id: 20260902-008`）**:
+
+- B07: 2つのmigration.sqlに明示的な`BEGIN`/`COMMIT`を追加し、途中失敗時に
+  中途半端な状態を残さないようにした。使い捨てPostgreSQLで全migration履歴
+  （初期化〜push_tickets）を最初から適用するrehearsalを実施し、全件成功を確認した。
+  noticeの誤った「CREATE TABLEのみ自動ロールバックされる」という記述を、
+  実際のPrisma migration失敗時の復旧手順に置き換えた
+- B08: 送信約15分後（20:10 JST）の独立したreceipt確認scheduleを追加した。
+  夜間バッチ冒頭のreceipt確認は前夜分の安全網として維持する
+- B09: `push_tickets`のうち確定済み（ok/error）行を7日で削除する保持ポリシーを実装した
+- B10: production baseline commitの誤り（`ade30be`は反映後のdocsのみのcommitで、
+  実際にdeployされたのは`7d18a32`）を訂正し、runtime contractのfailure_mode・
+  token説明の矛盾・external依存（receipt endpoint未記載）を修正した
+
+本noticeは、前回production反映（notice `20260902-STOCKHOME-003`、実際にdeployされた
+source commitは`7d18a32`（実装commit`19ff1af`と同一コード内容。`ade30be`は反映後の
+実施結果を記録しただけのdocsのみのcommitであり、それ自体はdeployされていない。
+VPS管理レビューB10指摘対応で訂正）、`verified`）以降の**未反映変更すべて**をまとめて対象とする
 （B02指摘対応。従来はプッシュ通知のみを記載していたが、それより前の2機能改修も
 未反映のままrelease差分に含まれるため、まとめて1つのproduction計画として扱う）。
 
@@ -68,7 +85,7 @@ GASブリッジ契約・ログ形式（1行1JSON）は不変。1・2の変更は
 
 ## 現在と変更後
 
-| 項目 | 現在（production, `ade30be`） | 変更後 |
+| 項目 | 現在（production, `7d18a32`） | 変更後 |
 |---|---|---|
 | API | `GET /api/reflections` なし | 追加（読み取り専用、本人分のみ） |
 | Gmail取込価格 | `detected_price` を無条件に単価として保存 | セット数2以上等で単価/小計を判別できない場合、自動確定を保留し `null` 保存。手動確定時に単価を入力・上書き可能 |
@@ -77,15 +94,17 @@ GASブリッジ契約・ログ形式（1行1JSON）は不変。1・2の変更は
 | APIからの外向き通信 | なし | 夜間バッチ実行時のみ `https://exp.host` へHTTPS POST（送信・receipt確認とも） |
 | APIエンドポイント | 既存のまま | 認証必須の `POST/DELETE /api/push-devices` を追加 |
 | 夜間バッチ | 在庫再計算 → ReadyGoキュー投入 | 冒頭でreceipt確認（前回送信分の実配信結果）→ 同左（**無変更**）→ 新規アラート抽出とプッシュ送信を後段に追加 |
-| バッチのログ | `job_end` に既存集計 | `new_alerts`/`push_targeted`/`push_accepted` を追加。`push_dispatched`/`push_receipt_checked`/`push_receipt_check_failed` イベントを新設 |
-| cron時刻 | `55 19 * * *`（JST） | 変更なし |
+| バッチのログ | `job_end` に既存集計 | `new_alerts`/`push_targeted`/`push_accepted` を追加。`push_dispatched`/`push_receipt_checked`/`push_receipt_check_failed`/`push_tickets_cleaned` イベントを新設 |
+| cron時刻（daily_batch） | `55 19 * * *`（JST） | 変更なし |
+| cron（新規） | なし | `10 20 * * *`（JST）でreceipt確認+ticket保持期限クリーンアップを独立実行（B08・B09対応） |
 | モバイル依存 | — | `expo-notifications` を追加（APIイメージには入らない） |
 
 ## 影響対象
 
 - service/container: `stockhome-api-prod`（次回のDocker build/deployで反映）
 - URL/port/health/bind: 変更なし
-- cron/timer/worker: 夜間バッチの処理内容のみ追加。**スケジュールは不変**
+- cron/timer/worker: 既存の夜間バッチ（19:55 JST）はスケジュール不変、処理内容のみ追加。
+  **新規cron（20:10 JST、receipt確認+ticket保持期限クリーンアップ）を1件追加**（B08・B09対応）
 - dependency: **外部依存を新規追加**（Expo Push Service）。サーバー側npm依存の追加はなし
   （Node 20 のグローバル `fetch` と `AbortSignal.timeout` を使用。`expo-server-sdk` は導入しない）
 - data/DB/volume: `push_devices`・`push_tickets` テーブルを追加。
@@ -109,14 +128,28 @@ GASブリッジ契約・ログ形式（1行1JSON）は不変。1・2の変更は
 1. migration実行**前**に、production PostgreSQLの論理dump（`pg_dump`）を取得する
 2. dump完了後、サイズ・gzip整合・SHA-256を確認し、保全先（
    `/home/deploy/stockhome/backups/deploy-<task_id>/db-before.sql.gz` 想定）に保存する
-3. `push_devices`・`push_tickets` は**新規テーブル追加のみ**（既存テーブルへの
-   `ALTER`・データの `UPDATE`/`DELETE` を含まない）ため、migration自体の失敗時は
-   `prisma migrate deploy` が該当tableの`CREATE TABLE`のみロールバックされ、
-   既存テーブルへの影響はない
-4. API rollback時（旧imageへ戻す場合）、`push_devices`・`push_tickets` は**残したまま**
-   でよいと判断する。旧バージョンのAPIコードはこれらのテーブルを参照しないため、
-   存在しても無害。DB restoreは、dump取得後に他の理由でデータ不整合が生じた場合のみ
-   検討する（本変更単体でのrestore必要性は無い）
+3. **migration適用前提条件（B07対応）**: 本番適用前に、使い捨て
+   （production構成を再現した使い捨て）PostgreSQLでのrehearsalを実施する。
+   Claudeが2026-09-02にローカルで実施したrehearsal（下記「Health・テスト」参照）は
+   全migration履歴の適用成功を確認しているが、VPS管理側でも本番同等環境での
+   再現rehearsalを推奨する
+4. **migration失敗時の復旧手順（B07対応、誤った「CREATE TABLEのみ自動ロールバック」
+   記述を訂正）**: 本repositoryはPrisma 5.22.0を使用しており、Prisma Migrateが
+   migration.sqlを既定でtransactionに包む前提にはできない。そのため各migration.sqlに
+   明示的な`BEGIN`/`COMMIT`を追加した（1ファイル内は全文成功するか、何も反映されない
+   かのどちらかになる）。それでも複数migrationファイルにまたがる失敗（例:
+   `push_devices`は成功したが`push_tickets`が失敗）は起こり得るため、次の手順で復旧する:
+   1. `prisma migrate status`で、どのmigrationが適用済み/失敗と記録されているか確認する
+   2. `\d push_devices` / `\d push_tickets`等でテーブルの実在を確認する（explicit
+      transactionにより、失敗したmigrationのテーブルは存在しないはず）
+   3. テーブル不在を確認できたら `prisma migrate resolve --rolled-back <migration名>`
+      でPrismaの記録をロールバック済みとして解決し、原因を修正のうえ再度
+      `prisma migrate deploy` を実行する
+   4. API自体をrollbackする場合（旧imageへ戻す）は、`push_devices`・`push_tickets`が
+      どちらか/両方成功・失敗のいずれの状態でも問題ない。旧バージョンのAPIコードは
+      これらのテーブルを一切参照しないため、存在しても存在しなくても無害
+5. DB restoreは、dump取得後に他の理由でデータ不整合が生じた場合のみ検討する
+   （本変更単体でのrestore必要性は無い）
 
 **ネットワーク面**: VPS管理側の事前確認（2026-09-02実施）で、稼働中の
 `stockhome-api-prod` containerから `exp.host:443` へのDNS解決・TLS 1.3 handshake・
@@ -162,11 +195,19 @@ secret値は記載しない。
   - `apps/api/prisma/migrations/20260902130116_add_push_tickets/`
   - いずれも `CREATE TABLE` + 索引 + 外部キー（`ON DELETE CASCADE`）のみ
   - **既存テーブルへの `ALTER`・データの `UPDATE`/`DELETE` を一切含まない**
-  - ローカルDBで適用済み・動作確認済み
+  - **両ファイルとも明示的な`BEGIN`/`COMMIT`で囲み、途中失敗時に中途半端な状態を
+    残さないようにした**（B07対応）
+  - ローカルDBで適用済み・動作確認済み。**加えて使い捨てPostgreSQL 16
+    （postgres:16-alpineコンテナ）で全migration履歴（init〜push_tickets、計5件）を
+    最初から適用するrehearsalを実施し、全件成功・テーブル/索引/外部キーが設計どおり
+    作成されたことを確認、実施後コンテナは削除した**（B07対応）
 - 保持するデータ:
   - `push_devices`: Expo Push Token（端末識別子）、platform、有効フラグ、最終送信日時
   - `push_tickets`: Expoが発行するticket ID、状態（pending/ok/error）、Expoの
     エラーコード文字列のみ。通知本文・トークン・レスポンス全文は保存しない
+  - `push_tickets`の**保持ポリシー（B09対応）**: 確定済み（ok/error）行は確認から
+    7日を超えたら日次で削除する。`pending`のまま7日を超えても削除しない
+    （receipt未確認のため）。削除件数は`push_tickets_cleaned`イベントでログに記録する
 - backup対象: 本notice反映時、migration実行前にPostgreSQL論理dumpを取得する（上記
   production変更セクション参照）。以降は既存のDB全体backupに含まれる
 - restore確認: 本変更単体でのrestore必要性なし（上記参照）
@@ -178,12 +219,14 @@ secret値は記載しない。
 - deploy前提: 本notice作成時点ではdeployしない。production反映はVPS管理側の個別承認を
   経てから実施する
 - deploy手順の変更: なし（既存の `scripts/deploy.ps1` をそのまま使う）
-- **deploy対象commitは1つに固定する**（B02指摘）。B03・B04対応（task_id: 20260902-007）を
-  含めた本release全体（1・2・3すべて）の単一のdeploy対象commitとして
-  `source_commit: d25f929` を確定した
+- **deploy対象commitは1つに固定する**（B02指摘）。B03〜B10対応
+  （task_id: 20260902-007, 20260902-008）を含めた本release全体（1・2・3すべて）の
+  単一のdeploy対象commitとして `source_commit` を確定する（本notice末尾のcommit確定を参照）
 - rollback方法: source archive退避と旧API image tag保全で旧バージョンへ戻せる。
   **`push_devices`・`push_tickets` テーブルは旧バージョンから参照されないため、
-  テーブルを残したままAPIイメージだけを戻せる**（DBロールバック不要）
+  テーブルを残したままAPIイメージだけを戻せる**（DBロールバック不要）。
+  migration自体が部分適用状態で失敗した場合の復旧手順は上記「production変更」節の
+  B07対応を参照
 - rollback不能条件: なし
 
 ## Health・テスト
@@ -227,16 +270,40 @@ secret値は記載しない。
   - 保持期間切れ: 作成から24時間超過した`pending`ticketが`ReceiptExpired`として
     自動的に閉じられることを確認
   - batch統合: receipt確認をExpo全断でも例外にせず`runDailyBatch`が正常完走することを確認
+- **B07（migration transaction安全性）実施内容**:
+  - 2つのmigration.sqlに明示的`BEGIN`/`COMMIT`を追加
+  - 編集前の内容で既に適用済みだったローカル開発DBは、該当2テーブル（実データなし、
+    検証用テストデータのみで確認後に削除済み）を削除し、Prismaの migration履歴からも
+    削除したうえで、編集後の内容で再適用して整合を取り直した
+  - **使い捨てPostgreSQL 16コンテナ（他の用途と分離した専用インスタンス）で、
+    全migration履歴（`20260611070615_init`〜`20260902130116_add_push_tickets`の計5件）を
+    真っさらな状態から`prisma migrate deploy`で適用し、全件成功を確認。`\d`で
+    `push_devices`・`push_tickets`のカラム・索引・外部キーが設計どおりであることを
+    直接確認した。実施後コンテナは完全に削除し残留なし**
+- **B08（receipt確認の独立schedule）動的確認（ローカルDB、検証データ削除済み）**:
+  - `checkPushReceipts`→`cleanupPushTickets`の一連呼び出しを直接実行し、
+    Expoから`status:'ok'`が返るticketが正しく`ok`へ更新され、`checkedAt`が
+    記録されることを確認
+  - 確認直後（保持期限内）はcleanupで削除されない（削除件数0）ことを確認
+- **B09（push_tickets保持ポリシー）動的確認（ローカルDB、検証データ削除済み）**:
+  - 確定から8日経過した`ok`・`error`のticket計2件が削除され、確定から1日の`ok`ticket、
+    および10日経過していても`pending`のままのticketは削除されずに残ることを確認
+    （削除件数=2、期待どおり）
+- 上記すべての検証後、既存データ（購入履歴29件・候補56件）が無傷であることを確認済み
 - 未実施テストと理由:
   - production containerでの実機確認は次回のproduction反映時にVPS管理側が実施
   - 実端末での通知受信確認は、APKビルド完了後に実施
+  - 実際のcron時刻（20:10 JST）到来を待った動作確認は未実施。関数を直接呼び出す形で
+    ロジックを検証済みだが、node-cronのスケジューリング自体（時刻起動）は
+    既存の`daily_batch`と同じ仕組みを流用しており、個別の起動タイミング確認は
+    production反映後の運用で確認する
 
 ## Log・監視
 
 - log量/形式/保存先変更: 保存先・形式（1行1JSON）とも変更なし
 - 新規event: `push_dispatched`（Expoが受理したことのみを示す。実配信完了は意味しない）、
   `push_receipt_checked`、`push_receipt_check_failed`、`push_send_failed`、
-  `push_device_registered`
+  `push_device_registered`、`push_tickets_cleaned`（B09対応、削除件数・保持日数を記録）
 - 既存eventへの追加: `job_end`（daily_batch）に `new_alerts`/`push_targeted`/`push_accepted` を追加
 - 新しいalert条件: `push_send_failed`・`push_receipt_check_failed` が連日継続する場合は、
   egress遮断・FCM credential不備・Expo側障害の可能性がある
@@ -246,10 +313,12 @@ secret値は記載しない。
 
 ## 未解決事項
 
-- **B03・B04対応後のVPS管理側再レビューが未実施**。本notice改訂後、再レビューを依頼する
-- **Android実機での通知受信確認**: FCM認証情報の設定は完了（commit `38ae8b2`）。
-  内部配布APK（`android-internal`プロファイル）のビルドを実施中。production反映とは
-  独立した作業
+- **B07〜B10対応後のVPS管理側再レビュー（第3回）が未実施**。本notice改訂後、再レビューを依頼する
+- **Android実機での通知受信確認**: FCM認証情報の設定・内部配布APKビルドは完了
+  （commit `38ae8b2`、APK配布URL: 別途チャットで案内済み）。実機で通知許可ダイアログの
+  表示までは確認できたが、APKがproduction API（migration未反映）を参照するため、
+  実際のトークン登録・通知配信の確認はproduction反映後に行う（production反映とは
+  独立した作業として既に完了）
 - iOS（Expo Go 運用）はリモートプッシュ非対応のため対象外。利用者了承済み
 - `node-cron`/`uuid`（moderate）、`xlsx`（high）の残存dependency auditは
   `OPS-P1-08` の別途判断事項のまま（本変更の対象外）
@@ -270,6 +339,7 @@ secret値は記載しない。
 - app owner: 2026-09-02、ユーザー本人がrelease全体（反映記録ログ・Gmail取込価格の
   信頼性判定・スマホプッシュ通知）の変更範囲、DBスキーマ追加、外部送信data（品目名・
   残日数・残数がExpo/Google FCMのサーバーを経由すること）を確認のうえ承認（B06対応）
-- VPS management review: 2026-09-02実施、blocked（B01〜B06）。本notice改訂により再レビュー待ち
+- VPS management review: 2026-09-02第1回実施・blocked（B01〜B06）→対応完了。
+  同日第2回実施・blocked（B07〜B10）→本notice改訂で対応完了。第3回レビュー待ち
 - production approval: 未承認
-- related task_id: 20260902-006, 20260902-007
+- related task_id: 20260902-006, 20260902-007, 20260902-008

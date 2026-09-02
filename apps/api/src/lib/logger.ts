@@ -24,6 +24,7 @@ export const LOG_EVENTS = {
   PUSH_RECEIPT_CHECKED: 'push_receipt_checked',
   PUSH_RECEIPT_CHECK_FAILED: 'push_receipt_check_failed',
   PUSH_DEVICE_REGISTERED: 'push_device_registered',
+  PUSH_TICKETS_CLEANED: 'push_tickets_cleaned',
 } as const;
 
 export const ERROR_KINDS = {

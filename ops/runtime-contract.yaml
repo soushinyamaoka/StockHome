@@ -20,6 +20,11 @@
 #   2026-09-02: VPS管理側の再review（notice_id: 20260902-STOCKHOME-004、blocked、B01〜B06）を
 #     受け、failure_mode/user_facing_functions/token機微情報扱いの事実整合を修正し、
 #     push_tickets テーブル追加（task_id: 20260902-007、receipt確認実装対応中）を反映。
+#   2026-09-02: VPS管理側の第2回review（notice_id: 20260902-STOCKHOME-004、blocked、B07〜B10）を
+#     受け、migration.sqlへの明示的transaction追加+使い捨てPostgreSQLでのrehearsal（B07）、
+#     receipt確認の独立schedule追加（B08）、push_ticketsの保持ポリシー追加（B09）、
+#     production baseline commitの訂正・failure_mode/token説明・external依存の事実整合（B10）を
+#     反映（task_id: 20260902-008）。
 
 schema_version: 1
 app: stockhome
@@ -83,8 +88,22 @@ data:
   migrations: automatic            # apps/api/Dockerfile の CMD が起動の都度 `prisma migrate deploy` を実行する
                                     # 未適用: 20260902073443_add_push_devices、20260902130116_add_push_tickets
                                     # （push_devices・push_tickets テーブルの新規作成のみ。CREATE TABLE + index + 外部キーだけで、
-                                    # 既存テーブルの変更・データ操作を含まない。ローカルDBで適用・動作確認済み。
+                                    # 既存テーブルの変更・データ操作を含まない。両migration.sqlともBEGIN/COMMITで明示的に
+                                    # 囲み、途中失敗時に中途半端な状態を残さない（VPS管理レビューB07対応）。
+                                    # 使い捨てPostgreSQLで全migration履歴(init〜push_tickets)を最初から適用するrehearsalを実施し、
+                                    # 全件成功を確認済み（B07対応）。ローカル開発DBでも個別適用・動作確認済み。
                                     # production は notice 20260902-STOCKHOME-004 の承認後に反映される。impact_level L3）
+  data_retention:
+    - table: push_tickets
+      policy: >-
+        status が ok/error（確定済み）になってから7日を超えたrowを日次で削除する
+        （pendingのまま7日を超えても削除しない。receiptがまだ確認できていないため）。
+        削除件数は push_tickets_cleaned イベントでログに残す（task_id 20260902-008、
+        B09対応。ローカルDBで動的確認済み。production未反映）。
+      backup_impact: >-
+        削除対象はExpoのticket ID・状態・エラーコードのみで、利用者データを含まない。
+        DB全体backupには削除前の状態が残り得るが、restore後に同じ保持ポリシーが
+        適用されるため運用上の問題はない。
 
 jobs:
   - name: daily_batch
@@ -95,27 +114,55 @@ jobs:
       構造化ログの event: job_start と job_end（同一 run_id）の対で判定できる。
       job_end.status が success/failure、job_start はあるが job_end が無ければ異常終了、
       予定時刻に job_start が無ければ未実行、と区別できる（task_id: 20260831-004 で実装、動的確認済み）。
+  - name: push_receipt_check_and_cleanup
+    mechanism: in-process           # daily_batch と同じ node-cron。未反映（notice 20260902-STOCKHOME-004）
+    definition: apps/api/src/server.ts 内の node-cron スケジュール定義（コード内）
+    schedule: "10 20 * * *"        # JST。daily_batch(19:55)の送信から約15分後（Expo推奨の確認間隔に合わせる。B08対応）
+    purpose: >-
+      Expo Push receiptの早期確認（push_ticketsのstatusをok/errorへ確定し、DeviceNotRegistered
+      端末をis_active=falseへ）と、確定済みticketの保持期限超過分の削除（B09対応）。
+      daily_batch冒頭でも同じreceipt確認を実行しており（前夜分の安全網）、本scheduleは
+      当夜分をExpoのreceipt保持期限(24時間)より十分前に確認するための独立実行。
+    success_signal: >-
+      構造化ログの event: push_receipt_checked（checked/ok/errored/deactivated件数）と
+      push_tickets_cleaned（削除件数）で判定できる。失敗時は push_receipt_check_failed を
+      warnで出し、daily_batch本体には影響しない（task_id 20260902-008で実装、ローカルDBで
+      動的確認済み：receipt確認→cleanupの一連呼び出し、8日前のok/error ticketのみ削除され
+      直近・未確認pendingは残ることを確認。production未反映）。
 
 dependencies:
   internal: []                     # 内部API依存なし（確認済み）
   external:                        # GAS（Gmail取込・ReadyGo通知）はGAS側からのアウトバウンドで本APIを呼ぶ関係であり、本APIからの外部依存ではない
-    - name: expo-push-service
+    - name: expo-push-service-send
       url: https://exp.host/--/api/v2/push/send
       direction: outbound          # APIコンテナ → インターネット（HTTPS）
       used_by: daily_batch         # 夜間バッチ(19:55 JST)が「新たに在庫アラートになった品目」を検知したときのみ送信。リクエスト毎の呼び出しは無い
       auth: none                   # Expo Push Token（端末が発行する送信先識別子）を本文に載せるのみ。APIキー・secretは使用しない。
                                     # secretではないが、漏えい時は第三者が任意の通知を送信できる送信先識別子であり機微情報として扱う。
-                                    # ログ・DBともトークン文字列は保持せず、DBには保存するがログには出さない（動的確認済み）
+                                    # push_devicesテーブルには保存するが、ログには一切出さない（動的確認済み）
       failure_mode: >-
-        HTTPエラー・例外はwarnログ(push_send_failed)を出して継続し、バッチ全体を失敗させない（動的確認済み: task_id 20260902-006）。
-        ただし task_id 20260902-006 時点では fetch に明示的timeoutが無く、429/5xxのretryも無かった
-        （VPS管理レビュー task_id 20260902-007 のB03で指摘・修正対応中）。また ticket（Expoが受理した
-        ことだけを示す）を accepted として数えており、FCM/APNsへの引き渡し・端末到達（receipt）は
-        未確認だった（同B04で指摘・receipt確認の実装対応中）。
+        1リクエストにNode 20の AbortSignal.timeout による明示的timeout(10秒)を設定し、
+        429/5xx・timeout・network errorに限定して最大3回・指数backoff(500ms/1000ms)・
+        1チャンク総上限30秒でretryする。それ以外の4xxは即座に諦める。すべて失敗しても
+        warnログ(push_send_failed)を出してバッチ全体は失敗させない
+        （task_id 20260902-007で実装、ローカルDBで動的確認済み：VPS管理レビューB03対応）。
       data_sent: >-
         通知タイトル・本文（在庫アラート対象の品目名と残日数・残数）と、宛先のExpo Push Token。
         認証情報・購入履歴・メールアドレス・世帯識別子は送らない。
         利用者が「品目名を含める」方針を選択済み（2026-09-02）。
+    - name: expo-push-service-receipts
+      url: https://exp.host/--/api/v2/push/getReceipts
+      direction: outbound
+      used_by: daily_batch         # 19:55のバッチ冒頭（前夜分の安全網）と、送信約15分後の独立scheduleの2回（B08対応）
+      auth: none
+      failure_mode: >-
+        送信endpointと同じtimeout/retry/backoffロジックを共有する（postJsonWithRetry）。
+        失敗時はwarnログ(push_receipt_check_failed)を出してバッチ全体を失敗させない
+        （task_id 20260902-007で実装、ローカルDBで動的確認済み：VPS管理レビューB04対応）。
+      data_sent: >-
+        Expoが発行したticket ID（送信先識別子ではない）の配列のみ。応答から得るのは
+        配信結果（ok/error）とExpoのエラーコード文字列のみで、push_ticketsテーブルへ保存する。
+        通知本文・トークン・レスポンス全文は保存もログ出力もしない。
 
 deploy:
   entry: npm run deploy（scripts/deploy.ps1）  # tar化 → scp → VPS上で docker compose -f docker-compose.prod.yml up -d --build api → /health ポーリング確認
