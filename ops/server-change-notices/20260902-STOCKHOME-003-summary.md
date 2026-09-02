@@ -173,7 +173,7 @@ secret値は記載しない。
 
 ## Approval
 
-- app owner: 未承認（ユーザー本人の確認待ち）
-- VPS management review: 未実施
-- production approval: 未承認
+- app owner: 2026-09-02、ユーザー本人が実装・通知内容を承認
+- VPS management review: 2026-09-02実施、blocked（VPS管理側の軽微文書修正commit/push待ち）
+- production approval: 2026-09-02、妻への通知・不使用確認後、ユーザーがtask `20260902-003`をVPS管理側のproduction反映計画で今すぐ実施することを最終確認。軽微文書修正のcommit/push完了まで実行待ち
 - related task_id: 20260902-001

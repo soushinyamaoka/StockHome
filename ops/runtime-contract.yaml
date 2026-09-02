@@ -128,14 +128,6 @@ user_impact:
 # 既知の未解決事項（隠さずそのまま記録する）
 known_gaps:
   - >-
-    graceful shutdown（SIGTERM/SIGINT → shutdown イベント → app.close）は実装・コードレビュー確認済みで、
-    プロセスを通常終了させた場合の動作パス（try/finallyの構造、二重実行防止フラグ）は問題ない。
-    ただしWindows開発環境では外部プロセスへSIGTERM相当を配送する標準手段がなく（Node.jsのシグナル
-    処理はWindows上ではCtrl+C由来のSIGINTのみ確実に動作する制約があるため）、実際のSIGTERM経路での
-    shutdownイベント出力は動的確認できていない（コードレビューのみ）。production はDocker/Linux
-    コンテナで稼働し、`docker compose stop`/`down` はコンテナへ正しくSIGTERMを送るため、この制約は
-    Windows開発環境固有のテスト限界であり、production動作への疑義ではない。
-  - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
   - >-
@@ -145,6 +137,10 @@ known_gaps:
 
 # 2026-08-31〜09-02 時点で解消済みの事項
 resolved_gaps:
+  - >-
+    task_id: 20260902-001 のローカルDocker検証で、正常起動中のcontainerへ`docker stop`による
+    Linux SIGTERMを送り、serverの`shutdown`イベント出力、終了コード0、SIGKILL猶予前の正常終了を
+    確認した。従来known_gapsに記録していたWindows開発環境由来のSIGTERM動的確認不足は解消済み。
   - >-
     task_id: 20260902-001 で解消。コンテナ起動時にPrisma CLI（`prisma migrate deploy`）・npmが
     出していた非JSON出力（1行1JSON MUST違反、`logging.format: plain`/`schema_version: null`の原因）を
