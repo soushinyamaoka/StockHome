@@ -19,3 +19,13 @@ todo.txt
 
 # ChatGPT Work / AIファイル受け渡し
 /work/ai_handoff/
+
+# Firebase (FCM) 設定。Android APIキーを含むため公開リポジトリには置かない。
+# ビルド時は EAS のファイル環境変数 GOOGLE_SERVICES_JSON から注入される
+# （app.config.js の android.googleServicesFile が参照）
+google-services.json
+
+# Firebase サービスアカウント秘密鍵（FCM V1）。EAS へアップロードするだけで
+# リポジトリには置かない。保管場所はリポジトリ外（C:\work\secrets\stockhome\）
+*firebase-adminsdk*.json
+*-service-account*.json

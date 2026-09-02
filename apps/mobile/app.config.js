@@ -40,6 +40,11 @@ export default {
     },
     android: {
       package: IS_DEV ? "com.example.stockhome.dev" : "com.example.stockhome",
+      // FCM 設定（プッシュ通知の配信に必要）。Android APIキーを含むため gitignore 済みで、
+      // EAS ビルド時はファイル環境変数 GOOGLE_SERVICES_JSON から注入される。
+      // ローカルに実ファイルがある場合はそれを使う（EAS 未設定でも prebuild が通るように）
+      googleServicesFile:
+        process.env.GOOGLE_SERVICES_JSON ?? "./google-services.json",
     },
     runtimeVersion: {
       policy: "sdkVersion",
