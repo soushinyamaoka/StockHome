@@ -349,7 +349,8 @@ secret値は記載しない。
 
 ## 未解決事項
 
-- **B11〜B12対応後のVPS管理側再レビュー（第4回）が未実施**。本notice改訂後、再レビューを依頼する
+- **VPS管理側第4回レビューは2026-09-03に完了し、B01〜B12解消として`accepted`判定済み**。
+  ただしproduction計画、利用者への事前通知・不使用確認、計画を特定した個別承認は未実施
 - **Android実機での通知受信確認**: FCM認証情報の設定・内部配布APKビルドは完了
   （commit `38ae8b2`、APK配布URL: 別途チャットで案内済み）。実機で通知許可ダイアログの
   表示までは確認できたが、APKがproduction API（migration未反映）を参照するため、
@@ -377,6 +378,6 @@ secret値は記載しない。
   残日数・残数がExpo/Google FCMのサーバーを経由すること）を確認のうえ承認（B06対応）
 - VPS management review: 2026-09-02第1回実施・blocked（B01〜B06）→対応完了。
   同日第2回実施・blocked（B07〜B10）→対応完了。同日第3回実施・blocked（B11〜B12）
-  →本notice改訂で対応完了。第4回レビュー待ち
+  →本notice改訂で対応完了。2026-09-03第4回実施・accepted（production承認とは別）
 - production approval: 未承認
 - related task_id: 20260902-006, 20260902-007, 20260902-008, 20260902-009
