@@ -6,7 +6,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 未確定（B11〜B12対応commit後に確定する）
+source_commit: 5cd6c66
 
 impact_level: L3
 
