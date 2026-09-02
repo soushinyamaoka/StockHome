@@ -15,6 +15,8 @@ export const LOG_EVENTS = {
   READYGO_ACK_FAILED: 'readygo_ack_failed',
   CANDIDATE_INTAKE_FAILED: 'candidate_intake_failed',
   DB_CLIENT_LOG: 'db_client_log',
+  MIGRATION_START: 'migration_start',
+  MIGRATION_END: 'migration_end',
 } as const;
 
 export const ERROR_KINDS = {
@@ -55,6 +57,9 @@ function isoWithOffset(date = new Date()): string {
   );
 }
 
+// 明示的にfd 1へ同期書き込みするdestination（プロセス強制終了時の最終行欠落を防ぐ）
+const destination = pino.destination({ dest: 1, sync: true });
+
 export const loggerOptions: LoggerOptions<'critical'> = {
   level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
   base: { app: 'stockhome' },
@@ -86,7 +91,11 @@ export const loggerOptions: LoggerOptions<'critical'> = {
 export type AppLogger = Logger<'critical'>;
 
 export function createAppLogger(): AppLogger {
-  return pino<'critical'>(loggerOptions);
+  return pino<'critical'>(loggerOptions, destination);
 }
 
 export const appLogger = createAppLogger();
+
+export function flushLogs(): void {
+  destination.flushSync();
+}

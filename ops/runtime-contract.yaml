@@ -10,6 +10,8 @@
 #     全体schema（runtime/network/config/data/jobs/dependencies/deploy/user_impact）へ拡張。
 #     初版はrepository内の正本とローカルDocker環境だけに基づいて作成した。
 #   2026-09-01: VPS管理側がproduction反映後にruntime、network、health、volume、loggingを実機照合。
+#   2026-09-02 (task_id: 20260902-001): container起動時のPrisma CLI/npm非JSON出力を
+#     entrypoint化で解消。logging.format/schema_versionを実測に基づき更新。
 
 schema_version: 1
 app: stockhome
@@ -100,16 +102,15 @@ deploy:
 
 logging:
   destinations: [stdout]     # Docker Compose (docker-compose.prod.yml) の logging driver が収集する。アプリ独自のログファイルは無い
-  format: plain               # コンテナ全体のstdoutとしては非準拠。apps/api/Dockerfile の CMD が
-                              # `npx prisma migrate deploy ... && node dist/server.js` で、
-                              # application logger起動前に実行される Prisma CLI（migrate deploy）と
-                              # npm自体の出力（例: npm notice のバージョン通知）が非JSONのまま混在する。
-                              # アプリ自身が出すログ（node起動後）は1行1JSON準拠だが、コンテナ全体の
-                              # ストリームとしては非準拠のため、正直に plain とする（HomeAssetの
-                              # 20260831-HOMEASSET-001 で同種の事象があり、同じ理由で plain/null 表記とした前例に合わせる）。
-                              # 修正（起動シーケンス全体のJSON化）は別notice・別task・別のproduction承認が必要な変更として扱う。
-  schema_version: null        # 上記のとおりコンテナ全体としては未準拠のため null（アプリ自身のログ行は仕様書§1.2-1.7に準拠しているが、
-                              # 起動時のCLI/npm出力が混在する限り「準拠」と断定しない）
+  format: structured          # container起動シーケンス全体を含め1行1JSONに統一済み（task_id: 20260902-001）。
+                              # apps/api/Dockerfile の CMD を `node dist/entrypoint.js` へ変更し、
+                              # apps/api/src/entrypoint.ts がPrisma CLI（migrate deploy）を子processとして
+                              # 実行、生のstdout/stderrはログへ出さず、migration_start/migration_end
+                              # （失敗時はprisma_error_codeのみ）へ変換する。成功時のみdist/server.jsを
+                              # 子processとして起動し、SIGTERM/SIGINTを転送する。ローカルでDockerイメージを
+                              # 実際にbuildし、成功系・失敗系・`docker stop`によるSIGTERM転送（shutdown
+                              # イベントの実出力を確認）のすべてで全出力行がJSON.parse可能であることを確認済み。
+  schema_version: 1           # 共通ログ規約v1準拠。container全体のstdout/stderrが1行1JSONになったことを実機（ローカルDocker）で確認済み
   contains_pii: false         # 実装済みの全ログ呼び出し箇所をコードレビュー・動的確認で検証: password/token/APIキー/メール本文・アドレス/メッセージID/品目名/query文字列付きURL/リクエスト・レスポンスボディを渡していない。
                               # DBエラー（Prismaエラー）はHTTPエラーハンドラで name/code のみをログへ渡し、5xxレスポンスも汎用メッセージのみを返す（task_id: 20260831-006、動的確認済み）。
                               # Prismaクライアント自身のerror/warnイベントもtarget（内部コンポーネント名）のみを渡し、message/metaは渡さない（task_id: 20260831-008、動的確認済み）。
@@ -135,9 +136,6 @@ known_gaps:
     コンテナで稼働し、`docker compose stop`/`down` はコンテナへ正しくSIGTERMを送るため、この制約は
     Windows開発環境固有のテスト限界であり、production動作への疑義ではない。
   - >-
-    コンテナ起動時のPrisma CLI（`prisma migrate deploy`）・npm自体の非JSON出力（logging.format参照）。
-    別notice・別production承認が必要な変更として、別途対応する。
-  - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
   - >-
@@ -145,8 +143,19 @@ known_gaps:
     xlsx 0.18.5のhighが残る。現構成での到達可能性は低いが、node-cron major update、xlsxの期限付き
     リスク受容・代替library化・runtime imageからのdevDependencies除外を個別に判断する必要がある。
 
-# 2026-08-31〜09-01 時点で解消済みの事項
+# 2026-08-31〜09-02 時点で解消済みの事項
 resolved_gaps:
+  - >-
+    task_id: 20260902-001 で解消。コンテナ起動時にPrisma CLI（`prisma migrate deploy`）・npmが
+    出していた非JSON出力（1行1JSON MUST違反、`logging.format: plain`/`schema_version: null`の原因）を
+    解消した。`apps/api/Dockerfile`のCMDを`node dist/entrypoint.js`へ変更し、新設した
+    `apps/api/src/entrypoint.ts`がmigrationを子processとして実行して`migration_start`/
+    `migration_end`（失敗時は`prisma_error_code`のみ、生出力は渡さない）へ変換し、成功時のみ
+    `dist/server.js`（無変更）を子processとして起動、SIGTERM/SIGINTを転送する。ローカルで
+    Dockerイメージを実際にbuildし、成功系（migration 3件・`startup`・`http_request`まで全行JSON、
+    query文字列非漏洩）、失敗系（DB接続不可でP1001、`server`未起動、コンテナ非0終了、
+    パスワード等の非混入）、`docker stop`によるSIGTERM転送（`shutdown`イベント実出力、
+    正常終了コード0）のすべてを実機確認済み。
   - >-
     task_id: 20260901-002 でOPS-P1-08 Phase Aをproduction反映。esbuild 0.28.2、fast-uri 3.1.6、
     find-my-way 9.9.0をruntime image内で確認し、API/shared scopeのnpm auditを6件から3件へ削減した。

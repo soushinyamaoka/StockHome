@@ -48,5 +48,6 @@ COPY --from=builder /app/apps/api/prisma /app/apps/api/prisma
 
 EXPOSE 4002
 
-# 起動時にマイグレーション適用 → サーバ起動
-CMD ["sh", "-c", "npx prisma migrate deploy --schema prisma/schema.prisma && node dist/server.js"]
+# 起動時: entrypointがmigrationを実行し、成功時のみserverを子processとして起動する。
+# migration失敗時は非0終了しserverを起動しない（apps/api/src/entrypoint.ts）
+CMD ["node", "dist/entrypoint.js"]
