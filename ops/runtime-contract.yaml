@@ -17,6 +17,9 @@
 #   2026-09-02 (task_id: 20260902-006): プッシュ通知の追加に伴い dependencies.external を
 #     [] から Expo Push Service へ更新（本APIから初の外向き通信）。data に push_devices
 #     テーブル追加を記録。production未反映（notice 20260902-STOCKHOME-004 で承認待ち）。
+#   2026-09-02: VPS管理側の再review（notice_id: 20260902-STOCKHOME-004、blocked、B01〜B06）を
+#     受け、failure_mode/user_facing_functions/token機微情報扱いの事実整合を修正し、
+#     push_tickets テーブル追加（task_id: 20260902-007、receipt確認実装対応中）を反映。
 
 schema_version: 1
 app: stockhome
@@ -78,9 +81,10 @@ data:
       backup_required: true
       regenerable: false
   migrations: automatic            # apps/api/Dockerfile の CMD が起動の都度 `prisma migrate deploy` を実行する
-                                    # 未適用: 20260902073443_add_push_devices（push_devices テーブルの新規作成のみ。
-                                    # CREATE TABLE + index + 外部キーだけで、既存テーブルの変更・データ操作を含まない。
-                                    # ローカルDBで適用・動作確認済み。production は notice 20260902-STOCKHOME-004 の承認後に反映される）
+                                    # 未適用: 20260902073443_add_push_devices、20260902130116_add_push_tickets
+                                    # （push_devices・push_tickets テーブルの新規作成のみ。CREATE TABLE + index + 外部キーだけで、
+                                    # 既存テーブルの変更・データ操作を含まない。ローカルDBで適用・動作確認済み。
+                                    # production は notice 20260902-STOCKHOME-004 の承認後に反映される。impact_level L3）
 
 jobs:
   - name: daily_batch
@@ -99,8 +103,15 @@ dependencies:
       url: https://exp.host/--/api/v2/push/send
       direction: outbound          # APIコンテナ → インターネット（HTTPS）
       used_by: daily_batch         # 夜間バッチ(19:55 JST)が「新たに在庫アラートになった品目」を検知したときのみ送信。リクエスト毎の呼び出しは無い
-      auth: none                   # Expo Push Token（端末が発行する送信先識別子）を本文に載せるのみ。APIキー・secretは使用しない
-      failure_mode: non-blocking   # 送信失敗・タイムアウト・到達不能はwarnログ(push_send_failed)を出して継続し、バッチ全体を失敗させない（動的確認済み: task_id 20260902-006）
+      auth: none                   # Expo Push Token（端末が発行する送信先識別子）を本文に載せるのみ。APIキー・secretは使用しない。
+                                    # secretではないが、漏えい時は第三者が任意の通知を送信できる送信先識別子であり機微情報として扱う。
+                                    # ログ・DBともトークン文字列は保持せず、DBには保存するがログには出さない（動的確認済み）
+      failure_mode: >-
+        HTTPエラー・例外はwarnログ(push_send_failed)を出して継続し、バッチ全体を失敗させない（動的確認済み: task_id 20260902-006）。
+        ただし task_id 20260902-006 時点では fetch に明示的timeoutが無く、429/5xxのretryも無かった
+        （VPS管理レビュー task_id 20260902-007 のB03で指摘・修正対応中）。また ticket（Expoが受理した
+        ことだけを示す）を accepted として数えており、FCM/APNsへの引き渡し・端末到達（receipt）は
+        未確認だった（同B04で指摘・receipt確認の実装対応中）。
       data_sent: >-
         通知タイトル・本文（在庫アラート対象の品目名と残日数・残数）と、宛先のExpo Push Token。
         認証情報・購入履歴・メールアドレス・世帯識別子は送らない。
@@ -141,7 +152,8 @@ logging:
 user_impact:
   direct_users: true           # 家庭内の利用者がモバイルアプリから直接使う
   client_apps: [stockhome-mobile]
-  user_facing_functions: ["購入登録", "在庫予測", "在庫アラート通知（ReadyGo経由）"]
+  user_facing_functions:
+    ["購入登録", "在庫予測", "在庫アラート通知（ReadyGo経由）", "在庫アラート通知（Expo Pushプッシュ通知、未反映・notice 20260902-STOCKHOME-004でVPS管理レビュー中）"]
 
 # 既知の未解決事項（隠さずそのまま記録する）
 known_gaps:

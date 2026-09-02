@@ -293,12 +293,35 @@ model PushDevice {
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
-  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  household Household      @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tickets   PushTicket[]
 
   @@index([householdId, isActive])
   @@index([userId])
   @@map("push_devices")
+}
+
+// Expo Push の送信チケット（receipt 確認用）
+// Expo は送信時に ticket を返すが、これは「Expo がペイロードを受理した」ことしか意味せず、
+// FCM/APNs への引き渡しや端末到達を保証しない。実配信の可否は receipt API を後から
+// 引いて確認する必要がある（Expo は receipt を概ね24時間保持する）。
+// 夜間バッチの冒頭で前回分の receipt を確認し、DeviceNotRegistered 等が返った端末を無効化する。
+model PushTicket {
+  id           String    @id @default(cuid())
+  pushDeviceId String    @map("push_device_id")
+  // Expo が返す receipt 取得用ID。端末識別子ではない
+  expoTicketId String    @unique @map("expo_ticket_id")
+  status       String    @default("pending") // pending | ok | error
+  // Expo のエラーコード（DeviceNotRegistered 等）のみ保持。メッセージ本文は保存しない
+  errorCode    String?   @map("error_code")
+  checkedAt    DateTime? @map("checked_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  device PushDevice @relation(fields: [pushDeviceId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@map("push_tickets")
 }
 
 // アプリ設定（GAS: app_config シート）

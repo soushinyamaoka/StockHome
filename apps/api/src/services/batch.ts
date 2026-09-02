@@ -14,7 +14,7 @@ import type { Item, StockSnapshot } from '@prisma/client';
 import { appLogger, ERROR_KINDS, LOG_EVENTS, safeErr, type AppLogger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { updateCountedInInventory, recalculateAllStocks } from './stockCalc';
-import { sendPushToHousehold } from './pushNotify';
+import { checkPushReceipts, sendPushToHousehold } from './pushNotify';
 
 interface AlertTarget {
   item: Item;
@@ -111,6 +111,20 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
   logger.info({ event: LOG_EVENTS.JOB_START, job: 'daily_batch', run_id: runId });
 
   try {
+    // 前回送信分のreceiptを確認し、実配信できなかった端末を無効化する。
+    // 失敗してもバッチ本体を止めない
+    try {
+      await checkPushReceipts(logger);
+    } catch (e) {
+      logger.warn({
+        event: LOG_EVENTS.PUSH_RECEIPT_CHECK_FAILED,
+        error_kind: ERROR_KINDS.INTERNAL,
+        job: 'daily_batch',
+        run_id: runId,
+        err: safeErr(e),
+      });
+    }
+
     // Step 1: counted_in_inventory 更新
     result.countedUpdated = await updateCountedInInventory();
     logger.info({
@@ -231,7 +245,7 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
           result.pushTargeted += push.targeted;
           result.pushAccepted += push.accepted;
           logger.info({
-            event: LOG_EVENTS.PUSH_SENT,
+            event: LOG_EVENTS.PUSH_DISPATCHED,
             job: 'daily_batch',
             run_id: runId,
             items: list.length,
