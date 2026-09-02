@@ -14,6 +14,9 @@
 #     entrypoint化で解消。logging.format/schema_versionを実測に基づき更新。
 #   2026-09-02 (task_id: 20260902-003): production反映後、起動ログ全行のJSON parse、
 #     migration成功、health、bridge、bind、DB image/volume不変をVPS管理側が確認。
+#   2026-09-02 (task_id: 20260902-006): プッシュ通知の追加に伴い dependencies.external を
+#     [] から Expo Push Service へ更新（本APIから初の外向き通信）。data に push_devices
+#     テーブル追加を記録。production未反映（notice 20260902-STOCKHOME-004 で承認待ち）。
 
 schema_version: 1
 app: stockhome
@@ -75,6 +78,9 @@ data:
       backup_required: true
       regenerable: false
   migrations: automatic            # apps/api/Dockerfile の CMD が起動の都度 `prisma migrate deploy` を実行する
+                                    # 未適用: 20260902073443_add_push_devices（push_devices テーブルの新規作成のみ。
+                                    # CREATE TABLE + index + 外部キーだけで、既存テーブルの変更・データ操作を含まない。
+                                    # ローカルDBで適用・動作確認済み。production は notice 20260902-STOCKHOME-004 の承認後に反映される）
 
 jobs:
   - name: daily_batch
@@ -88,8 +94,17 @@ jobs:
 
 dependencies:
   internal: []                     # 内部API依存なし（確認済み）
-  external: []                     # 本APIは外部HTTPを一切呼び出さない（fetch/axios/undici等いずれも apps/api/src に無いことを確認済み）。
-                                    # GAS（Gmail取込・ReadyGo通知）はGAS側からのアウトバウンドで本APIを呼ぶ関係であり、本APIからの外部依存ではない
+  external:                        # GAS（Gmail取込・ReadyGo通知）はGAS側からのアウトバウンドで本APIを呼ぶ関係であり、本APIからの外部依存ではない
+    - name: expo-push-service
+      url: https://exp.host/--/api/v2/push/send
+      direction: outbound          # APIコンテナ → インターネット（HTTPS）
+      used_by: daily_batch         # 夜間バッチ(19:55 JST)が「新たに在庫アラートになった品目」を検知したときのみ送信。リクエスト毎の呼び出しは無い
+      auth: none                   # Expo Push Token（端末が発行する送信先識別子）を本文に載せるのみ。APIキー・secretは使用しない
+      failure_mode: non-blocking   # 送信失敗・タイムアウト・到達不能はwarnログ(push_send_failed)を出して継続し、バッチ全体を失敗させない（動的確認済み: task_id 20260902-006）
+      data_sent: >-
+        通知タイトル・本文（在庫アラート対象の品目名と残日数・残数）と、宛先のExpo Push Token。
+        認証情報・購入履歴・メールアドレス・世帯識別子は送らない。
+        利用者が「品目名を含める」方針を選択済み（2026-09-02）。
 
 deploy:
   entry: npm run deploy（scripts/deploy.ps1）  # tar化 → scp → VPS上で docker compose -f docker-compose.prod.yml up -d --build api → /health ポーリング確認

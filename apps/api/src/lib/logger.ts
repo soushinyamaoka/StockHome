@@ -17,6 +17,9 @@ export const LOG_EVENTS = {
   DB_CLIENT_LOG: 'db_client_log',
   MIGRATION_START: 'migration_start',
   MIGRATION_END: 'migration_end',
+  PUSH_SEND_FAILED: 'push_send_failed',
+  PUSH_SENT: 'push_sent',
+  PUSH_DEVICE_REGISTERED: 'push_device_registered',
 } as const;
 
 export const ERROR_KINDS = {

@@ -11,9 +11,10 @@
 //   → POST /api/bridge/readygo-ack → ここで初めて notification_log を記録
 // （「Inbox 投入成功時のみ notification_log 記録」という GAS 版の方針を踏襲）
 import type { Item, StockSnapshot } from '@prisma/client';
-import { appLogger, LOG_EVENTS, type AppLogger } from '../lib/logger';
+import { appLogger, ERROR_KINDS, LOG_EVENTS, safeErr, type AppLogger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { updateCountedInInventory, recalculateAllStocks } from './stockCalc';
+import { sendPushToHousehold } from './pushNotify';
 
 interface AlertTarget {
   item: Item;
@@ -65,6 +66,9 @@ export interface BatchResult {
   processed: number;
   alerts: number;
   queued: boolean;
+  newAlerts: number;
+  pushTargeted: number;
+  pushAccepted: number;
 }
 
 function dailyBatchRunId(date = new Date()): string {
@@ -95,6 +99,9 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
     processed: 0,
     alerts: 0,
     queued: false,
+    newAlerts: 0,
+    pushTargeted: 0,
+    pushAccepted: 0,
   };
   let queuedHouseholds = 0;
   let status: 'success' | 'failure' = 'failure';
@@ -113,6 +120,14 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
       step: 'counted_update',
       counted_updated: result.countedUpdated,
     });
+
+    // 「新規に」アラートになった品目を出すため、再計算前の状態を控える。
+    // stock_snapshot は再計算で上書きされるため、事前に読まないと前回値が失われる
+    const previousAlerts = new Map<string, boolean>(
+      (await prisma.stockSnapshot.findMany({ select: { itemId: true, alertNeeded: true } })).map(
+        (s) => [s.itemId, s.alertNeeded]
+      )
+    );
 
     // Step 2-3: 在庫再計算 & snapshot 更新
     const recalculated = await recalculateAllStocks();
@@ -145,6 +160,11 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
       targets.push({ item, snapshot, reason: resolveReason(snapshot) });
     }
     result.alerts = targets.length;
+
+    // 前回 false → 今回 true の品目だけがプッシュ対象。
+    // 前回 snapshot が無い品目（新規登録直後など）も「新たに出た」として扱う
+    const newTargets = targets.filter((t) => previousAlerts.get(t.item.id) !== true);
+    result.newAlerts = newTargets.length;
 
     // 残日数の少ない順
     targets.sort(
@@ -194,6 +214,44 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
       });
     }
 
+    try {
+      if (newTargets.length > 0) {
+        const newByHousehold = new Map<string, AlertTarget[]>();
+        for (const target of newTargets) {
+          const list = newByHousehold.get(target.item.householdId) ?? [];
+          list.push(target);
+          newByHousehold.set(target.item.householdId, list);
+        }
+        for (const [householdId, list] of newByHousehold) {
+          const title = `そろそろ切れそう（${list.length}件）`;
+          const body = list
+            .map((t) => buildItemSummaryLine(t.item, t.snapshot, t.reason))
+            .join('\n');
+          const push = await sendPushToHousehold(householdId, title, body, logger);
+          result.pushTargeted += push.targeted;
+          result.pushAccepted += push.accepted;
+          logger.info({
+            event: LOG_EVENTS.PUSH_SENT,
+            job: 'daily_batch',
+            run_id: runId,
+            items: list.length,
+            targeted: push.targeted,
+            accepted: push.accepted,
+            failed: push.failed,
+            deactivated: push.deactivated,
+          });
+        }
+      }
+    } catch (e) {
+      logger.warn({
+        event: LOG_EVENTS.PUSH_SEND_FAILED,
+        error_kind: ERROR_KINDS.INTERNAL,
+        job: 'daily_batch',
+        run_id: runId,
+        err: safeErr(e),
+      });
+    }
+
     status = 'success';
     return result;
   } catch (e) {
@@ -213,6 +271,9 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
       recalculated: result.recalculated,
       processed: result.processed,
       alerts: result.alerts,
+      new_alerts: result.newAlerts,
+      push_targeted: result.pushTargeted,
+      push_accepted: result.pushAccepted,
       households: queuedHouseholds,
       queued: result.queued,
       ...(status === 'failure' ? { error_name: failureName, error_code: failureCode } : {}),

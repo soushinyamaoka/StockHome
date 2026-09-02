@@ -27,6 +27,7 @@ model Household {
   importCandidates    ImportOrderCandidate[]
   stockCorrectionLogs StockCorrectionLog[]
   appConfigs          AppConfig[]
+  pushDevices         PushDevice[]
 
   @@map("households")
 }
@@ -43,6 +44,7 @@ model User {
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   memberships HouseholdMember[]
+  pushDevices PushDevice[]
 
   @@map("users")
 }
@@ -272,6 +274,31 @@ model ReadyGoOutbox {
 
   @@index([status])
   @@map("readygo_outbox")
+}
+
+// プッシュ通知の送信先端末（Expo Push Token）
+// 夜間バッチが「新たに在庫アラートになった品目」を検知したとき、
+// 世帯内の有効な端末へ Expo Push API 経由で通知する。
+// 端末が通知を無効化・再インストールするとトークンが変わるため、
+// 送信失敗（DeviceNotRegistered）時は is_active=false にして送信対象から外す。
+model PushDevice {
+  id            String    @id @default(cuid())
+  householdId   String    @map("household_id")
+  userId        String    @map("user_id")
+  // Expo が発行する送信先識別子（ExponentPushToken[...]）。端末ごとに一意
+  expoPushToken String    @unique @map("expo_push_token")
+  platform      String // ios | android
+  isActive      Boolean   @default(true) @map("is_active")
+  lastPushAt    DateTime? @map("last_push_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([householdId, isActive])
+  @@index([userId])
+  @@map("push_devices")
 }
 
 // アプリ設定（GAS: app_config シート）

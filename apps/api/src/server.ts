@@ -18,6 +18,7 @@ import notificationRoutes from './routes/notifications';
 import dashboardRoutes from './routes/dashboard';
 import appConfigRoutes from './routes/appConfig';
 import bridgeRoutes from './routes/bridge';
+import pushDeviceRoutes from './routes/pushDevices';
 import {
   appLogger,
   ERROR_KINDS,
@@ -129,6 +130,7 @@ async function buildServer(logger: AppLogger) {
     await instance.register(notificationRoutes, { prefix: '/api/notifications' });
     await instance.register(dashboardRoutes, { prefix: '/api/dashboard' });
     await instance.register(appConfigRoutes, { prefix: '/api/app-config' });
+    await instance.register(pushDeviceRoutes, { prefix: '/api/push-devices' });
   });
 
   return app;

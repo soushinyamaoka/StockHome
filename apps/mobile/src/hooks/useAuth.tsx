@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { fetchMe, loginRequest, registerRequest, type AuthUser } from '../api/auth';
 import { getStoredToken, setStoredToken } from '../api/client';
+import { registerForPushNotifications } from '../lib/push';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -39,6 +40,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     })();
   }, []);
+
+  // ログイン済みになったらプッシュ通知の許可とトークン登録を試みる。
+  // 失敗（未許可・Expo Go・projectId未設定）はアプリの動作に影響させない
+  useEffect(() => {
+    if (!user) return;
+    registerForPushNotifications().catch(() => {});
+  }, [user?.id]);
 
   const login = useCallback(async (email: string, password: string) => {
     const res = await loginRequest(email, password);

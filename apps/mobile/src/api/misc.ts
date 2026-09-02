@@ -85,3 +85,11 @@ export async function fetchReflections(limit = 100): Promise<{ reflections: Refl
   const res = await api.get('/api/reflections', { params: { limit } });
   return res.data;
 }
+
+// --- プッシュ通知端末 ---
+export async function registerPushDevice(
+  expoPushToken: string,
+  platform: 'ios' | 'android'
+): Promise<void> {
+  await api.post('/api/push-devices', { expoPushToken, platform });
+}
