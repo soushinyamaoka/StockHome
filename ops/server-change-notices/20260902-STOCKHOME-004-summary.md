@@ -6,7 +6,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 6006bf4
+source_commit: 未確定（B11〜B12対応commit後に確定する）
 
 impact_level: L3
 
@@ -22,11 +22,25 @@ deployment_status: not_started
 
 ## 変更概要
 
-VPS管理側の第2回レビュー（`stockhome_push_notification_review_20260902.md`、
-notice `blocked`、blocker B07〜B10）を受けて改訂した（第1回レビューのB01〜B06は
-既に対応済み、`task_id: 20260902-007`）。
+VPS管理側の第3回レビュー（`stockhome_push_notification_review_20260902.md`、
+notice `blocked`、blocker B11〜B12）を受けて改訂した（第1回レビューのB01〜B06、
+第2回レビューのB07〜B10は既に対応済み・解消確認済み）。
 
-**第2回レビュー対応（B07〜B10、`task_id: 20260902-008`）**:
+**第3回レビュー対応（B11〜B12、`task_id: 20260902-009`）**:
+
+- B11: 新設した20:10 JSTの定期job（`push_receipt_check_and_cleanup`）が
+  空の`catch {}`で例外を握りつぶすだけで、`job_start`/`job_end`/`run_id`が
+  無かった点を修正。共通ログ規約に合わせ、開始時に`job_start`、完了時に同一
+  `run_id`で`job_end`（成功/失敗を区別）を出す構造にした。**receiptの問い合わせ自体が
+  最終的に失敗した場合（Expo応答なし・retry尽きた場合）は、例外が投げられなくても
+  job失敗として`job_end.status: failure`にする**（「例外が無い＝job成功」とみなさない）
+- B12: `push_tickets`の保持ポリシー説明を、`cleanupPushTickets`関数単体の挙動と、
+  実運用でのjob実行順序（receipt確認が先→cleanupが後、同一job内）を区別する形へ
+  訂正した。24時間を超えた`pending`はreceipt確認で`ReceiptExpired`（error）へ
+  既に閉じられてから7日後に削除対象となるため、「pendingのまま7日以上残る」ことは
+  実運用では起こらない
+
+**第2回レビュー対応（B07〜B10、`task_id: 20260902-008`、解消済み）**:
 
 - B07: 2つのmigration.sqlに明示的な`BEGIN`/`COMMIT`を追加し、途中失敗時に
   中途半端な状態を残さないようにした。使い捨てPostgreSQLで全migration履歴
@@ -96,7 +110,7 @@ GASブリッジ契約・ログ形式（1行1JSON）は不変。1・2の変更は
 | 夜間バッチ | 在庫再計算 → ReadyGoキュー投入 | 冒頭でreceipt確認（前回送信分の実配信結果）→ 同左（**無変更**）→ 新規アラート抽出とプッシュ送信を後段に追加 |
 | バッチのログ | `job_end` に既存集計 | `new_alerts`/`push_targeted`/`push_accepted` を追加。`push_dispatched`/`push_receipt_checked`/`push_receipt_check_failed`/`push_tickets_cleaned` イベントを新設 |
 | cron時刻（daily_batch） | `55 19 * * *`（JST） | 変更なし |
-| cron（新規） | なし | `10 20 * * *`（JST）でreceipt確認+ticket保持期限クリーンアップを独立実行（B08・B09対応） |
+| cron（新規） | なし | `10 20 * * *`（JST）でreceipt確認+ticket保持期限クリーンアップを独立実行。`job_start`/`job_end`（同一`run_id`）で成否を判別可能（B08・B09・B11対応） |
 | モバイル依存 | — | `expo-notifications` を追加（APIイメージには入らない） |
 
 ## 影響対象
@@ -205,9 +219,12 @@ secret値は記載しない。
   - `push_devices`: Expo Push Token（端末識別子）、platform、有効フラグ、最終送信日時
   - `push_tickets`: Expoが発行するticket ID、状態（pending/ok/error）、Expoの
     エラーコード文字列のみ。通知本文・トークン・レスポンス全文は保存しない
-  - `push_tickets`の**保持ポリシー（B09対応）**: 確定済み（ok/error）行は確認から
-    7日を超えたら日次で削除する。`pending`のまま7日を超えても削除しない
-    （receipt未確認のため）。削除件数は`push_tickets_cleaned`イベントでログに記録する
+  - `push_tickets`の**保持ポリシー（B09対応、B12で実行順序を明確化）**: `cleanupPushTickets`
+    関数単体は、確定済み（ok/error）行を確認から7日を超えたら削除し、`pending`は
+    対象にしない。ただし実際の20:10 jobはreceipt確認を先に実行するため、24時間を
+    超えた`pending`はcleanup実行前に`ReceiptExpired`（error）へ既に閉じられている。
+    そのため運用上「`pending`のまま7日以上残る」ことは起こらない。削除件数は
+    `push_tickets_cleaned`イベントでログに記録する
 - backup対象: 本notice反映時、migration実行前にPostgreSQL論理dumpを取得する（上記
   production変更セクション参照）。以降は既存のDB全体backupに含まれる
 - restore確認: 本変更単体でのrestore必要性なし（上記参照）
@@ -219,9 +236,10 @@ secret値は記載しない。
 - deploy前提: 本notice作成時点ではdeployしない。production反映はVPS管理側の個別承認を
   経てから実施する
 - deploy手順の変更: なし（既存の `scripts/deploy.ps1` をそのまま使う）
-- **deploy対象commitは1つに固定する**（B02指摘）。B03〜B10対応
-  （task_id: 20260902-007, 20260902-008）を含めた本release全体（1・2・3すべて）の
-  単一のdeploy対象commitとして `source_commit` を確定する（本notice末尾のcommit確定を参照）
+- **deploy対象commitは1つに固定する**（B02指摘）。B03〜B12対応
+  （task_id: 20260902-007, 20260902-008, 20260902-009）を含めた本release全体
+  （1・2・3すべて）の単一のdeploy対象commitとして `source_commit` を確定する
+  （本notice末尾のcommit確定を参照）
 - rollback方法: source archive退避と旧API image tag保全で旧バージョンへ戻せる。
   **`push_devices`・`push_tickets` テーブルは旧バージョンから参照されないため、
   テーブルを残したままAPIイメージだけを戻せる**（DBロールバック不要）。
@@ -289,6 +307,21 @@ secret値は記載しない。
   - 確定から8日経過した`ok`・`error`のticket計2件が削除され、確定から1日の`ok`ticket、
     および10日経過していても`pending`のままのticketは削除されずに残ることを確認
     （削除件数=2、期待どおり）
+- **B11（job_start/job_endペアリング）動的確認（ローカルDB、簡易loggerで出力を捕捉、
+  Expoへの実送信なし、検証データ削除済み）**:
+  - 正常系: `job_start`と`job_end`（同一`run_id`）が出力され、`job_end.status=success`
+  - **receipt確認が最終的に失敗（Expo常時503でretry尽きた）場合、個別warn
+    （`push_receipt_check_failed`）は出つつ、例外は投げられないが
+    `job_end.status=failure`になることを確認**（「例外が無い＝成功」とみなさない
+    というB11の要件どおり）
+  - `pending`が0件（何もすることがない）場合は`job_end.status=success`
+    （何もしないことは失敗ではない）
+  - 3パターンとも`job_start`と`job_end`の`run_id`が一致することを確認
+- **B12（retention実行順序）動的確認（ローカルDB、検証データ削除済み）**:
+  - 30時間前に作成した`pending`ticketをExpo応答に含めずに`runPushReceiptMaintenance`を
+    実行したところ、receipt確認の段階で`status: error`・`errorCode: ReceiptExpired`へ
+    正しく閉じられ、同じjob内のcleanupでは（`checkedAt`が実行直後のため7日未満）
+    まだ削除されずに残ることを確認。実行順序どおりの挙動であることを確認済み
 - 上記すべての検証後、既存データ（購入履歴29件・候補56件）が無傷であることを確認済み
 - 未実施テストと理由:
   - production containerでの実機確認は次回のproduction反映時にVPS管理側が実施
@@ -304,7 +337,10 @@ secret値は記載しない。
 - 新規event: `push_dispatched`（Expoが受理したことのみを示す。実配信完了は意味しない）、
   `push_receipt_checked`、`push_receipt_check_failed`、`push_send_failed`、
   `push_device_registered`、`push_tickets_cleaned`（B09対応、削除件数・保持日数を記録）
-- 既存eventへの追加: `job_end`（daily_batch）に `new_alerts`/`push_targeted`/`push_accepted` を追加
+- 既存eventへの追加: `job_end`（daily_batch）に `new_alerts`/`push_targeted`/`push_accepted` を追加。
+  **`job_start`/`job_end`（既存の共通イベント名を再利用、`job: push_receipt_check_and_cleanup`）を
+  20:10 jobにも追加し、`daily_batch`と同じ規約で成功/失敗/異常終了/未実行を区別できるようにした**
+  （B11対応）
 - 新しいalert条件: `push_send_failed`・`push_receipt_check_failed` が連日継続する場合は、
   egress遮断・FCM credential不備・Expo側障害の可能性がある
   （在庫計算・LINE通知は継続するため緊急度は低い）
@@ -313,7 +349,7 @@ secret値は記載しない。
 
 ## 未解決事項
 
-- **B07〜B10対応後のVPS管理側再レビュー（第3回）が未実施**。本notice改訂後、再レビューを依頼する
+- **B11〜B12対応後のVPS管理側再レビュー（第4回）が未実施**。本notice改訂後、再レビューを依頼する
 - **Android実機での通知受信確認**: FCM認証情報の設定・内部配布APKビルドは完了
   （commit `38ae8b2`、APK配布URL: 別途チャットで案内済み）。実機で通知許可ダイアログの
   表示までは確認できたが、APKがproduction API（migration未反映）を参照するため、
@@ -340,6 +376,7 @@ secret値は記載しない。
   信頼性判定・スマホプッシュ通知）の変更範囲、DBスキーマ追加、外部送信data（品目名・
   残日数・残数がExpo/Google FCMのサーバーを経由すること）を確認のうえ承認（B06対応）
 - VPS management review: 2026-09-02第1回実施・blocked（B01〜B06）→対応完了。
-  同日第2回実施・blocked（B07〜B10）→本notice改訂で対応完了。第3回レビュー待ち
+  同日第2回実施・blocked（B07〜B10）→対応完了。同日第3回実施・blocked（B11〜B12）
+  →本notice改訂で対応完了。第4回レビュー待ち
 - production approval: 未承認
-- related task_id: 20260902-006, 20260902-007, 20260902-008
+- related task_id: 20260902-006, 20260902-007, 20260902-008, 20260902-009

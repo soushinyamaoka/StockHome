@@ -27,7 +27,7 @@ import {
   type AppLogger,
 } from './lib/logger';
 import { runDailyBatch } from './services/batch';
-import { checkPushReceipts, cleanupPushTickets } from './services/pushNotify';
+import { runPushReceiptMaintenance } from './services/pushNotify';
 
 function routePattern(request: FastifyRequest): string {
   return request.routeOptions.url || 'unmatched';
@@ -192,13 +192,13 @@ process.on('unhandledRejection', (reason) => {
 
     // Expo Push receiptの早期確認: 送信(19:55バッチ内)から約15分後（Expo推奨の確認間隔）。
     // バッチ冒頭でも同じreceipt確認を行っており、そちらは前夜分の安全網として残す。
-    // 確認と同時に、保持期限を過ぎた確定済みticketの削除も行う
+    // 確認と同時に、保持期限を過ぎた確定済みticketの削除も行う。
+    // job_start/job_end(同一run_id)は runPushReceiptMaintenance 内で出す
     pushReceiptTask = cron.schedule(
       '10 20 * * *',
       async () => {
         try {
-          await checkPushReceipts(appLogger);
-          await cleanupPushTickets(appLogger);
+          await runPushReceiptMaintenance(appLogger);
         } catch {}
       },
       { timezone: 'Asia/Tokyo' }

@@ -34,10 +34,18 @@ export interface ReceiptCheckResult {
   ok: number;
   errored: number;
   deactivated: number;
+  // Expoへの問い合わせ自体が失敗した(retry尽きた)場合true。
+  // pendingが0件で問い合わせを行わなかった場合はfalse（両者は区別する。B11対応）
+  apiCallFailed: boolean;
 }
 
 export interface TicketCleanupResult {
   deleted: number;
+}
+
+export interface PushMaintenanceResult {
+  receipt: ReceiptCheckResult;
+  cleanup: TicketCleanupResult;
 }
 
 interface PostJsonResult {
@@ -127,7 +135,13 @@ async function postJsonWithRetry(
 export async function checkPushReceipts(
   logger: AppLogger = appLogger
 ): Promise<ReceiptCheckResult> {
-  const result: ReceiptCheckResult = { checked: 0, ok: 0, errored: 0, deactivated: 0 };
+  const result: ReceiptCheckResult = {
+    checked: 0,
+    ok: 0,
+    errored: 0,
+    deactivated: 0,
+    apiCallFailed: false,
+  };
   const cutoff = new Date(Date.now() - RECEIPT_LOOKBACK_HOURS * 60 * 60 * 1000);
 
   // 保持期間を過ぎた未確認ticketは確認できないので expired として閉じる
@@ -157,6 +171,7 @@ export async function checkPushReceipts(
       count: pending.length,
       attempts: sent.attempts,
     });
+    result.apiCallFailed = true;
     return result;
   }
 
@@ -206,9 +221,11 @@ export async function checkPushReceipts(
   return result;
 }
 
-// 確定済み(ok/error) ticketのうち、確認から一定期間を過ぎたものを削除する。
-// pendingのまま残っているticketは（receipt未確認のため）対象にしない。
-// 夜間バッチとは独立したscheduleから呼ぶ想定
+// 確定済み(ok/error) ticketのうち、確認(checkedAt)から一定期間を過ぎたものを削除する。
+// この関数単体は pending を対象にしないが、runPushReceiptMaintenance の実行順序
+// （checkPushReceipts → cleanupPushTickets）により、24時間を超えたpendingは
+// 直前の checkPushReceipts で ReceiptExpired(error) へ既に閉じられているため、
+// 実運用では「pendingのまま7日以上残る」ことは事実上起こらない（B12対応）。
 export async function cleanupPushTickets(
   logger: AppLogger = appLogger
 ): Promise<TicketCleanupResult> {
@@ -222,6 +239,84 @@ export async function cleanupPushTickets(
     retention_days: TICKET_RETENTION_DAYS,
   });
   return { deleted: deleted.count };
+}
+
+// job_start/job_end(同一run_id)で成功・失敗・異常終了・未実行を区別できるようにした
+// 20:10 JST 定期jobの本体（B11対応）。receipt確認・cleanupの失敗はこのjob自体の
+// 失敗として扱うが、daily_batch本体やAPIプロセス全体へは波及させない
+// （呼び出し元のcron callbackで例外を握りつぶす設計は変えない）。
+function maintenanceRunId(date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? '';
+  return (
+    `${value('year')}${value('month')}${value('day')}-` +
+    `${value('hour')}${value('minute')}${value('second')}`
+  );
+}
+
+export async function runPushReceiptMaintenance(
+  logger: AppLogger = appLogger
+): Promise<PushMaintenanceResult> {
+  const runId = maintenanceRunId();
+  const startedAt = Date.now();
+  const job = 'push_receipt_check_and_cleanup';
+  logger.info({ event: LOG_EVENTS.JOB_START, job, run_id: runId });
+
+  let status: 'success' | 'failure' = 'failure';
+  let failureName: string | undefined;
+  let failureCode: string | undefined;
+  let receipt: ReceiptCheckResult = {
+    checked: 0,
+    ok: 0,
+    errored: 0,
+    deactivated: 0,
+    apiCallFailed: false,
+  };
+  let cleanup: TicketCleanupResult = { deleted: 0 };
+
+  try {
+    receipt = await checkPushReceipts(logger);
+    cleanup = await cleanupPushTickets(logger);
+    if (receipt.apiCallFailed) {
+      // 個別のwarn(push_receipt_check_failed)は既に出ている。
+      // 「例外が無い=job成功」とはみなさず、job自体の失敗として扱う（B11対応）
+      failureName = 'PushReceiptCheckFailed';
+    } else {
+      status = 'success';
+    }
+  } catch (e) {
+    const err = safeErr(e);
+    failureName = err.name;
+    failureCode = err.code;
+  } finally {
+    const line = {
+      event: LOG_EVENTS.JOB_END,
+      job,
+      run_id: runId,
+      status,
+      duration_ms: Date.now() - startedAt,
+      checked: receipt.checked,
+      ok: receipt.ok,
+      errored: receipt.errored,
+      deactivated: receipt.deactivated,
+      cleaned: cleanup.deleted,
+      ...(status === 'failure' ? { error_name: failureName, error_code: failureCode } : {}),
+    };
+    if (status === 'success') logger.info(line);
+    else logger.error(line);
+  }
+
+  return { receipt, cleanup };
 }
 
 export async function sendPushToHousehold(

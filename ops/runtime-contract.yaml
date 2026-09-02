@@ -25,6 +25,11 @@
 #     receipt確認の独立schedule追加（B08）、push_ticketsの保持ポリシー追加（B09）、
 #     production baseline commitの訂正・failure_mode/token説明・external依存の事実整合（B10）を
 #     反映（task_id: 20260902-008）。
+#   2026-09-03: VPS管理側の第3回review（notice_id: 20260902-STOCKHOME-004、blocked、B11〜B12）を
+#     受け、push_receipt_check_and_cleanup jobにjob_start/job_end(同一run_id)ペアリングを追加し、
+#     receipt確認の最終失敗を例外なしでもjob失敗として検知するようにした（B11）。
+#     push_ticketsのretention説明を、cleanup関数単体の挙動とjob全体の実行順序（receipt確認が
+#     先でpendingを閉じてからcleanupする）を区別する形へ訂正した（B12）（task_id: 20260902-009）。
 
 schema_version: 1
 app: stockhome
@@ -96,8 +101,12 @@ data:
   data_retention:
     - table: push_tickets
       policy: >-
-        status が ok/error（確定済み）になってから7日を超えたrowを日次で削除する
-        （pendingのまま7日を超えても削除しない。receiptがまだ確認できていないため）。
+        cleanupPushTickets関数単体は、statusがok/error（確定済み）になってから7日を
+        超えたrowだけを削除対象とし、pendingは対象にしない。ただし実際の日次job
+        （push_receipt_check_and_cleanup）はreceipt確認を先に実行するため、24時間を
+        超えたpendingはcleanup実行前にReceiptExpired(error)へ既に閉じられている。
+        したがって運用上「pendingのまま7日以上残る」ことは起こらない（B12対応、
+        cleanup関数単体の挙動とjob全体の挙動を区別して記載）。
         削除件数は push_tickets_cleaned イベントでログに残す（task_id 20260902-008、
         B09対応。ローカルDBで動的確認済み。production未反映）。
       backup_impact: >-
@@ -123,12 +132,20 @@ jobs:
       端末をis_active=falseへ）と、確定済みticketの保持期限超過分の削除（B09対応）。
       daily_batch冒頭でも同じreceipt確認を実行しており（前夜分の安全網）、本scheduleは
       当夜分をExpoのreceipt保持期限(24時間)より十分前に確認するための独立実行。
+      実行順序はreceipt確認が先・cleanupが後（同一job内）。24時間を超えたpendingは
+      receipt確認でReceiptExpired(error)へ閉じられてから7日後に削除対象となるため、
+      「pendingのまま7日以上残る」ことは実運用では起こらない（B12対応）。
     success_signal: >-
-      構造化ログの event: push_receipt_checked（checked/ok/errored/deactivated件数）と
-      push_tickets_cleaned（削除件数）で判定できる。失敗時は push_receipt_check_failed を
-      warnで出し、daily_batch本体には影響しない（task_id 20260902-008で実装、ローカルDBで
-      動的確認済み：receipt確認→cleanupの一連呼び出し、8日前のok/error ticketのみ削除され
-      直近・未確認pendingは残ることを確認。production未反映）。
+      構造化ログの event: job_start と job_end（同一run_id、job: push_receipt_check_and_cleanup）の
+      対で判定できる。job_end.statusがsuccess/failure、job_startはあるがjob_endが無ければ
+      異常終了、予定時刻にjob_startが無ければ未実行、と区別できる。DB例外だけでなく、
+      receipt確認の最終失敗（Expo応答が無い/エラーで、retry尽きた場合）もjob自体の失敗として
+      job_end.status=failureにする（「例外が無い＝成功」とはみなさない。B11対応）。
+      個別のpush_receipt_check_failed warnは維持しつつ、job全体の成否をjob_start/job_endで
+      判定できるようにした（task_id 20260902-009で実装、ローカルDBで動的確認済み：正常系
+      success、receipt確認の最終失敗時の例外なしfailure検知、pending 0件時のsuccess、
+      24時間超過pendingが同一job内でReceiptExpiredへ閉じてから即座には削除されないこと、
+      の4パターンを確認。production未反映）。
 
 dependencies:
   internal: []                     # 内部API依存なし（確認済み）
