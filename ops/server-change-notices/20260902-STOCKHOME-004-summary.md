@@ -33,9 +33,9 @@ source_commit `ade30be`、`verified`）以降の**未反映変更すべて**を�
 1. **反映記録ログ**（`267a0e6`）: 読み取り専用API `GET /api/reflections` とモバイル画面の追加
 2. **Gmail取込価格の信頼性判定**（`cb6c871`）: 検出金額を無条件に単価保存しない修正。
    候補確定APIに任意の `price` フィールドを追加
-3. **スマホプッシュ通知**（`b48df2e` 以降、対応中）: 在庫アラートが新たに発生した品目を
-   Expo Push Service経由で通知する。B03（timeout/retry未実装）・B04（receipt未確認）の
-   修正を実装中（task_id: 20260902-007）
+3. **スマホプッシュ通知**（`b48df2e`〜`d25f929`）: 在庫アラートが新たに発生した品目を
+   Expo Push Service経由で通知する。VPS管理レビューで指摘されたB03（timeout/retry）・
+   B04（receipt確認）は修正済み（task_id: 20260902-007）
 
 配信経路は Expo Push Service（`https://exp.host`）。夜間バッチ（19:55 JST）が
 在庫再計算の直後に、前回 `alert_needed=false` から今回 `true` へ変わった品目だけを
@@ -178,9 +178,9 @@ secret値は記載しない。
 - deploy前提: 本notice作成時点ではdeployしない。production反映はVPS管理側の個別承認を
   経てから実施する
 - deploy手順の変更: なし（既存の `scripts/deploy.ps1` をそのまま使う）
-- **deploy対象commitは1つに固定する**（B02指摘）。B03・B04対応（task_id: 20260902-007）の
-  実装・動的検証・commitが完了した時点のHEADを、本release全体（1・2・3すべて）の
-  単一のdeploy対象commitとし、本noticeの `source_commit` を確定させる
+- **deploy対象commitは1つに固定する**（B02指摘）。B03・B04対応（task_id: 20260902-007）を
+  含めた本release全体（1・2・3すべて）の単一のdeploy対象commitとして
+  `source_commit: d25f929` を確定した
 - rollback方法: source archive退避と旧API image tag保全で旧バージョンへ戻せる。
   **`push_devices`・`push_tickets` テーブルは旧バージョンから参照されないため、
   テーブルを残したままAPIイメージだけを戻せる**（DBロールバック不要）
@@ -204,7 +204,7 @@ secret値は記載しない。
   セット数2は自動確定を保留、価格なしは自動確定、数量不審は既存ガードで保留、
   手動上書きは指定値を保存することを確認
 
-### プッシュ通知（`b48df2e` 以降、B03・B04対応中）
+### プッシュ通知（`b48df2e`〜`d25f929`）
 
 - 静的: shared/api/mobile ビルド成功、`console.*` 0件、`package-lock.json` に
   `expo`/`react`/`react-native` 本体のversion変更なし
@@ -246,8 +246,7 @@ secret値は記載しない。
 
 ## 未解決事項
 
-- **task_id 20260902-007（B03: timeout/retry、B04: receipt確認）が完了するまで、
-  本noticeは `source_commit` 未確定のまま**。完了後にVPS管理側へ再レビューを依頼する
+- **B03・B04対応後のVPS管理側再レビューが未実施**。本notice改訂後、再レビューを依頼する
 - **Android実機での通知受信確認**: FCM認証情報の設定は完了（commit `38ae8b2`）。
   内部配布APK（`android-internal`プロファイル）のビルドを実施中。production反映とは
   独立した作業
@@ -257,7 +256,7 @@ secret値は記載しない。
 
 ## 希望時期
 
-未定（B03・B04完了、VPS管理側の再レビュー、ネットワーク面の継続確認後に調整）
+未定（VPS管理側の再レビュー、ネットワーク面の継続確認後に調整）
 
 ## VPS管理チャットへの引き継ぎ
 
