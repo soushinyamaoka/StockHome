@@ -18,7 +18,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_started
+deployment_status: verified
 
 ## 変更概要
 
@@ -68,13 +68,11 @@ port・bind・URL・health・DB schema・API contract・env変数名は不変。
 ## production変更
 
 - 必要性: あり（次回のDocker build・container入れ替えでentrypoint変更が反映される）
-- 想定作業: `scripts/deploy.ps1`（`npm run deploy`）によるcontainer rebuild・入れ替え。
-  本notice作成時点では未実施
-- downtime: brief-restart（apiコンテナのみ再起動。postgresコンテナ・DBデータは変更しない）
-- maintenance window: 未定（VPS管理側の承認後に確定）
+- 実施結果: 2026-09-02 14:22 JST、VPS管理側が承認済みtask `20260902-003`としてAPI container imageを更新
+- downtime: API container入れ替え時に短時間再起動。health待機中の一時的な空応答後、internal/publicとも200へ復帰
+- maintenance window: 妻への通知・不使用確認後に実施
 
-`production_change: required`のため、`deployment_status: not_started`のまま
-VPS管理側へ引き継ぐ。
+新API image `sha256:080d206c1405f5f4837f817137bcf66584967003013049610f5e669228d92598`を反映し、API/DB稼働、health、bridge、bind、DB image/volume不変、起動ログを確認した。productionの進行状態はVPS管理側受理台帳を正本とする。
 
 ## 利用者への影響
 
@@ -83,7 +81,7 @@ VPS管理側へ引き継ぐ。
   レスポンス形状、認証方式、DB契約は変更しないが、将来の反映時はcontainer入れ替え中の
   短時間にAPI requestが失敗する可能性がある
 - 通知方法: 事前通知が必要かは、実施時刻と想定停止時間を含むproduction計画をVPS管理側で
-  作成する際に判断する
+  作成する際に判断する。2026-09-02は妻への事前通知・不使用確認後に実施し、反映後の利用者影響は確認されていない
 
 ## env・secret contract
 
@@ -103,14 +101,9 @@ secret値は記載しない。
 
 ## Deploy・rollback
 
-- deploy前提: 本notice作成時点ではdeployしない。production反映はVPS管理側の個別承認を
-  経てから実施する
+- deploy前提: VPS管理側review、妻への通知・不使用確認、task `20260902-003`の個別承認後に実施済み
 - deploy手順の変更: なし（既存の`scripts/deploy.ps1`／`docker compose -f docker-compose.prod.yml up -d --build api`をそのまま使う）。APIコンテナ内部のCMDのみ変更
-- rollback方法: 本変更はDB schema・永続データを変更しないため、既存notice
-  （`20260831-STOCKHOME-001`、`20260901-STOCKHOME-002`）のDeploy・rollback節、および
-  過去のproduction反映実行記録（`stockhome_deployment_plan_20260901.md`、
-  `stockhome_dependency_phase_a_deployment_plan_20260901.md`）と同様の手順
-  （source archive退避、旧API image tag記録）が適用できる
+- rollback方法: 旧sourceを`/home/deploy/stockhome/backups/deploy-20260902-003/source-before.tgz`、旧API imageを`stockhome-api:rollback-20260902-003`として保全。旧imageを`stockhome-api:latest`へ戻し、同じComposeと既存`.env`でAPIだけを再作成する手順を確定済み
 - rollback不能条件: なし（DB schema・永続データの変更を伴わないため、DBロールバックは不要）
 
 ## Health・テスト
@@ -134,8 +127,21 @@ secret値は記載しない。
   達する前）で正常終了すること
 - 結果: 全ビルド成功、`console.*` 0件、`server.ts`差分なし、上記Docker動的検証
   （成功系・失敗系・signal転送）すべて成功
-- 未実施テストと理由: production containerでの実機確認は次回のproduction反映時に
-  VPS管理側が実施する
+- production検証: API/DB running、internal/public health 200、未認証bridge 401、bind `127.0.0.1:4002`、restart count 0、DB image/volume不変を確認
+- 起動ログ検証: 7行すべてJSON、必須field欠落0、`migration_start` 1件、成功した`migration_end` 1件、`startup` 1件、critical/failure/禁止pattern 0件
+
+## Production実施結果
+
+- production task: `20260902-003`
+- 実施開始: 2026-09-02 14:22:46 JST
+- source: `7d18a32fcdcc60379d861225a11911d08c95da39`
+- artifact SHA-256: `4e1af019aca536b74a769fcc8ce1a8a9b2755a8f4e748f6cbd14b136458408cc`（local/VPS一致）
+- 旧source backup SHA-256: `738b3019e4512be7691f05ac8c551fc8fb7421fb3b2a586c71571f95ab5faa18`
+- 旧API image: `sha256:2398c455102232bff61c5d85724eb4d1d6a7684797120b9ecf0a58dd381e7bc0`
+- 新API image: `sha256:080d206c1405f5f4837f817137bcf66584967003013049610f5e669228d92598`
+- rollback: 条件に該当せず未実施。rollback source/imageは保全済み
+- data: DB containerを停止・再作成せず、schema/migration/data/volume変更なし。計画どおりDB dumpなし
+- cleanup: local/remote転送artifact、一時検証script、deploy lockを削除済み
 
 ## Log・監視
 
@@ -162,7 +168,7 @@ secret値は記載しない。
 
 ## 希望時期
 
-未定
+2026-09-02に反映・検証済み。
 
 ## VPS管理チャットへの引き継ぎ
 
@@ -174,6 +180,6 @@ secret値は記載しない。
 ## Approval
 
 - app owner: 2026-09-02、ユーザー本人が実装・通知内容を承認
-- VPS management review: 2026-09-02実施、blocked（VPS管理側の軽微文書修正commit/push待ち）
-- production approval: 2026-09-02、妻への通知・不使用確認後、ユーザーがtask `20260902-003`をVPS管理側のproduction反映計画で今すぐ実施することを最終確認。軽微文書修正のcommit/push完了まで実行待ち
+- VPS management review: 2026-09-02受理・production検証完了
+- production approval: 2026-09-02、妻への通知・不使用確認後、ユーザーがtask `20260902-003`をVPS管理側のproduction反映計画で今すぐ実施することを最終確認
 - related task_id: 20260902-001

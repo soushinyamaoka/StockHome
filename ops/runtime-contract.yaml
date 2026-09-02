@@ -12,14 +12,16 @@
 #   2026-09-01: VPS管理側がproduction反映後にruntime、network、health、volume、loggingを実機照合。
 #   2026-09-02 (task_id: 20260902-001): container起動時のPrisma CLI/npm非JSON出力を
 #     entrypoint化で解消。logging.format/schema_versionを実測に基づき更新。
+#   2026-09-02 (task_id: 20260902-003): production反映後、起動ログ全行のJSON parse、
+#     migration成功、health、bridge、bind、DB image/volume不変をVPS管理側が確認。
 
 schema_version: 1
 app: stockhome
 
 canonical_repo: https://github.com/soushinyamaoka/StockHome.git
 canonical_ref: main
-updated_at: 2026-09-01
-verified_against_runtime: 2026-09-01
+updated_at: 2026-09-02
+verified_against_runtime: 2026-09-02
 
 runtime:
   type: docker-compose
@@ -111,6 +113,7 @@ logging:
                               # 実際にbuildし、成功系・失敗系・`docker stop`によるSIGTERM転送（shutdown
                               # イベントの実出力を確認）のすべてで全出力行がJSON.parse可能であることを確認済み。
   schema_version: 1           # 共通ログ規約v1準拠。container全体のstdout/stderrが1行1JSONになったことを実機（ローカルDocker）で確認済み
+                              # 2026-09-02のproduction反映後、起動ログ7行すべてのJSON parse成功、必須field、migration成功を確認済み
   contains_pii: false         # 実装済みの全ログ呼び出し箇所をコードレビュー・動的確認で検証: password/token/APIキー/メール本文・アドレス/メッセージID/品目名/query文字列付きURL/リクエスト・レスポンスボディを渡していない。
                               # DBエラー（Prismaエラー）はHTTPエラーハンドラで name/code のみをログへ渡し、5xxレスポンスも汎用メッセージのみを返す（task_id: 20260831-006、動的確認済み）。
                               # Prismaクライアント自身のerror/warnイベントもtarget（内部コンポーネント名）のみを渡し、message/metaは渡さない（task_id: 20260831-008、動的確認済み）。
