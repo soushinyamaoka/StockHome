@@ -267,8 +267,9 @@ secret値は記載しない。
 
 ## Approval
 
-- app owner: 未承認（B01〜B05対応後、release全体の変更範囲と外部送信dataを含めて
-  ユーザー本人の確認を得る。B06対応）
+- app owner: 2026-09-02、ユーザー本人がrelease全体（反映記録ログ・Gmail取込価格の
+  信頼性判定・スマホプッシュ通知）の変更範囲、DBスキーマ追加、外部送信data（品目名・
+  残日数・残数がExpo/Google FCMのサーバーを経由すること）を確認のうえ承認（B06対応）
 - VPS management review: 2026-09-02実施、blocked（B01〜B06）。本notice改訂により再レビュー待ち
 - production approval: 未承認
 - related task_id: 20260902-006, 20260902-007
