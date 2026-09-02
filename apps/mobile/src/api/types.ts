@@ -105,6 +105,8 @@ export interface CandidateDto {
   parseResult: string | null;
   createdAt: string;
   updatedAt: string;
+  priceReliable: boolean;
+  priceHoldReason: string | null;
   // 確定/自動確定済み候補の購入履歴・在庫への反映状況
   reflection?: {
     matchedItemName: string;

@@ -35,6 +35,46 @@ function resolvePurchaseQty(detectedQty: number | null, defaultPurchaseQty: numb
   return { qty: sets * unitsPerSet, sets, rawSets, unitsPerSet, suspicious };
 }
 
+// 検出価格が「1セットの単価」として信頼できるかを判定する。
+// パーサーはセット数と金額を別々に拾うため、セット数が2以上のときは
+// 検出金額が単価なのか明細小計なのかを区別できない（実データで確認済み）。
+// 区別できない金額をそのまま単価として保存すると価格統計が狂うため、
+// 数量ガードと同様に自動確定を保留して手動確認へ回す。
+// qtySuspicious（セット数の取り違え）のときは、同じ解析から来た金額も同様に
+// 当てにならないため、1セット扱いに丸めた結果だけを見て信頼してはいけない。
+function resolvePriceReliability(
+  detectedPrice: number | null,
+  sets: number,
+  qtySuspicious: boolean
+) {
+  if (detectedPrice == null) return { reliable: true as const, holdReason: null };
+  if (qtySuspicious) {
+    return {
+      reliable: false as const,
+      holdReason: `数量の解析が不確かなため、検出金額 ${detectedPrice} 円も単価として信頼できません`,
+    };
+  }
+  if (sets > 1) {
+    return {
+      reliable: false as const,
+      holdReason: `検出金額 ${detectedPrice} 円が単価か小計か判別できません（検出セット数 ${sets}）`,
+    };
+  }
+  return { reliable: true as const, holdReason: null };
+}
+
+// 候補単体から価格の信頼性を判定する（品目に依存しない）。一覧表示・自動確定判定の
+// 双方から使う
+export function candidatePriceReliability(
+  detectedQty: number | null,
+  detectedPrice: number | null
+) {
+  const rawSets = Math.max(1, Math.round(detectedQty ?? 1));
+  const suspicious = rawSets > MAX_PLAUSIBLE_SETS;
+  const sets = suspicious ? 1 : rawSets;
+  return resolvePriceReliability(detectedPrice, sets, suspicious);
+}
+
 async function getDeliveryBufferDays(householdId: string): Promise<number> {
   const config = await prisma.appConfig.findUnique({
     where: {
@@ -52,7 +92,8 @@ export async function createPurchaseLogFromCandidate(
   candidate: ImportOrderCandidate,
   matchedItemId: string,
   confirmedByUserId: string | null,
-  sourceType: 'gmail_auto' | 'gmail_auto_confirmed'
+  sourceType: 'gmail_auto' | 'gmail_auto_confirmed',
+  priceOverride?: number | null
 ) {
   const item = await prisma.item.findFirst({
     where: { id: matchedItemId, householdId: candidate.householdId, isActive: true },
@@ -61,10 +102,19 @@ export async function createPurchaseLogFromCandidate(
     throw Object.assign(new Error('品目が見つからないか削除済みです'), { statusCode: 404 });
   }
 
-  const { qty, suspicious, rawSets, unitsPerSet } = resolvePurchaseQty(
+  const { qty, sets, suspicious, rawSets, unitsPerSet } = resolvePurchaseQty(
     candidate.detectedQty,
     item.defaultPurchaseQty
   );
+  const priceCheck = resolvePriceReliability(candidate.detectedPrice, sets, suspicious);
+  // 明示的に単価が渡されたらそれを最優先。渡されず信頼できない検出金額しか無い場合は、
+  // 誤った単価を残さないため保存しない（price 未入力として扱う）
+  const price =
+    priceOverride !== undefined
+      ? priceOverride
+      : priceCheck.reliable
+        ? (candidate.detectedPrice ?? null)
+        : null;
 
   const bufferDays = await getDeliveryBufferDays(candidate.householdId);
   const mailDate = jstDateOnly(candidate.mailDate);
@@ -72,9 +122,16 @@ export async function createPurchaseLogFromCandidate(
   const counted = inventoryEffectiveAt <= todayDateOnly();
 
   const baseNote = `自動取込: ${candidate.itemNameRaw ?? ''}`;
-  const note = suspicious
+  const noteBase = suspicious
     ? `${baseNote}（数量要確認: 検出${rawSets}×${unitsPerSet}→1セット扱い）`
     : baseNote;
+  const priceNote =
+    priceOverride !== undefined && priceOverride !== null
+      ? `／単価: 手動入力 ${priceOverride}円（検出 ${candidate.detectedPrice ?? 'なし'}円）`
+      : !priceCheck.reliable
+        ? `／単価: 未保存（${priceCheck.holdReason}）`
+        : '';
+  const note = `${noteBase}${priceNote}`;
 
   const user = confirmedByUserId
     ? await prisma.user.findUnique({ where: { id: confirmedByUserId } })
@@ -86,7 +143,7 @@ export async function createPurchaseLogFromCandidate(
       itemId: matchedItemId,
       purchasedAt: mailDate,
       qty,
-      price: candidate.detectedPrice ?? null,
+      price,
       source: 'gmail',
       sourceType,
       externalVendor: candidate.vendor,
@@ -182,11 +239,23 @@ async function tryAutoConfirmCandidate(
 
   if (target) {
     // 数量が不審なら自動反映せず手動確認へ（過大カウント防止）
-    const { suspicious, rawSets } = resolvePurchaseQty(candidate.detectedQty, target.defaultPurchaseQty);
+    const { suspicious, rawSets, sets } = resolvePurchaseQty(candidate.detectedQty, target.defaultPurchaseQty);
     if (suspicious) {
       await prisma.importOrderCandidate.update({
         where: { id: candidate.id },
         data: { parseResult: `自動確定保留: 数量要確認（検出セット数 ${rawSets}）。手動で確認してください` },
+      });
+      return;
+    }
+    // 検出金額が単価か小計か判別できない場合も手動確認へ（誤った単価の保存防止）
+    // ここに来る時点で suspicious は false（直前の数量ガードで return 済み）
+    const priceCheck = resolvePriceReliability(candidate.detectedPrice, sets, suspicious);
+    if (!priceCheck.reliable) {
+      await prisma.importOrderCandidate.update({
+        where: { id: candidate.id },
+        data: {
+          parseResult: `自動確定保留: 単価要確認。${priceCheck.holdReason}。手動で1セットの単価を確認してください`,
+        },
       });
       return;
     }

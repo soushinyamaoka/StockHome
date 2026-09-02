@@ -9,6 +9,7 @@ import type {
   StockCorrectionLog,
   NotificationLog,
 } from '@prisma/client';
+import { candidatePriceReliability } from '../services/candidateIntake';
 import { formatDateOnly } from './date';
 
 export function serializeItem(item: Item) {
@@ -87,6 +88,7 @@ export function serializeRuntimeState(s: ItemRuntimeState | null) {
 }
 
 export function serializeCandidate(c: ImportOrderCandidate) {
+  const price = candidatePriceReliability(c.detectedQty, c.detectedPrice);
   return {
     id: c.id,
     vendor: c.vendor,
@@ -106,6 +108,8 @@ export function serializeCandidate(c: ImportOrderCandidate) {
     parseResult: c.parseResult,
     createdAt: c.createdAt.toISOString(),
     updatedAt: c.updatedAt.toISOString(),
+    priceReliable: price.reliable,
+    priceHoldReason: price.holdReason,
   };
 }
 

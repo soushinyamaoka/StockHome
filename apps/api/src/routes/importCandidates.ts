@@ -101,7 +101,8 @@ const importCandidateRoutes: FastifyPluginAsync = async (app) => {
       candidate,
       data.matchedItemId,
       req.auth.userId,
-      'gmail_auto'
+      'gmail_auto',
+      data.price ?? undefined
     );
 
     const updated = await prisma.importOrderCandidate.update({

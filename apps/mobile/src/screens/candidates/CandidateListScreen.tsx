@@ -25,6 +25,7 @@ import { Card } from '../../components/Card';
 import { Button } from '../../components/Button';
 import { ItemPicker } from '../../components/ItemPicker';
 import { StampBadge } from '../../components/StampBadge';
+import { TextField } from '../../components/TextField';
 import { COLORS, FONTS, RADIUS, SPACING } from '../../theme';
 
 export default function CandidateListScreen() {
@@ -32,6 +33,7 @@ export default function CandidateListScreen() {
   const [includeResolved, setIncludeResolved] = useState(false);
   // 候補ごとに選択中の品目を保持
   const [selections, setSelections] = useState<Record<string, string>>({});
+  const [priceInputs, setPriceInputs] = useState<Record<string, string>>({});
   const queryClient = useQueryClient();
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
@@ -49,8 +51,8 @@ export default function CandidateListScreen() {
   };
 
   const confirmMutation = useMutation({
-    mutationFn: ({ id, matchedItemId }: { id: string; matchedItemId: string }) =>
-      confirmCandidate(id, matchedItemId),
+    mutationFn: ({ id, matchedItemId, price }: { id: string; matchedItemId: string; price?: number }) =>
+      confirmCandidate(id, matchedItemId, price),
     onSuccess: () => {
       invalidate();
       Alert.alert('確定完了', '購入履歴に反映しました');
@@ -72,6 +74,8 @@ export default function CandidateListScreen() {
     const statusColor = COLORS.candidate[c.candidateStatus] ?? COLORS.inkFaint;
     const resolved = isResolved(c.candidateStatus);
     const matchedItem = c.matchedItemId ? items.find((i) => i.id === c.matchedItemId) : null;
+    const defaultPriceText =
+      c.priceReliable && c.detectedPrice != null ? String(c.detectedPrice) : '';
 
     return (
       <Card style={styles.card}>
@@ -128,6 +132,14 @@ export default function CandidateListScreen() {
               value={selections[c.id] ?? null}
               onChange={(itemId) => setSelections((s) => ({ ...s, [c.id]: itemId }))}
             />
+            <TextField
+              label="1セット（1箱）の単価"
+              value={priceInputs[c.id] ?? defaultPriceText}
+              onChangeText={(text) => setPriceInputs((s) => ({ ...s, [c.id]: text }))}
+              keyboardType="number-pad"
+              placeholder="任意（円）"
+              helper={c.priceReliable === false ? (c.priceHoldReason ?? undefined) : undefined}
+            />
             <View style={styles.buttonRow}>
               <View style={{ flex: 1 }}>
                 <Button
@@ -138,7 +150,13 @@ export default function CandidateListScreen() {
                       Alert.alert('入力エラー', '紐付ける品目を選択してください');
                       return;
                     }
-                    confirmMutation.mutate({ id: c.id, matchedItemId });
+                    const priceText = (priceInputs[c.id] ?? defaultPriceText).trim();
+                    const price = priceText === '' ? undefined : Number(priceText);
+                    if (price !== undefined && (Number.isNaN(price) || price < 0)) {
+                      Alert.alert('入力エラー', '単価は0以上の数値で入力してください');
+                      return;
+                    }
+                    confirmMutation.mutate({ id: c.id, matchedItemId, price });
                   }}
                   loading={confirmMutation.isPending}
                 />

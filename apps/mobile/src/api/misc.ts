@@ -25,9 +25,10 @@ export async function fetchCandidates(
 
 export async function confirmCandidate(
   id: string,
-  matchedItemId: string
+  matchedItemId: string,
+  price?: number
 ): Promise<{ candidate: CandidateDto; purchase: PurchaseDto }> {
-  const res = await api.post(`/api/import-candidates/${id}/confirm`, { matchedItemId });
+  const res = await api.post(`/api/import-candidates/${id}/confirm`, { matchedItemId, price });
   return res.data;
 }
 

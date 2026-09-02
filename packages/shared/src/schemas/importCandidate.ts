@@ -32,6 +32,8 @@ export type BridgeCandidatesPayload = z.infer<typeof bridgeCandidatesPayloadSche
 // 候補の品目紐付け・確定
 export const candidateConfirmSchema = z.object({
   matchedItemId: z.string().min(1, '紐付ける品目を選択してください'),
+  // 1セット（1箱）の単価。未指定なら候補の検出金額を信頼性判定のうえで使う
+  price: optionalNonNegativeNumber,
 });
 
 export type CandidateConfirmInput = z.infer<typeof candidateConfirmSchema>;
