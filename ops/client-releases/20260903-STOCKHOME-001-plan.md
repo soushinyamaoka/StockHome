@@ -4,7 +4,8 @@ client_release_id: 20260903-STOCKHOME-001
 
 app: stockhome
 
-status: deployed（2026-09-03 先行配信の例外承認により配信済み。下記「実施結果」参照）
+status: verified（2026-09-03 先行配信の例外承認により配信し、iOS Expo Goでの実機確認が
+  正常完了。下記「実施結果」参照）
 
 created_by: Claude
 
@@ -12,7 +13,7 @@ related_notice_id: 20260902-STOCKHOME-004
 
 related_vps_task_id: 20260903-001
 
-deployment_status: deployed
+deployment_status: verified
 
 ## 対象
 
@@ -149,7 +150,10 @@ source commit `5cd6c66`・`default` branchを特定した即時配信の明示�
 
 ## 実施結果
 
-- **実施日時**: 2026-09-03 08:09 JST
+- **実施日時**: 2026-09-03 17:09:16 JST（EAS側記録 `createdAt: 2026-09-03T08:09:16.448Z`
+  ＝UTC基準。当初「08:09 JST」と記載していたのは、本環境に`Asia/Tokyo`のzoneinfoが
+  存在せず`TZ`指定が無効にUTCへフォールバックしていたことに気づかず、UTC時刻を
+  そのままJSTと誤記載したもの。EAS側のUTC記録を正としてJSTへ換算し訂正した）
 - **実行コマンド**: `eas update --branch default --message "反映記録ログ・Gmail取込価格の
   手動確認UI・プッシュ通知端末登録を追加 (source: 5cd6c66)"`
 - **実行直前確認**: `main`/`origin/main`が`af77280`で一致・追跡fileがclean、
@@ -166,12 +170,9 @@ source commit `5cd6c66`・`default` branchを特定した即時配信の明示�
 - **platform**: android, ios（実際の読者はiOS Expo Goのみ。上記参照）
 - **commit紐付け**: `af772803d6f42687b4a1543adfd2976e7bbe1cf0`（EAS上の表示。
   実バンドル内容は固定source `5cd6c66`と同一であることを確認済み）
-- **iOS Expo Goでの反映確認**: **未実施**。実機でのアプリ再起動・アップデート取得後の
-  画面表示・push token取得可否の確認はユーザーによる実機操作が必要なため、
-  本記録時点では未確認。確認後にこのセクションへ追記する
+- **iOS Expo Goでの反映確認**: **正常完了**（ユーザー本人が実機で確認、2026-09-03）
 - **rollback実施**: なし
 
-## 未実施・today's残作業
+## 未実施・残作業
 
-- iOS Expo Goでの実機反映確認（画面表示、push token取得の成功/安全な失敗）
 - VPS task `20260903-001`の19:55/20:10定期job確認（VPS側で継続中、本配信とは独立）
