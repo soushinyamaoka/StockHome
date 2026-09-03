@@ -173,6 +173,10 @@ source commit `5cd6c66`・`default` branchを特定した即時配信の明示�
 - **iOS Expo Goでの反映確認**: **正常完了**（ユーザー本人が実機で確認、2026-09-03）
 - **rollback実施**: なし
 
-## 未実施・残作業
+## 完了状態
 
-- VPS task `20260903-001`の19:55/20:10定期job確認（VPS側で継続中、本配信とは独立）
+- client release `20260903-STOCKHOME-001`: `verified`
+- 関連notice `20260902-STOCKHOME-004`: `verified`
+- 関連VPS task `20260903-001`: 2026-09-03 19:55/20:10の初回定期jobを
+  VPS管理側が確認し`verified`
+- 追加配信、rollback、追加VPS操作、API再deploy、DB変更: なし

@@ -30,14 +30,17 @@
 #     receipt確認の最終失敗を例外なしでもjob失敗として検知するようにした（B11）。
 #     push_ticketsのretention説明を、cleanup関数単体の挙動とjob全体の実行順序（receipt確認が
 #     先でpendingを閉じてからcleanupする）を区別する形へ訂正した（B12）（task_id: 20260902-009）。
+#   2026-09-03 (task_id: 20260903-001): production反映後、API/DB/health/bind/volume、
+#     全行JSONログを確認。19:55 daily_batchと20:10 push_receipt_check_and_cleanupの初回実行で、
+#     job_start/job_endの同一run_id、status success、durationと件数を動的確認した。
 
 schema_version: 1
 app: stockhome
 
 canonical_repo: https://github.com/soushinyamaoka/StockHome.git
 canonical_ref: main
-updated_at: 2026-09-02
-verified_against_runtime: 2026-09-02
+updated_at: 2026-09-03
+verified_against_runtime: 2026-09-03
 
 runtime:
   type: docker-compose
@@ -124,7 +127,7 @@ jobs:
       job_end.status が success/failure、job_start はあるが job_end が無ければ異常終了、
       予定時刻に job_start が無ければ未実行、と区別できる（task_id: 20260831-004 で実装、動的確認済み）。
   - name: push_receipt_check_and_cleanup
-    mechanism: in-process           # daily_batch と同じ node-cron。未反映（notice 20260902-STOCKHOME-004）
+    mechanism: in-process           # daily_batch と同じnode-cron。task 20260903-001でproduction反映・動的確認済み
     definition: apps/api/src/server.ts 内の node-cron スケジュール定義（コード内）
     schedule: "10 20 * * *"        # JST。daily_batch(19:55)の送信から約15分後（Expo推奨の確認間隔に合わせる。B08対応）
     purpose: >-
@@ -145,7 +148,7 @@ jobs:
       判定できるようにした（task_id 20260902-009で実装、ローカルDBで動的確認済み：正常系
       success、receipt確認の最終失敗時の例外なしfailure検知、pending 0件時のsuccess、
       24時間超過pendingが同一job内でReceiptExpiredへ閉じてから即座には削除されないこと、
-      の4パターンを確認。production未反映）。
+      の4パターンを確認。2026-09-03のproduction初回実行でも同一run_idのstart/endとsuccessを確認）。
 
 dependencies:
   internal: []                     # 内部API依存なし（確認済み）
@@ -217,7 +220,7 @@ user_impact:
   direct_users: true           # 家庭内の利用者がモバイルアプリから直接使う
   client_apps: [stockhome-mobile]
   user_facing_functions:
-    ["購入登録", "在庫予測", "在庫アラート通知（ReadyGo経由）", "在庫アラート通知（Expo Pushプッシュ通知、未反映・notice 20260902-STOCKHOME-004でVPS管理レビュー中）"]
+    ["購入登録", "在庫予測", "在庫アラート通知（ReadyGo経由）", "在庫アラート通知（Expo Pushプッシュ通知、task 20260903-001でproduction反映・確認済み）"]
 
 # 既知の未解決事項（隠さずそのまま記録する）
 known_gaps:
@@ -231,6 +234,12 @@ known_gaps:
 
 # 2026-08-31〜09-02 時点で解消済みの事項
 resolved_gaps:
+  - >-
+    task_id: 20260903-001 でnotice 20260902-STOCKHOME-004をproduction反映し、2026-09-03の
+    19:55 daily_batch（run_id 20260903-195500）と20:10 push_receipt_check_and_cleanup
+    （run_id 20260903-201000）の初回実行を確認した。両jobともjob_start/job_endが同一run_idで
+    対になりstatus success。API/DB稼働、restart count 0、health、loopback bind、DB volume、
+    JSON形式、failure/機微情報非混入を確認し、定期jobのproduction動的確認不足を解消した。
   - >-
     task_id: 20260902-001 のローカルDocker検証で、正常起動中のcontainerへ`docker stop`による
     Linux SIGTERMを送り、serverの`shutdown`イベント出力、終了コード0、SIGKILL猶予前の正常終了を

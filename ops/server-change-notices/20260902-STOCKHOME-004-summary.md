@@ -18,7 +18,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_started
+deployment_status: verified
 
 ## 変更概要
 
@@ -379,5 +379,24 @@ secret値は記載しない。
 - VPS management review: 2026-09-02第1回実施・blocked（B01〜B06）→対応完了。
   同日第2回実施・blocked（B07〜B10）→対応完了。同日第3回実施・blocked（B11〜B12）
   →本notice改訂で対応完了。2026-09-03第4回実施・accepted（production承認とは別）
-- production approval: 未承認
-- related task_id: 20260902-006, 20260902-007, 20260902-008, 20260902-009
+- production approval: 2026-09-03、妻への通知・不使用確認後、ユーザーがVPS task
+  `20260903-001`を本計画で即時反映することを個別承認
+- related task_id: 20260902-006, 20260902-007, 20260902-008, 20260902-009,
+  20260903-001
+
+## Production実施結果
+
+- production task: `20260903-001`
+- production反映: 2026-09-03、source commit `5cd6c66`を反映済み
+- 即時確認: API/DB running・restart count 0、internal/public health 200、未認証bridge 401、
+  loopback bind `127.0.0.1:4002`、既存DB volume維持、起動ログ全行JSON
+- 初回定期job確認: 2026-09-03
+  - 19:55 `daily_batch`: run_id `20260903-195500`、status `success`、149 ms、
+    counted_updated 0、recalculated 25、processed 11、alerts/new_alerts 0、
+    push_targeted/push_accepted 0
+  - 20:10 `push_receipt_check_and_cleanup`: run_id `20260903-201000`、status `success`、
+    9 ms、checked/ok/errored/deactivated/cleaned 0
+- ログ検査: job_start/job_endは各jobで同一run_id、非JSON 0、failure/critical相当0、
+  機微情報を示す禁止pattern 0
+- rollback: 未実施。反映前source、DB dump、旧API image tagはVPS側で保全済み
+- 追加VPS変更・手動job実行: なし
