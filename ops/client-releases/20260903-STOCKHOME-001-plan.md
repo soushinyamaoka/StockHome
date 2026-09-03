@@ -4,8 +4,7 @@ client_release_id: 20260903-STOCKHOME-001
 
 app: stockhome
 
-status: ready_for_review（native互換性確認済み。下記「native互換性の確認」参照。
-  2026-09-03に一度halted判定したが、実機確認により解消した）
+status: deployed（2026-09-03 先行配信の例外承認により配信済み。下記「実施結果」参照）
 
 created_by: Claude
 
@@ -13,7 +12,7 @@ related_notice_id: 20260902-STOCKHOME-004
 
 related_vps_task_id: 20260903-001
 
-deployment_status: not_started
+deployment_status: deployed
 
 ## 対象
 
@@ -136,17 +135,43 @@ API・DBへは一切変更を加えない）。
 
 ## Approval gate
 
-本計画の作成・提示は配信の承認ではない。実施する場合は、VPS task `20260903-001`が
-`verified`になったことを確認したうえで、次のように対象branchとcommitを特定した
-承認を受領する。
+本計画の作成・提示は配信の承認ではない。当初の条件はVPS task `20260903-001`の
+`verified`到達だったが、下記「先行配信の例外承認」により先行実施した。
 
-```text
-VPS task 20260903-001の検証が完了しました。client_release_id 20260903-STOCKHOME-001を、
-default branchへ今すぐeas update配信することを承認します。
-```
+### 先行配信の例外承認（2026-09-03）
 
-承認前は`eas update`コマンドを実行しない。
+VPS task `20260903-001`が19:55/20:10の初回定期job確認前（`applied`）の段階で、
+ユーザーからその事実を承知したうえで、client release `20260903-STOCKHOME-001`・
+source commit `5cd6c66`・`default` branchを特定した即時配信の明示承認を受領した
+（`stockhome_push_notification_deployment_plan_20260903.md`
+「Client release先行配信の例外承認」セクションにVPS管理側の記録あり）。
+この承認はclient配信のみを対象とし、追加のVPS変更・API再deploy・DB変更は含まない。
 
 ## 実施結果
 
-（配信後にここへ記録する: update group ID、配信時刻、対象端末での反映確認結果）
+- **実施日時**: 2026-09-03 08:09 JST
+- **実行コマンド**: `eas update --branch default --message "反映記録ログ・Gmail取込価格の
+  手動確認UI・プッシュ通知端末登録を追加 (source: 5cd6c66)"`
+- **実行直前確認**: `main`/`origin/main`が`af77280`で一致・追跡fileがclean、
+  `5cd6c66`〜`af77280`間に`apps/mobile`・`packages/shared`・`package.json`・
+  `package-lock.json`の差分がないこと（＝バンドル内容が固定source commitと同一である
+  こと）、`default`branchの直前update group ID（`3d9f121f-...`）が計画記載値から
+  変化していないこと、をいずれも配信直前に再確認した
+- **update group ID**: `8820a4ae-1321-4703-841f-28ea117a91f2`
+- **Android update ID**: `01a06650-a5a0-746b-a11f-0277d22711e6`
+- **iOS update ID**: `01a06650-a5a0-7a3c-87da-17c9e7d700d9`
+- **branch**: `default`
+- **runtime version**: `exposdk:54.0.0`（変更なし。runtimeVersionを変えるnative変更を
+  含まないため、既存binaryとの互換性は「native互換性の確認」節の判断どおり）
+- **platform**: android, ios（実際の読者はiOS Expo Goのみ。上記参照）
+- **commit紐付け**: `af772803d6f42687b4a1543adfd2976e7bbe1cf0`（EAS上の表示。
+  実バンドル内容は固定source `5cd6c66`と同一であることを確認済み）
+- **iOS Expo Goでの反映確認**: **未実施**。実機でのアプリ再起動・アップデート取得後の
+  画面表示・push token取得可否の確認はユーザーによる実機操作が必要なため、
+  本記録時点では未確認。確認後にこのセクションへ追記する
+- **rollback実施**: なし
+
+## 未実施・today's残作業
+
+- iOS Expo Goでの実機反映確認（画面表示、push token取得の成功/安全な失敗）
+- VPS task `20260903-001`の19:55/20:10定期job確認（VPS側で継続中、本配信とは独立）
