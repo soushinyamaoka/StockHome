@@ -4,7 +4,8 @@ client_release_id: 20260903-STOCKHOME-001
 
 app: stockhome
 
-status: ready_for_review
+status: ready_for_review（native互換性確認済み。下記「native互換性の確認」参照。
+  2026-09-03に一度halted判定したが、実機確認により解消した）
 
 created_by: Claude
 
@@ -19,12 +20,16 @@ deployment_status: not_started
 - **source commit**: `5cd6c66a57085f081c078616eee9ede2dfc63e70`
   （notice `20260902-STOCKHOME-004` の固定実装commitと同一。
   VPS task `20260903-001` でproductionへ反映済み）
-- **配信先 branch/channel**: `default`
+- **配信先 branch**: `default`（**channelではなくbranch**。同名のchannelオブジェクトは
+  存在しない。`eas channel:view default`は"Could not find channel with the name default"を
+  返す。EASビルド済みネイティブバイナリでこのbranchを参照する設定を使ったものは無い）
 - **runtime version**: `exposdk:54.0.0`
-- **対象platform**: `android`、`ios`
-  - iOS: Expo Go経由（`default` channelを直接読み込む運用）
-  - Android: `default` channelを読み込む端末のみが対象。内部配布APK
-    （`android-internal` channel、`eas build`で別途配布済み）は対象外
+- **対象platform**: `android`、`ios`（branchの登録上は両方だが、実際に読んでいるのは下記の
+  実機確認により**iOSのみ**）
+  - iOS: 実機確認済み。Expo Goアプリで、`eas update`後にQRコードを読み込んで開く運用
+  - Android: **`default`は読んでいない**。2026-09-02以降、内部配布APK
+    （`android-internal` channel、`eas build`で別途配布・`expo-notifications`/FCM
+    組み込み済み）に完全移行済み（実機確認済み、2026-09-03）
 - **含まれる変更**（source commit `5cd6c66` までの、前回client配信以降の全変更）:
   1. 反映記録ログ画面（`GET /api/reflections`、設定タブ「購入の反映きろく」）
   2. Gmail取込候補確定時の単価入力・確認UI（候補一覧画面）
@@ -52,6 +57,55 @@ deployment_status: not_started
    本計画記載の直前group ID（`3d9f121f-...`）から変化していないこと
    （他経路での配信が割り込んでいないことの確認）
 
+## native互換性の確認（VPS管理レビュー指摘対応、2026-09-03）
+
+VPS管理側から、前回client配信後に`expo-notifications`（native library）と
+`googleServicesFile`によるAndroid FCM設定が追加されており、`runtimeVersion`が
+`policy: sdkVersion`のままではnative差分を区別できないため、`default`を読む
+既存binaryがこれらを組み込み済みか確認するよう指摘を受けた
+（`stockhome_push_notification_deployment_plan_20260903.md` §14参照）。
+
+### 確認手順と結果
+
+1. **`eas build:list`で全ビルド履歴を確認**（過去分含め2件のみ、すべてAndroid）:
+   - `ad8c5eb1`（commit `084656f`、2026-08-14、channel: `android-internal`）
+   - `5030dbb2`（commit `38ae8b2`、2026-09-02、channel: `android-internal`、
+     `expo-notifications`/FCM組み込み済み）
+   - **channel `default`を指定してビルドされたネイティブバイナリは過去含めて存在しない**
+2. **`eas channel:view default`を実行 → `default`という名前のchannelオブジェクトは
+   存在しない**（"Could not find channel with the name default"）。存在するのは
+   `default`という名前のbranch（ID `019fff36-...`）のみ
+3. 上記1・2により、独自ビルドしたネイティブバイナリがこのbranchを参照する設定
+   （build時の`channel: "default"`指定）は一度も使われていないことを確認した
+4. **Expo公式ドキュメントでExpo Goのnative module互換性を確認**: ローカル通知用の
+   `expo-notifications` native moduleはExpo Goクライアント自体に標準搭載されている
+   （リモートプッシュのみAndroid SDK53以降Expo Go非対応。これは既に前提として
+   了承済みの制約であり、native moduleの不在によるクラッシュとは別の話）
+5. **実機の使用実態をユーザー本人に確認**（2026-09-03）:
+   - **iOS**: Expo Goアプリで、`eas update`後にQRコードを読み込んで開く運用と確認。
+     ＝genuine Expo Goクライアント。手順4によりnative moduleクラッシュのリスクなし
+   - **Android**: 2026-09-02にインストールした内部配布APK（`android-internal`、
+     `expo-notifications`/FCM組み込み済み）を使用中と確認。**`default`branchは
+     もう読んでいない**ため、本配信の影響を受けない
+
+### 結論
+
+`default`branchの実際の読者はiOSのExpo Goのみであり、Expo Go自体が
+`expo-notifications`のnative moduleを標準搭載しているため、**native module不在に
+よるクラッシュのリスクは無い**と判断する。Android側は内部配布APKへ完全移行済みで
+`default`を読まないため、そもそも本配信の影響範囲外である。
+
+### 念のための代替案（今回は不要と判断したが、将来的にnative非互換が疑われる場合の参考）
+
+- **案A: 新binaryを別runtimeで配布** — `default`を読む独自ビルドバイナリが存在し、
+  かつnative moduleを含まないことが判明した場合、そのプラットフォーム向けに
+  `expo-notifications`/FCM組み込み済みの新規ビルドを別channel/runtimeで作成し、
+  移行が完了するまで`default`へはPush関連JSを含まないbundleのみを配信する
+- **案B: Push処理を除外してUI変更だけを配信** — Push関連の`import`・呼び出しを
+  一時的に取り除いた別sourceを`default`専用に用意し、反映記録ログ画面・価格確認UIの
+  改善だけを先行配信する。Push関連コードは、対象binaryの互換性が確認できてから
+  改めて配信する
+
 ## 後方互換性の確認結果（2026-09-03時点で確認済み）
 
 - 反映記録ログ画面: production APIに`GET /api/reflections`が反映済みのため、
@@ -60,9 +114,10 @@ deployment_status: not_started
   API反映確認後にのみ配信するため、この問題は発生しない）
 - 候補確定の単価フィールド: 既存クライアントは送らない任意フィールドのため、
   新旧クライアントいずれもproduction APIと問題なく通信できる
-- プッシュ通知登録: production APIに`POST /api/push-devices`が反映済みのため、
-  配信後はAndroid端末（`default` channel使用分）でトークン登録が機能する。
-  iOS Expo Goでは引き続き登録できず失敗するが、既存の設計どおり無害に握りつぶされる
+- プッシュ通知登録: `default`branchの実際の読者はiOS Expo Goのみ（上記「native互換性の
+  確認」参照）。iOS Expo Goではリモートプッシュ非対応のため登録は失敗するが、
+  既存の設計どおり無害に握りつぶされる（クラッシュしない）。Android内部配布APKは
+  既に`expo-notifications`/FCM組み込み済みで、本配信とは独立して既に機能している
 
 ## 実施主体
 
