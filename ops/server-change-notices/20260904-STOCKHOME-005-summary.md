@@ -394,7 +394,7 @@ lost updateが発生しない）ことを確認済み。
     対象branch/platform・時期を特定したうえで個別に承認を得る
 - VPS management review: 初回2026-09-04実施・`blocked`（B01〜B06）→B01〜B05対応確認。
   第2回2026-09-05実施・`blocked`（B06継続、B07〜B09新規）→B07〜B09対応・B06承認受領
-  （本改訂）。再レビュー待ち
+  （本改訂）。第3回2026-09-05実施・全blocker解消を確認し`accepted`
 - production approval: 未実施
 - related task_id: なし
 
