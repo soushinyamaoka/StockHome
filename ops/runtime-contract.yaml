@@ -33,14 +33,20 @@
 #   2026-09-03 (task_id: 20260903-001): production反映後、API/DB/health/bind/volume、
 #     全行JSONログを確認。19:55 daily_batchと20:10 push_receipt_check_and_cleanupの初回実行で、
 #     job_start/job_endの同一run_id、status success、durationと件数を動的確認した。
+#   2026-09-04: 買い足し累積機能（notice 20260904-STOCKHOME-005）に伴い、item_runtime_states
+#     テーブルの manual_override_qty/manual_override_reason の意味・更新経路を追加記載。
+#     VPS管理側の初回review（blocked、B01〜B06）を受け、購入行作成と積み上げ書き込みを
+#     同一トランザクション化＋品目単位の行ロックによる直列化（B01）、node:testによる
+#     障害・同時実行の再現testを追加（B02）。schema/migrationの変更は無いが、既存カラムの
+#     書き込み意味が変わるためVPS管理側判定はimpact_level L3。production未反映。
 
 schema_version: 1
 app: stockhome
 
 canonical_repo: https://github.com/soushinyamaoka/StockHome.git
 canonical_ref: main
-updated_at: 2026-09-03
-verified_against_runtime: 2026-09-03
+updated_at: 2026-09-04
+verified_against_runtime: 2026-09-03  # productionへの本変更反映は未実施。この日付はproduction実機で最後に照合できた時点を指す
 
 runtime:
   type: docker-compose
@@ -101,6 +107,43 @@ data:
                                     # 使い捨てPostgreSQLで全migration履歴(init〜push_tickets)を最初から適用するrehearsalを実施し、
                                     # 全件成功を確認済み（B07対応）。ローカル開発DBでも個別適用・動作確認済み。
                                     # production は notice 20260902-STOCKHOME-004 の承認後に反映される。impact_level L3）
+  field_semantics:
+    - table: item_runtime_states
+      fields: [manual_override_qty, manual_override_at, manual_override_by_user_id, manual_override_reason]
+      meaning: >-
+        2026-09-04（notice 20260904-STOCKHOME-005、production未反映）以降、この4フィールドは
+        「買い足し累積」の書き込み先を兼ねる。従来は利用者が明示的に行う在庫補正（在庫補正画面、
+        manual_override_reason は CORRECTION_REASONS 列挙値）専用だったが、追加で
+        手動購入登録・Gmail取込確定・夜間バッチのcounted化のいずれかが起きるたびに、
+        「直前の推定残数＋今回の購入数」で上書きされる（manual_override_reason は
+        purchase_accumulated / purchase_accumulated_gmail / purchase_accumulated_batch の
+        いずれか。プレフィックス purchase_accumulated で判定可能）。
+      update_paths: >-
+        (1) POST /api/purchases（手動購入登録）、(2) candidateIntake.createPurchaseLogFromCandidate
+        （Gmail取込の自動/手動確定）、(3) 夜間バッチ内 updateCountedInInventory
+        （配送バッファ設定等でcounted化が遅延した購入の遅延反映）、(4) 在庫補正
+        （POST /api/corrections、従来からの経路、reasonはCORRECTION_REASONS）。
+        (1)〜(3) は品目行（items）を SELECT ... FOR UPDATE でロックしてから
+        「読み取り→積み上げ→書き込み」を行い、購入行の作成/counted化と同一トランザクションに
+        包む（VPS管理レビューB01対応）。DELETE /api/purchases（購入取消）は、取消対象が
+        積み上げ由来（reasonがpurchase_accumulated*）であれば同量を差し引く簡易差し戻しを行う
+        （完全な巻き戻しではない。stockCalc.tsのreverseAccumulatedPurchase参照）。
+      failure_consistency: >-
+        購入行の作成・counted化と積み上げ書き込みは同一トランザクション内で行うため、
+        一方だけが確定することはない（途中失敗時は両方ロールバックされ、次回のバッチ実行や
+        利用者の再操作で安全に再試行できる。node:testで同時実行・途中失敗・再実行の
+        5シナリオを再現確認済み。apps/api/src/services/stockCalc.accumulation.test.ts）。
+      rollback_caveat: >-
+        API imageのrollbackは、rollback後に発生する新規購入の計算方式を旧方式（上書き）へ
+        戻すのみで、rollback**前**に新方式が既に書き込んだ manual_override_qty の値
+        （積み上げ後の値）は自動的には元へ戻らない。旧imageはこのカラムを同じ数値カラムとして
+        問題なく読める（クラッシュ・データ破損はない）が、値そのものの巻き戻しにはDB restore
+        または個別データ補正が必要（notice 20260904-STOCKHOME-005のDeploy・rollback節を参照）。
+    - endpoint: GET /api/items/:itemId/purchases
+      change: >-
+        レスポンスへ suggestedDaysPerUnit（{value, sampleCount} | null。直近の購入間隔から
+        算出した消費ペースの目安）を追加。既存フィールド（purchases, priceStats）は不変で、
+        旧クライアントとの後方互換性を維持する。
   data_retention:
     - table: push_tickets
       policy: >-
