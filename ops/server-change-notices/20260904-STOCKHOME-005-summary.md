@@ -6,7 +6,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 9b687d31789cda3749775ccc1adbe34bbdff0cf1
+source_commit: 2d8aad0b3fea00d4956701d8b0bc2f0887aed005
 
 impact_level: L3
 
@@ -23,10 +23,12 @@ deployment_status: not_started
 ## 改訂履歴
 
 - 2026-09-04（初版、source `278822d`）: L2として提出。
-- 2026-09-04（本改訂、source `9b687d3`）: VPS管理側レビュー
+- 2026-09-04〜05（本改訂、source `9b687d3` → `2d8aad0`）: VPS管理側レビュー
   （`C:\work\PRG\Sakura\Dev\vps-server-management\docs\operations\stockhome_purchase_accumulation_review_20260904.md`、
   `blocked`、B01〜B06）を受け、下記のとおり全項目に対応した。VPS管理側判定に従い
-  impact_levelをL2からL3へ訂正した。
+  impact_levelをL2からL3へ訂正した。B02のtest追加中に、本機能とは別の既存不具合
+  （JST早朝の基準日ズレ）を発見・修正した（`2d8aad0`、下記「B02対応中に発見した
+  既存不具合の修正」参照）。
 
 ## 変更概要
 
@@ -252,6 +254,25 @@ GROUP BY item_id;
 障害再現testが実際に不具合を捕捉した実例であり、本reviewの要求が有効であったことの
 裏付けとして記録する。
 
+### B02対応中に発見した既存不具合の修正（本リリース範囲外だが同梱、commit `2d8aad0`）
+
+上記test群を実際にJST早朝（06時台）に実行したところ、非決定的に失敗するテストが発生した
+（例: 期待値3に対し実際は2.9）。原因は`calculateStock()`内の補正基準日（`manual_override_at`
+から日付だけを取り出す処理）が、`todayDateOnly()`とは異なり**UTCのgetter**でカレンダー日付を
+切り出していたこと。本番・開発環境とも`TZ=Asia/Tokyo`のため、JST 0時〜9時台（UTC換算では
+前日）に書き込まれた補正値は、`todayDateOnly()`（JST基準の「今日」）との間で1日分の
+ズレが生じ、直後に読み直すだけで1日分の消費（`1/days_per_unit`）が即座に減衰していた。
+
+`todayDateOnly()`と同じロジック（ローカルgetterでカレンダー日付を切り出す）に統一する
+`dateOnlyLocal()`へ切り出し、補正基準日の計算をこれに揃えて修正した。
+
+**この不具合は今回の買い足し累積機能に限らず、既存の在庫補正機能
+（`POST /api/corrections`、production稼働中）にも同様に影響していた**。
+JST 0時〜9時台に在庫補正を行った利用者は、補正直後の残数表示が本来より
+`1/days_per_unit`だけ少なく見えていた可能性がある（数量への影響は品目のdays_per_unitに
+依存する小さな値だが、日付が変わる境界で不整合が生じる性質のバグのため、
+気づかれにくい）。本リリースはこの既存不具合の修正も同梱する。
+
 ### HTTPルート層でのスモークテスト（ローカルDB、検証データ削除済み）
 
 自動テストに加え、実際にローカルAPIサーバーを起動し、HTTP経由でも同様の結果になることを
@@ -310,6 +331,9 @@ lost updateが発生しない）ことを確認済み。
 
 ## 変更後の状態（本改訂時点）
 
-- source commit: `9b687d31789cda3749775ccc1adbe34bbdff0cf1`（`main`, `origin/main`と一致）
-- notice commit: 本ファイルのcommit後に確定
+- source commit: `2d8aad0b3fea00d4956701d8b0bc2f0887aed005`（`main`, `origin/main`と一致）
+- notice commit: 本ファイルのcommit後に確定（`git log`で本ファイルの最新commitを参照）
+- 自動テスト: `npm test --workspace=@stockhome/api`で12件全通過（JST早朝の既存バグ修正後、
+  非決定的失敗が無いことを再確認済み）
+- 静的確認: shared/api/mobileとも`tsc --noEmit`成功
 - production/EAS配信: 未実施（本改訂作業でも接続・変更を一切行っていない）
