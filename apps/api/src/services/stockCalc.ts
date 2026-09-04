@@ -328,19 +328,33 @@ interface PendingPurchase {
 // 品目1件分の pending 購入（counted_in_inventory=false かつ inventory_effective_at 到来済み）を
 // 購入日の古い順に処理する。1品目分をまるごと1トランザクションに包むため、途中で失敗した場合は
 // その品目の counted 化・積み上げが両方ロールバックされ、次回バッチで安全に再試行できる
-// （VPS管理レビューB01対応。テストから直接呼べるよう個別exportする）
+// （VPS管理レビューB01対応。テストから直接呼べるよう個別exportする）。
+//
+// 引数の purchases は、呼び出し元（updateCountedInInventory）がトランザクション開始前に
+// 取得した一覧であり、ロック取得までの間に他の実行によって処理済みになっている可能性がある
+// （夜間バッチの二重起動、手動再実行との競合等）。そのため、ロック取得後に必ずDB上の
+// 最新状態を再取得し、その時点でなお counted_in_inventory=false の行だけを対象にする
+// （VPS管理レビューB07対応: 同じpending一覧を読んだ2つの実行が二重加算する不具合の修正）
 export async function processPendingPurchasesForItem(
   tx: Prisma.TransactionClient,
   itemId: string,
   purchases: PendingPurchase[]
-): Promise<void> {
-  if (purchases.length === 0) return;
+): Promise<number> {
+  if (purchases.length === 0) return 0;
   await lockItemForAccumulation(tx, itemId);
 
+  const candidateIds = purchases.map((p) => p.id);
+  const stillPending = await tx.purchaseLog.findMany({
+    where: { id: { in: candidateIds }, itemId, countedInInventory: false },
+    select: { id: true, qty: true, householdId: true },
+    orderBy: [{ purchasedAt: 'asc' }, { createdAt: 'asc' }],
+  });
+  // 呼び出し元一覧の全件が既に他実行で処理済みだった場合、何もしない
+  // （二重起動時の後続実行はここで早期終了する。B07対応）
+  if (stillPending.length === 0) return 0;
+
   let running = await getCurrentEstimatedRemainingQty(tx, itemId);
-  for (const purchase of purchases) {
-    // 存在しない/他品目の purchase を渡された場合は明示的に失敗させる（P2025）。
-    // 万一の取り違えでcounted状態と積み上げが分離しないようにするための防御
+  for (const purchase of stillPending) {
     await tx.purchaseLog.update({
       where: { id: purchase.id },
       data: { countedInInventory: true },
@@ -350,11 +364,12 @@ export async function processPendingPurchasesForItem(
   await setManualOverrideQty(
     tx,
     itemId,
-    purchases[0].householdId,
+    stillPending[0].householdId,
     running,
     null,
     'purchase_accumulated_batch'
   );
+  return stillPending.length;
 }
 
 // inventory_effective_at 到来分の counted_in_inventory を true 化する（夜間バッチ Step 1）。
@@ -388,8 +403,10 @@ export async function updateCountedInInventory(householdId?: string): Promise<nu
 
   let count = 0;
   for (const [itemId, list] of byItem) {
-    await prisma.$transaction((tx) => processPendingPurchasesForItem(tx, itemId, list));
-    count += list.length;
+    // 実際に処理された件数（二重起動等で他実行に処理済みだった分を除く）を積算する。
+    // list.length をそのまま足すと、二重起動時に実処理を伴わない実行分まで
+    // カウントしてしまう（B07対応）
+    count += await prisma.$transaction((tx) => processPendingPurchasesForItem(tx, itemId, list));
   }
   return count;
 }

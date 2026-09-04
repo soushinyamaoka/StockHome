@@ -14,6 +14,7 @@ import {
   getCurrentEstimatedRemainingQty,
   updateCountedInInventory,
   todayDateOnly,
+  calculateStock,
 } from './stockCalc';
 import { computeSuggestedDaysPerUnit } from '../routes/purchases';
 
@@ -229,7 +230,7 @@ test('B02-2: 積み上げ＋購入作成の一連処理が失敗すると、両�
   }
 });
 
-test('B02-3: 夜間バッチのcounted化中に1件が失敗すると、同一品目の他の購入もcounted化・積み上げされない', async () => {
+test('B02-3: 夜間バッチのcounted化中に後続処理が失敗すると、同一品目の購入もcounted化・積み上げされない', async () => {
   const scope = await createTestScope(10);
   try {
     const yesterday = new Date(todayDateOnly().getTime() - MS_PER_DAY);
@@ -241,18 +242,21 @@ test('B02-3: 夜間バッチのcounted化中に1件が失敗すると、同一�
       },
     });
 
+    // processPendingPurchasesForItem自体は正常に完了するが、それを包む
+    // トランザクション（実運用ではupdateCountedInInventoryのループ）内で後続に失敗が起きた
+    // 場合を再現する。同一トランザクションである以上、counted化・積み上げも巻き戻ることを確認する
     await assert.rejects(
-      prisma.$transaction((tx) =>
-        processPendingPurchasesForItem(tx, scope.itemId, [
+      prisma.$transaction(async (tx) => {
+        await processPendingPurchasesForItem(tx, scope.itemId, [
           { id: p1.id, itemId: scope.itemId, householdId: scope.householdId, qty: 3 },
-          // 存在しない購入行を混ぜ、2件目の処理中に失敗させる
-          { id: 'nonexistent-purchase-id', itemId: scope.itemId, householdId: scope.householdId, qty: 4 },
-        ])
-      )
+        ]);
+        throw new Error('simulated failure after processing');
+      }),
+      /simulated failure/
     );
 
     const reloaded = await prisma.purchaseLog.findUniqueOrThrow({ where: { id: p1.id } });
-    assert.equal(reloaded.countedInInventory, false, '同一品目内の他購入がロールバックされずcounted化されている');
+    assert.equal(reloaded.countedInInventory, false, '同一トランザクション内の購入がロールバックされずcounted化されている');
 
     const state = await prisma.itemRuntimeState.findUnique({ where: { itemId: scope.itemId } });
     assert.equal(state?.manualOverrideQty ?? null, null, '積み上げがロールバックされずに残っている');
@@ -273,17 +277,18 @@ test('B02-4: 失敗後の再実行では二重加算されず正常完了する'
       },
     });
 
-    // 1回目: 失敗（B02-3と同様の障害注入）
+    // 1回目: 失敗（B02-3と同様の障害注入。ロールバックされ、purchase_logはfalseのまま残る）
     await assert.rejects(
-      prisma.$transaction((tx) =>
-        processPendingPurchasesForItem(tx, scope.itemId, [
+      prisma.$transaction(async (tx) => {
+        await processPendingPurchasesForItem(tx, scope.itemId, [
           { id: p1.id, itemId: scope.itemId, householdId: scope.householdId, qty: 3 },
-          { id: 'nonexistent-purchase-id', itemId: scope.itemId, householdId: scope.householdId, qty: 4 },
-        ])
-      )
+        ]);
+        throw new Error('simulated failure after processing');
+      }),
+      /simulated failure/
     );
 
-    // 2回目: 正しい内容で再実行
+    // 2回目: 同じ一覧で再実行（夜間バッチの次回起動が同じpendingを拾い直す状況を再現）
     await prisma.$transaction((tx) =>
       processPendingPurchasesForItem(tx, scope.itemId, [
         { id: p1.id, itemId: scope.itemId, householdId: scope.householdId, qty: 3 },
@@ -293,6 +298,65 @@ test('B02-4: 失敗後の再実行では二重加算されず正常完了する'
     const reloaded = await prisma.purchaseLog.findUniqueOrThrow({ where: { id: p1.id } });
     assert.equal(reloaded.countedInInventory, true);
     assert.equal(await getCurrentEstimatedRemainingQty(prisma, scope.itemId), 3, '再実行時に二重加算されている');
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('B07: 夜間バッチの二重起動で同じpending購入を二重加算しない', async () => {
+  const scope = await createTestScope(10);
+  try {
+    const yesterday = new Date(todayDateOnly().getTime() - MS_PER_DAY);
+    const p1 = await prisma.purchaseLog.create({
+      data: {
+        householdId: scope.householdId, itemId: scope.itemId, purchasedAt: yesterday, qty: 3,
+        source: 'gmail', sourceType: 'gmail_auto', fulfillmentStatus: 'shipped',
+        inventoryEffectiveAt: yesterday, countedInInventory: false,
+      },
+    });
+
+    // 2つの実行が「counted_in_inventory=false」時点の同じpending一覧を読んだ状況を再現する
+    // （updateCountedInInventoryのfindManyがtransaction開始前に行われるため、2回の呼び出しは
+    // 同じ一覧を受け取り得る）。品目ロックにより処理は直列化されるが、後続の実行がロック取得後に
+    // DB上の最新状態を再確認しなければ、先行実行が既にcounted化・加算した購入を再度加算してしまう
+    const sameList = [{ id: p1.id, itemId: scope.itemId, householdId: scope.householdId, qty: 3 }];
+    await Promise.all([
+      prisma.$transaction((tx) => processPendingPurchasesForItem(tx, scope.itemId, sameList)),
+      prisma.$transaction((tx) => processPendingPurchasesForItem(tx, scope.itemId, sameList)),
+    ]);
+
+    const reloaded = await prisma.purchaseLog.findUniqueOrThrow({ where: { id: p1.id } });
+    assert.equal(reloaded.countedInInventory, true);
+    assert.equal(
+      await getCurrentEstimatedRemainingQty(prisma, scope.itemId),
+      3,
+      '二重起動により二重加算されている（期待値3）'
+    );
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('B07-2: updateCountedInInventory自体を二重起動しても二重加算しない', async () => {
+  const scope = await createTestScope(10);
+  try {
+    const yesterday = new Date(todayDateOnly().getTime() - MS_PER_DAY);
+    await prisma.purchaseLog.create({
+      data: {
+        householdId: scope.householdId, itemId: scope.itemId, purchasedAt: yesterday, qty: 5,
+        source: 'gmail', sourceType: 'gmail_auto', fulfillmentStatus: 'shipped',
+        inventoryEffectiveAt: yesterday, countedInInventory: false,
+      },
+    });
+
+    const [countA, countB] = await Promise.all([
+      updateCountedInInventory(scope.householdId),
+      updateCountedInInventory(scope.householdId),
+    ]);
+    // 一方が処理し、もう一方は「既に処理済み」として0件になる（合計は1件のまま）
+    assert.equal(countA + countB, 1, 'どちらか一方の実行だけが1件処理し、合計は1件であるべき');
+
+    assert.equal(await getCurrentEstimatedRemainingQty(prisma, scope.itemId), 5, '二重起動により二重加算されている（期待値5）');
   } finally {
     await scope.cleanup();
   }
@@ -345,4 +409,56 @@ test('B02-5b: 積み上げ由来でない補正値（手動の在庫補正）は
   } finally {
     await scope.cleanup();
   }
+});
+
+// --- JST日付境界の固定日時回帰test（B08対応） ---
+//
+// calculateStock()はDB書き込みを伴わない純粋関数で、today引数を明示的に渡せるため、
+// 実行時刻に依存しない決定的なtestにできる。ここでは
+// 「UTCでは前日・JSTでは当日」になる固定日時（2026-01-15T23:30:00Z = 2026-01-16 08:30 JST）を
+// manualOverrideAtとして使い、todayDateOnly()と同じ丸め方（JSTのカレンダー日付）で
+// 揃えたtoday（2026-01-16のUTC 0時表現）を渡す。修正前の実装（UTC getterで基準日を切り出す）
+// では、この組み合わせで基準日が2026-01-15 UTCと誤判定され、1日分（1/daysPerUnit）が
+// 即座に減衰していた
+function buildTestItem(overrides: { daysPerUnit: number; manualOverrideQty: number; manualOverrideAt: Date }) {
+  return {
+    id: 'fixture-item',
+    daysPerUnit: overrides.daysPerUnit,
+    lowStockThresholdQty: null,
+    leadDays: 0,
+    safetyDays: 0,
+    isInventoryUnknown: false,
+    runtimeState: {
+      manualOverrideQty: overrides.manualOverrideQty,
+      manualOverrideAt: overrides.manualOverrideAt,
+    },
+    // calculateStock()が参照しないフィールドはtestの目的上不要なためanyで許容する
+  } as any;
+}
+
+test('B08: JST 0時〜9時台に書き込まれた補正値が、直後の再計算で即座に1日分減衰しない（固定日時）', () => {
+  // 2026-01-15T23:30:00Z (UTC) = 2026-01-16T08:30:00+09:00 (JST)
+  const manualOverrideAt = new Date('2026-01-15T23:30:00.000Z');
+  // todayDateOnly()相当（JSTのカレンダー日付をUTC0時で表現）: JSTで2026-01-16
+  const today = new Date(Date.UTC(2026, 0, 16));
+
+  const item = buildTestItem({ daysPerUnit: 10, manualOverrideQty: 5, manualOverrideAt });
+  const result = calculateStock(item, null, today);
+
+  assert.equal(
+    result.estimatedRemainingQty,
+    5,
+    'JST当日に書き込まれた補正値が、同じJST日のうちに即座に減衰してはいけない'
+  );
+});
+
+test('B08-2: 翌JST日になれば正しく1日分減衰する（固定日時、回帰防止の対照test）', () => {
+  const manualOverrideAt = new Date('2026-01-15T23:30:00.000Z'); // JST 2026-01-16 08:30
+  // 1日後（JSTで2026-01-17）
+  const today = new Date(Date.UTC(2026, 0, 17));
+
+  const item = buildTestItem({ daysPerUnit: 10, manualOverrideQty: 5, manualOverrideAt });
+  const result = calculateStock(item, null, today);
+
+  assert.equal(result.estimatedRemainingQty, 4.9, '翌日には1/daysPerUnitぶん正しく減衰するべき');
 });
