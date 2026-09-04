@@ -13,6 +13,12 @@ GAS 版（`C:\work\PRG\GAS\StockHome`）からの移行プロジェクト。仕�
 
 ## 基本ルール
 
+- **アプリのコード実装（機能追加・バグ修正）は Codex が行う。Claude は書かない。**
+  Claude の担当は調査・設計・Codex 向け指示書（`work/ai_handoff/claude_to_codex/draft/task.md`）の
+  作成・結果レビュー。実装依頼を受けたら、まず `work/ai_handoff/BIDIRECTIONAL_WORKFLOW.md` と
+  `CLAUDE_DESIGNER_PROMPT.md` を参照し、draft → チャットで配置確認 → inbox 配置の順で進める。
+  「進めて」等の包括承認は Claude が実装してよいという意味ではない。
+  ※ 依存更新（SDKアップグレード等）・EAS配布・VPSデプロイ・ドキュメント更新は Claude が直接行う。
 - 実装前に理解した仕様を整理して提示し、不明点は推測せず質問すること。
 - 機能の追加・変更時は API・mobile・shared のどこにまたがるかを先に整理すること。Zod スキーマや型の変更は `packages/shared` を起点に検討する。
 - スマホ片手操作を最重視。フォームは `Section` でセクション分けし、必須入力は最小限に。
