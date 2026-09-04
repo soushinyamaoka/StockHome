@@ -59,15 +59,18 @@ related_notice_id: 20260904-STOCKHOME-005
 
 ## Approval
 
-- app owner（client配信固有の承認）: 未実施。配信対象branch/platform・実施時期を
-  特定したうえで、別途チャットで明示承認を得てから実施する
+- app owner（client配信固有の承認）: **2026-09-05時点で未承認**。同日、app ownerは
+  server側notice `20260904-STOCKHOME-005`のB06（release全体の仕様・利用者影響）は
+  承認したが、**mobile配信（本client release）は今回の承認対象に含めず、明示的に
+  未承認とした**。配信対象branch/platform・実施時期を特定したうえで、別途改めて
+  明示承認を得る
 - VPS production承認との混同禁止: 本clientの配信可否は、上記「server/APIとの互換性」により
   server側（20260904-STOCKHOME-005）のVPS承認・production反映を待たずに判断できるが、
-  実際の配信実行は本ファイルのapp owner承認を得てから行う
+  実際の配信実行は本ファイルのapp owner承認（未取得）を得てから行う
 
 ## 未解決事項
 
 - 配信先branch（`default`/`android-internal`いずれか、または両方）と実施時期が未確定
-- server側notice `20260904-STOCKHOME-005`のapp owner承認（B06）・VPS management review
-  再判定が完了していない。client配信自体はserver反映を待たずに判断できる
-  （上記「server/APIとの互換性・実施順序」参照）が、実施はapp ownerの明示承認後
+- server側notice `20260904-STOCKHOME-005`のapp owner承認（B06）は2026-09-05に完了済みだが、
+  client配信は別枠でapp ownerの明示承認が未取得（上記「Approval」参照）。
+  VPS management reviewの再判定も未完了
