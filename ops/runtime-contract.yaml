@@ -39,13 +39,17 @@
 #     同一トランザクション化＋品目単位の行ロックによる直列化（B01）、node:testによる
 #     障害・同時実行の再現testを追加（B02）。schema/migrationの変更は無いが、既存カラムの
 #     書き込み意味が変わるためVPS管理側判定はimpact_level L3。production未反映。
+#   2026-09-05: VPS管理側の第2回review（blocked、B06継続・B07〜B09新規）を受け、夜間batch
+#     二重起動時の二重加算不具合を修正（B07）、JST日付境界の固定日時回帰testを追加（B08）。
+#     failure_consistencyの記載をB07対応後の内容へ更新。B06（app owner承認）は継続blocker。
+#     production未反映。
 
 schema_version: 1
 app: stockhome
 
 canonical_repo: https://github.com/soushinyamaoka/StockHome.git
 canonical_ref: main
-updated_at: 2026-09-04
+updated_at: 2026-09-05
 verified_against_runtime: 2026-09-03  # productionへの本変更反映は未実施。この日付はproduction実機で最後に照合できた時点を指す
 
 runtime:
@@ -131,8 +135,11 @@ data:
       failure_consistency: >-
         購入行の作成・counted化と積み上げ書き込みは同一トランザクション内で行うため、
         一方だけが確定することはない（途中失敗時は両方ロールバックされ、次回のバッチ実行や
-        利用者の再操作で安全に再試行できる。node:testで同時実行・途中失敗・再実行の
-        5シナリオを再現確認済み。apps/api/src/services/stockCalc.accumulation.test.ts）。
+        利用者の再操作で安全に再試行できる）。夜間batchの二重起動時も、品目行ロック取得後に
+        DB上の最新状態を再確認し、その時点でなお未countedの行だけを処理するため二重加算しない
+        （VPS管理レビューB07対応、2026-09-05）。node:testで同時実行・途中失敗・再実行・
+        batch二重起動・JST日付境界（固定日時）の各シナリオを再現確認済み
+        （apps/api/src/services/stockCalc.accumulation.test.ts、16件）。
       rollback_caveat: >-
         API imageのrollbackは、rollback後に発生する新規購入の計算方式を旧方式（上書き）へ
         戻すのみで、rollback**前**に新方式が既に書き込んだ manual_override_qty の値

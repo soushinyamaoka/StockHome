@@ -2,6 +2,8 @@
 
 client_release_id: 20260904-STOCKHOME-002
 
+record_type: client_release
+
 app: stockhome
 
 status: draft（配信はまだ実施しない。VPS管理レビューB05対応として作成のみ）
@@ -12,8 +14,10 @@ related_notice_id: 20260904-STOCKHOME-005
 
 ## 対象
 
-- **source commit**: `278822dbf4b9df22d9782ab28ccc3fa25f53ac70`
-  （B01〜B06対応後は別途新しいcommitへ更新する）
+- **source commit**: `c231f76bb8543e462ba78ecc55d0e72a88bf3311`
+  （2026-09-05、VPS管理側第2回レビューB09対応でnoticeと同一commitへ更新。
+  以降serverと同じsourceを追うのではなく、実際にmobile UIへ含める変更が固まった時点の
+  commitへ改めて固定する）
 - **配信対象機能**（mobileのUI変更のみ。API本体は`ops/server-change-notices/20260904-STOCKHOME-005-summary.md`で別管理）:
   1. 品目編集画面（`ItemFormScreen`）: 消費ペースの実績提案表示＋「採用」ボタン
   2. 購入履歴画面（`PurchaseHistoryScreen`）: 価格推移の簡易スパークライン表示
@@ -64,4 +68,6 @@ related_notice_id: 20260904-STOCKHOME-005
 ## 未解決事項
 
 - 配信先branch（`default`/`android-internal`いずれか、または両方）と実施時期が未確定
-- source commitはB01〜B06対応後のcommitへ更新が必要
+- server側notice `20260904-STOCKHOME-005`のapp owner承認（B06）・VPS management review
+  再判定が完了していない。client配信自体はserver反映を待たずに判断できる
+  （上記「server/APIとの互換性・実施順序」参照）が、実施はapp ownerの明示承認後
