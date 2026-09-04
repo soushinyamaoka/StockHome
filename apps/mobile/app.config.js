@@ -22,7 +22,8 @@ export default {
     version: "0.1.0",
     orientation: "portrait",
     userInterfaceStyle: "light",
-    newArchEnabled: true,
+    // SDK55 で Legacy Architecture 対応が廃止され New Architecture が必須化されたため、
+    // このフラグは意味を持たなくなった（常にNew Architectureで動く）。設定として削除。
     scheme: "stockhome",
     splash: {
       resizeMode: "contain",
@@ -51,6 +52,9 @@ export default {
     },
     plugins: [
       "expo-secure-store",
+      // SDK56 から expo-font / expo-status-bar が config plugin を持つようになったため明示登録
+      "expo-font",
+      "expo-status-bar",
       "@react-native-community/datetimepicker",
       [
         "expo-build-properties",

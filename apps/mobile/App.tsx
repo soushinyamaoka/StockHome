@@ -40,7 +40,9 @@ export default function App() {
       <SafeAreaProvider>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
-            <StatusBar style="dark" backgroundColor={COLORS.paper} />
+            {/* SDK55+ で Android は edge-to-edge 必須化により backgroundColor は無効。
+                各画面のコンテナ背景色(COLORS.paper)がステータスバー下に透けて見える */}
+            <StatusBar style="dark" />
             <RootNavigator />
           </AuthProvider>
         </QueryClientProvider>

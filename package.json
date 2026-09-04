@@ -7,15 +7,6 @@
     "apps/*",
     "packages/*"
   ],
-  "overrides": {
-    "expo-font": "14.0.11",
-    "@expo/vector-icons": {
-      "expo-font": "14.0.11"
-    },
-    "expo": {
-      "expo-font": "14.0.11"
-    }
-  },
   "scripts": {
     "app:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/app.ps1 start vps",
     "app:start:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/app.ps1 start local",
