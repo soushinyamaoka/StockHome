@@ -7,9 +7,8 @@ import { serializePurchase } from '../utils/serialize';
 import {
   refreshStockSnapshotForItem,
   todayDateOnly,
-  getCurrentEstimatedRemainingQty,
-  setManualOverrideQty,
-  isAccumulatedOverrideReason,
+  accumulatePurchaseIntoStock,
+  reverseAccumulatedPurchase,
 } from '../services/stockCalc';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -18,7 +17,7 @@ const SUGGESTION_SAMPLE_INTERVALS = 5;
 // 消費ペースの実績提案（直近 SUGGESTION_SAMPLE_INTERVALS 回の購入間隔 ÷ 直前購入数量、の平均）。
 // 同日購入等で間隔が0日の区間は消費ペースの参考にならないため除外する。
 // 有効な区間が1件も無ければ提案しない
-function computeSuggestedDaysPerUnit(
+export function computeSuggestedDaysPerUnit(
   logs: { purchasedAt: Date; qty: number }[]
 ): { value: number; sampleCount: number } | null {
   if (logs.length < 2) return null;
@@ -82,14 +81,30 @@ const purchaseRoutes: FastifyPluginAsync = async (app) => {
     if (!purchasedAt) return reply.code(400).send({ message: '購入日が不正です' });
 
     const user = await prisma.user.findUnique({ where: { id: req.auth.userId } });
-
-    // 在庫へ即座に反映される購入（= counted）なら、積み上げのベースとして
-    // 「まだこの購入を含まない現時点の推定残数」を先に取得しておく
     const counted = purchasedAt <= todayDateOnly();
-    const baseQty = counted ? await getCurrentEstimatedRemainingQty(prisma, data.itemId) : 0;
 
+    // 購入行の作成と積み上げ書き込みを同一トランザクションに包む（VPS管理レビューB01対応）。
+    // 積み上げ側は品目行を SELECT ... FOR UPDATE でロックしてから現時点の推定残数を読むため、
+    // 同一品目への同時購入でも一方の加算が失われない。どちらかが失敗すれば両方ロールバックされ、
+    // 「購入だけ作成され積み上げが書き込まれない」状態にはならない。
+    // 積み上げは必ず購入行の作成より先に行うこと（後にすると、積み上げの残数計算が
+    // 今作成したばかりの購入自身を「直前の購入」として拾ってしまい二重加算になる）
     const log = await prisma.$transaction(async (tx) => {
-      const log = await tx.purchaseLog.create({
+      // 買い足し累積: 「直前の推定残数＋今回の購入数」を手動補正値として積み上げる。
+      // 未来日付でまだ counted でない購入は、夜間バッチが counted 化するタイミングで
+      // 同様に積み上がる（services/stockCalc.ts の updateCountedInInventory 参照）
+      if (counted) {
+        await accumulatePurchaseIntoStock(
+          tx,
+          data.itemId,
+          req.auth.householdId,
+          data.qty,
+          req.auth.userId,
+          'purchase_accumulated'
+        );
+      }
+
+      return tx.purchaseLog.create({
         data: {
           householdId: req.auth.householdId,
           itemId: data.itemId,
@@ -107,21 +122,6 @@ const purchaseRoutes: FastifyPluginAsync = async (app) => {
           countedInInventory: counted,
         },
       });
-
-      // 買い足し累積: 「直前の推定残数＋今回の購入数」を手動補正値として積み上げる。
-      // 未来日付でまだ counted でない購入は、夜間バッチが counted 化するタイミングで
-      // 同様に積み上がる（services/stockCalc.ts の updateCountedInInventory 参照）
-      if (counted) {
-        await setManualOverrideQty(
-          tx,
-          data.itemId,
-          req.auth.householdId,
-          baseQty + data.qty,
-          req.auth.userId,
-          'purchase_accumulated'
-        );
-      }
-      return log;
     });
 
     await refreshStockSnapshotForItem(data.itemId);
@@ -140,17 +140,9 @@ const purchaseRoutes: FastifyPluginAsync = async (app) => {
       await tx.purchaseLog.delete({ where: { id } });
 
       // この購入が counted 済みで、買い足し累積により補正値へ加算されていた場合は、
-      // 補正値からも同量を差し引いて取り消す（誤登録の取り消し時に二重に残らないように）。
-      // 完全に正確な巻き戻しではない（その後の別の積み上げ・補正で上書きされていれば
-      // ズレうる）が、直近の誤登録取り消しという想定用途では妥当な範囲
+      // 補正値からも同量を差し引いて取り消す（誤登録の取り消し時に二重に残らないように）
       if (log.countedInInventory) {
-        const state = await tx.itemRuntimeState.findUnique({ where: { itemId: log.itemId } });
-        if (state?.manualOverrideQty != null && isAccumulatedOverrideReason(state.manualOverrideReason)) {
-          await tx.itemRuntimeState.update({
-            where: { itemId: log.itemId },
-            data: { manualOverrideQty: Math.max(0, state.manualOverrideQty - log.qty) },
-          });
-        }
+        await reverseAccumulatedPurchase(tx, log.itemId, log.qty);
       }
     });
 

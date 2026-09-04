@@ -224,7 +224,8 @@ export async function refreshStockSnapshotForItem(
 
 // 品目の「現時点の推定残数」を、保存済み snapshot に頼らずその場で計算する。
 // 買い足し累積（積み上げ）計算のベース値取得に使う。呼び出し時点でまだ加味されていない
-// 新しい購入を加える"前"の状態を表すため、呼び出し側は対象購入を作成/counted化する前に呼ぶこと
+// 新しい購入を加える"前"の状態を表すため、呼び出し側は対象購入を作成/counted化する前に呼ぶこと。
+// ロックは持たないため、直列化が必要な呼び出し元は先に lockItemForAccumulation を呼ぶこと
 export async function getCurrentEstimatedRemainingQty(
   tx: Prisma.TransactionClient,
   itemId: string
@@ -274,11 +275,99 @@ export function isAccumulatedOverrideReason(reason: string | null | undefined): 
   return !!reason && reason.startsWith('purchase_accumulated');
 }
 
+// 積み上げ由来の補正値から、指定品目の購入取消分を差し引く（購入取消の差し戻し用）。
+// 完全に正確な巻き戻しではない（その後の別の積み上げ・補正で上書きされていればズレうる）が、
+// 直近の誤登録取り消しという想定用途では妥当な範囲。品目行をロックしてから読み書きするため、
+// 同時実行中の購入登録・夜間バッチと競合しない（VPS管理レビューB01対応）
+export async function reverseAccumulatedPurchase(
+  tx: Prisma.TransactionClient,
+  itemId: string,
+  qty: number
+): Promise<void> {
+  await lockItemForAccumulation(tx, itemId);
+  const state = await tx.itemRuntimeState.findUnique({ where: { itemId } });
+  if (state?.manualOverrideQty != null && isAccumulatedOverrideReason(state.manualOverrideReason)) {
+    await tx.itemRuntimeState.update({
+      where: { itemId },
+      data: { manualOverrideQty: Math.max(0, state.manualOverrideQty - qty) },
+    });
+  }
+}
+
+// 品目単位の直列化ロック（VPS管理レビューB01対応）。
+// 同一品目への同時書き込み（手動購入・Gmail確定・夜間バッチが同時に走るケース）で、
+// 「読み取り→積み上げ→書き込み」が競合して片方の加算が失われないよう、
+// items 行（常に存在する）を SELECT ... FOR UPDATE でロックし、後続の同一品目トランザクションを
+// 直列化する。item_runtime_state は初回はまだ行が無いことがあるためロック対象にできない
+export async function lockItemForAccumulation(tx: Prisma.TransactionClient, itemId: string): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM items WHERE id = ${itemId} FOR UPDATE`;
+}
+
+// 買い足し累積の一連処理（ロック→現時点の推定残数取得→積み上げ書き込み）をまとめた関数。
+// 呼び出し元は、購入行の作成と同一トランザクション（tx）内でこれを呼ぶことで、
+// 「購入は作成されたが積み上げは書き込まれない」という不整合（VPS管理レビューB01）を防ぐ
+export async function accumulatePurchaseIntoStock(
+  tx: Prisma.TransactionClient,
+  itemId: string,
+  householdId: string,
+  purchaseQty: number,
+  byUserId: string | null,
+  reason: string
+): Promise<void> {
+  await lockItemForAccumulation(tx, itemId);
+  const baseQty = await getCurrentEstimatedRemainingQty(tx, itemId);
+  await setManualOverrideQty(tx, itemId, householdId, baseQty + purchaseQty, byUserId, reason);
+}
+
+interface PendingPurchase {
+  id: string;
+  itemId: string;
+  householdId: string;
+  qty: number;
+}
+
+// 品目1件分の pending 購入（counted_in_inventory=false かつ inventory_effective_at 到来済み）を
+// 購入日の古い順に処理する。1品目分をまるごと1トランザクションに包むため、途中で失敗した場合は
+// その品目の counted 化・積み上げが両方ロールバックされ、次回バッチで安全に再試行できる
+// （VPS管理レビューB01対応。テストから直接呼べるよう個別exportする）
+export async function processPendingPurchasesForItem(
+  tx: Prisma.TransactionClient,
+  itemId: string,
+  purchases: PendingPurchase[]
+): Promise<void> {
+  if (purchases.length === 0) return;
+  await lockItemForAccumulation(tx, itemId);
+
+  let running = await getCurrentEstimatedRemainingQty(tx, itemId);
+  for (const purchase of purchases) {
+    // 存在しない/他品目の purchase を渡された場合は明示的に失敗させる（P2025）。
+    // 万一の取り違えでcounted状態と積み上げが分離しないようにするための防御
+    await tx.purchaseLog.update({
+      where: { id: purchase.id },
+      data: { countedInInventory: true },
+    });
+    running += purchase.qty;
+  }
+  await setManualOverrideQty(
+    tx,
+    itemId,
+    purchases[0].householdId,
+    running,
+    null,
+    'purchase_accumulated_batch'
+  );
+}
+
 // inventory_effective_at 到来分の counted_in_inventory を true 化する（夜間バッチ Step 1）。
 // counted 化する購入は品目ごとに購入日の古い順で「直前の推定残数＋購入数」を積み上げ、
 // 手動補正値として反映する（買い足しの累積）。これにより、確定時点ではまだ counted で
 // なかった Gmail 取込購入（配送バッファ設定により未来日付になっていたもの）も、
-// 実際に在庫へ反映されるこのタイミングで同様に積み上がる
+// 実際に在庫へ反映されるこのタイミングで同様に積み上がる。
+//
+// 品目単位で1トランザクションに包む（processPendingPurchasesForItem）ため、ある品目の処理中に
+// 失敗しても、その品目の購入は counted_in_inventory=false のまま残り、次回のバッチ実行が
+// 自然に再試行対象とする（二重加算しない。VPS管理レビューB01/B02対応）。既に処理済みの
+// 他品目の結果は別トランザクションのため影響を受けない
 export async function updateCountedInInventory(householdId?: string): Promise<number> {
   const today = todayDateOnly();
   const pending = await prisma.purchaseLog.findMany({
@@ -300,23 +389,8 @@ export async function updateCountedInInventory(householdId?: string): Promise<nu
 
   let count = 0;
   for (const [itemId, list] of byItem) {
-    let running = await getCurrentEstimatedRemainingQty(prisma, itemId);
-    for (const purchase of list) {
-      await prisma.purchaseLog.update({
-        where: { id: purchase.id },
-        data: { countedInInventory: true },
-      });
-      running += purchase.qty;
-      count++;
-    }
-    await setManualOverrideQty(
-      prisma,
-      itemId,
-      list[0].householdId,
-      running,
-      null,
-      'purchase_accumulated_batch'
-    );
+    await prisma.$transaction((tx) => processPendingPurchasesForItem(tx, itemId, list));
+    count += list.length;
   }
   return count;
 }
