@@ -4,7 +4,35 @@ import { prisma } from '../lib/prisma';
 import { parseBody } from '../utils/validate';
 import { parseDateOnly } from '../utils/date';
 import { serializePurchase } from '../utils/serialize';
-import { refreshStockSnapshotForItem, todayDateOnly } from '../services/stockCalc';
+import {
+  refreshStockSnapshotForItem,
+  todayDateOnly,
+  getCurrentEstimatedRemainingQty,
+  setManualOverrideQty,
+  isAccumulatedOverrideReason,
+} from '../services/stockCalc';
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const SUGGESTION_SAMPLE_INTERVALS = 5;
+
+// 消費ペースの実績提案（直近 SUGGESTION_SAMPLE_INTERVALS 回の購入間隔 ÷ 直前購入数量、の平均）。
+// 同日購入等で間隔が0日の区間は消費ペースの参考にならないため除外する。
+// 有効な区間が1件も無ければ提案しない
+function computeSuggestedDaysPerUnit(
+  logs: { purchasedAt: Date; qty: number }[]
+): { value: number; sampleCount: number } | null {
+  if (logs.length < 2) return null;
+  const asc = [...logs].sort((a, b) => a.purchasedAt.getTime() - b.purchasedAt.getTime());
+  const samples: number[] = [];
+  for (let i = asc.length - 1; i > 0 && samples.length < SUGGESTION_SAMPLE_INTERVALS; i--) {
+    const days = Math.round((asc[i].purchasedAt.getTime() - asc[i - 1].purchasedAt.getTime()) / MS_PER_DAY);
+    if (days <= 0) continue;
+    samples.push(days / asc[i - 1].qty);
+  }
+  if (samples.length === 0) return null;
+  const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
+  return { value: Math.round(avg * 10) / 10, sampleCount: samples.length };
+}
 
 const purchaseRoutes: FastifyPluginAsync = async (app) => {
   // 品目別の購入履歴（新しい順）+ 価格統計
@@ -33,7 +61,9 @@ const purchaseRoutes: FastifyPluginAsync = async (app) => {
             latest: prices[0], // logs は新しい順
           };
 
-    return { purchases: logs.map(serializePurchase), priceStats };
+    const suggestedDaysPerUnit = computeSuggestedDaysPerUnit(logs);
+
+    return { purchases: logs.map(serializePurchase), priceStats, suggestedDaysPerUnit };
   });
 
   // 手動の購入登録
@@ -53,6 +83,11 @@ const purchaseRoutes: FastifyPluginAsync = async (app) => {
 
     const user = await prisma.user.findUnique({ where: { id: req.auth.userId } });
 
+    // 在庫へ即座に反映される購入（= counted）なら、積み上げのベースとして
+    // 「まだこの購入を含まない現時点の推定残数」を先に取得しておく
+    const counted = purchasedAt <= todayDateOnly();
+    const baseQty = counted ? await getCurrentEstimatedRemainingQty(prisma, data.itemId) : 0;
+
     const log = await prisma.$transaction(async (tx) => {
       const log = await tx.purchaseLog.create({
         data: {
@@ -69,20 +104,23 @@ const purchaseRoutes: FastifyPluginAsync = async (app) => {
           purchasedByUserName: user?.name ?? null,
           fulfillmentStatus: 'received',
           inventoryEffectiveAt: purchasedAt,
-          countedInInventory: purchasedAt <= todayDateOnly(),
+          countedInInventory: counted,
         },
       });
 
-      // 新しい購入が入ったので手動補正値をクリア（GAS createPurchaseLog 準拠）
-      await tx.itemRuntimeState.updateMany({
-        where: { itemId: data.itemId, manualOverrideQty: { not: null } },
-        data: {
-          manualOverrideQty: null,
-          manualOverrideAt: null,
-          manualOverrideByUserId: null,
-          manualOverrideReason: null,
-        },
-      });
+      // 買い足し累積: 「直前の推定残数＋今回の購入数」を手動補正値として積み上げる。
+      // 未来日付でまだ counted でない購入は、夜間バッチが counted 化するタイミングで
+      // 同様に積み上がる（services/stockCalc.ts の updateCountedInInventory 参照）
+      if (counted) {
+        await setManualOverrideQty(
+          tx,
+          data.itemId,
+          req.auth.householdId,
+          baseQty + data.qty,
+          req.auth.userId,
+          'purchase_accumulated'
+        );
+      }
       return log;
     });
 
@@ -98,7 +136,24 @@ const purchaseRoutes: FastifyPluginAsync = async (app) => {
     });
     if (!log) return reply.code(404).send({ message: '購入履歴が見つかりません' });
 
-    await prisma.purchaseLog.delete({ where: { id } });
+    await prisma.$transaction(async (tx) => {
+      await tx.purchaseLog.delete({ where: { id } });
+
+      // この購入が counted 済みで、買い足し累積により補正値へ加算されていた場合は、
+      // 補正値からも同量を差し引いて取り消す（誤登録の取り消し時に二重に残らないように）。
+      // 完全に正確な巻き戻しではない（その後の別の積み上げ・補正で上書きされていれば
+      // ズレうる）が、直近の誤登録取り消しという想定用途では妥当な範囲
+      if (log.countedInInventory) {
+        const state = await tx.itemRuntimeState.findUnique({ where: { itemId: log.itemId } });
+        if (state?.manualOverrideQty != null && isAccumulatedOverrideReason(state.manualOverrideReason)) {
+          await tx.itemRuntimeState.update({
+            where: { itemId: log.itemId },
+            data: { manualOverrideQty: Math.max(0, state.manualOverrideQty - log.qty) },
+          });
+        }
+      }
+    });
+
     await refreshStockSnapshotForItem(log.itemId);
     return { ok: true };
   });

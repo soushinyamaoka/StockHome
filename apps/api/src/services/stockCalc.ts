@@ -10,6 +10,11 @@
 //   6. アラート: 残日数 <= lead_days + safety_days OR 残数 <= しきい値
 //   例外: is_inventory_unknown は常にアラート無効 /
 //         inventory_effective_at から3日以内は通知抑止
+//
+// 買い足し累積: counted 化する購入は「直前の推定残数＋今回の購入数」を manual_override_qty
+// として積み上げる（setManualOverrideQty）。購入のたびに残数を上書きするのではなく、
+// 既存の在庫に買い足した分を足していく（手動・Gmail取込確定・夜間バッチ経由の全ルート共通）。
+// 数え直したい場合は既存の「在庫補正」機能（correctionInputSchema）で実数を設定する
 import type { Item, ItemRuntimeState, PurchaseLog, Prisma } from '@prisma/client';
 import { DEFAULTS } from '@stockhome/shared';
 import { prisma } from '../lib/prisma';
@@ -47,7 +52,7 @@ type ItemWithState = Item & {
 };
 
 // counted_in_inventory=true の最新購入（purchased_at 降順の先頭）
-async function getLatestCountedPurchase(
+export async function getLatestCountedPurchase(
   tx: Prisma.TransactionClient,
   itemId: string
 ): Promise<PurchaseLog | null> {
@@ -97,9 +102,10 @@ export function calculateStock(
       : null;
 
   // 補正と最新購入のうち「より新しい基準イベント」を起点にする。
-  // 補正日より後の購入（補正後に買い足した分）は補正を上書きして在庫へ反映する。
-  // GAS では手動購入時のみ override をクリアしていたが、候補確定経由の購入はクリアされず
-  // 古い補正が残って在庫へ反映されなかった。計算側で新しい方を選ぶことで全経路を正す。
+  // 通常、counted 化した購入は登録時に setManualOverrideQty で「直前残数＋購入数」を
+  // 補正値として積み上げるため override が常に最新となるが、念のためのフォールバックとして
+  // 万一 override 側が更新されないまま古い状態で残った場合でも、より新しい購入があれば
+  // そちらを優先する（例: 外部要因で override 更新が失敗した場合等）。
   let useOverride = false;
   if (hasOverride && overrideDate) {
     useOverride = !latestPurchase || diffDays(latestPurchase.purchasedAt, overrideDate) <= 0;
@@ -216,18 +222,103 @@ export async function refreshStockSnapshotForItem(
   return calc;
 }
 
-// inventory_effective_at 到来分の counted_in_inventory を true 化する（夜間バッチ Step 1）
+// 品目の「現時点の推定残数」を、保存済み snapshot に頼らずその場で計算する。
+// 買い足し累積（積み上げ）計算のベース値取得に使う。呼び出し時点でまだ加味されていない
+// 新しい購入を加える"前"の状態を表すため、呼び出し側は対象購入を作成/counted化する前に呼ぶこと
+export async function getCurrentEstimatedRemainingQty(
+  tx: Prisma.TransactionClient,
+  itemId: string
+): Promise<number> {
+  const item = await tx.item.findUnique({
+    where: { id: itemId },
+    include: { runtimeState: true },
+  });
+  if (!item) return 0;
+  const latestPurchase = await getLatestCountedPurchase(tx, itemId);
+  const calc = calculateStock(item, latestPurchase);
+  return calc.estimatedRemainingQty ?? 0;
+}
+
+// 手動補正値（item_runtime_state）を指定の残数で設定する（積み上げ結果の書き込み用）
+export async function setManualOverrideQty(
+  tx: Prisma.TransactionClient,
+  itemId: string,
+  householdId: string,
+  qty: number,
+  byUserId: string | null,
+  reason: string
+): Promise<void> {
+  const rounded = Math.max(0, Math.round(qty * 100) / 100);
+  const now = new Date();
+  await tx.itemRuntimeState.upsert({
+    where: { itemId },
+    create: {
+      householdId,
+      itemId,
+      manualOverrideQty: rounded,
+      manualOverrideAt: now,
+      manualOverrideByUserId: byUserId,
+      manualOverrideReason: reason,
+    },
+    update: {
+      manualOverrideQty: rounded,
+      manualOverrideAt: now,
+      manualOverrideByUserId: byUserId,
+      manualOverrideReason: reason,
+    },
+  });
+}
+
+// 買い足し累積で設定した補正値かどうか（購入取消時の差し戻し判定に使う）
+export function isAccumulatedOverrideReason(reason: string | null | undefined): boolean {
+  return !!reason && reason.startsWith('purchase_accumulated');
+}
+
+// inventory_effective_at 到来分の counted_in_inventory を true 化する（夜間バッチ Step 1）。
+// counted 化する購入は品目ごとに購入日の古い順で「直前の推定残数＋購入数」を積み上げ、
+// 手動補正値として反映する（買い足しの累積）。これにより、確定時点ではまだ counted で
+// なかった Gmail 取込購入（配送バッファ設定により未来日付になっていたもの）も、
+// 実際に在庫へ反映されるこのタイミングで同様に積み上がる
 export async function updateCountedInInventory(householdId?: string): Promise<number> {
   const today = todayDateOnly();
-  const result = await prisma.purchaseLog.updateMany({
+  const pending = await prisma.purchaseLog.findMany({
     where: {
       ...(householdId ? { householdId } : {}),
       countedInInventory: false,
       inventoryEffectiveAt: { not: null, lte: today },
     },
-    data: { countedInInventory: true },
+    orderBy: [{ purchasedAt: 'asc' }, { createdAt: 'asc' }],
   });
-  return result.count;
+  if (pending.length === 0) return 0;
+
+  const byItem = new Map<string, typeof pending>();
+  for (const p of pending) {
+    const list = byItem.get(p.itemId) ?? [];
+    list.push(p);
+    byItem.set(p.itemId, list);
+  }
+
+  let count = 0;
+  for (const [itemId, list] of byItem) {
+    let running = await getCurrentEstimatedRemainingQty(prisma, itemId);
+    for (const purchase of list) {
+      await prisma.purchaseLog.update({
+        where: { id: purchase.id },
+        data: { countedInInventory: true },
+      });
+      running += purchase.qty;
+      count++;
+    }
+    await setManualOverrideQty(
+      prisma,
+      itemId,
+      list[0].householdId,
+      running,
+      null,
+      'purchase_accumulated_batch'
+    );
+  }
+  return count;
 }
 
 // 全有効品目の在庫を再計算して snapshot を更新する

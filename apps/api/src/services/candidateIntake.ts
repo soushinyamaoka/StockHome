@@ -9,7 +9,12 @@ import type { ImportOrderCandidate, Prisma } from '@prisma/client';
 import { APP_CONFIG_KEYS, DEFAULTS, type BridgeCandidate } from '@stockhome/shared';
 import { appLogger, ERROR_KINDS, LOG_EVENTS, safeErr } from '../lib/logger';
 import { prisma } from '../lib/prisma';
-import { refreshStockSnapshotForItem, todayDateOnly } from './stockCalc';
+import {
+  refreshStockSnapshotForItem,
+  todayDateOnly,
+  getCurrentEstimatedRemainingQty,
+  setManualOverrideQty,
+} from './stockCalc';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
@@ -120,6 +125,10 @@ export async function createPurchaseLogFromCandidate(
   const mailDate = jstDateOnly(candidate.mailDate);
   const inventoryEffectiveAt = new Date(mailDate.getTime() + bufferDays * MS_PER_DAY);
   const counted = inventoryEffectiveAt <= todayDateOnly();
+  // 在庫へ即座に反映される（= counted）場合のみ、積み上げのベースとして
+  // 「まだこの購入を含まない現時点の推定残数」を先に取得しておく。配送バッファ設定により
+  // まだ counted でない場合は、夜間バッチの counted 化タイミングで同様に積み上がる
+  const baseQty = counted ? await getCurrentEstimatedRemainingQty(prisma, matchedItemId) : 0;
 
   const baseNote = `自動取込: ${candidate.itemNameRaw ?? ''}`;
   const noteBase = suspicious
@@ -160,6 +169,15 @@ export async function createPurchaseLogFromCandidate(
   });
 
   if (counted) {
+    // 買い足し累積: 「直前の推定残数＋今回の購入数」を手動補正値として積み上げる
+    await setManualOverrideQty(
+      prisma,
+      matchedItemId,
+      candidate.householdId,
+      baseQty + qty,
+      confirmedByUserId,
+      'purchase_accumulated_gmail'
+    );
     await refreshStockSnapshotForItem(matchedItemId);
   }
   return log;

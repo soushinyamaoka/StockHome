@@ -86,6 +86,11 @@ export interface PriceStats {
   latest: number | null;
 }
 
+export interface SuggestedDaysPerUnit {
+  value: number;
+  sampleCount: number;
+}
+
 export interface CandidateDto {
   id: string;
   vendor: string;

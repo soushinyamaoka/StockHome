@@ -16,6 +16,7 @@ import { VENDOR_LABELS, type ExternalVendor } from '@stockhome/shared';
 import { deletePurchase, fetchItem, fetchPurchases } from '../../api/items';
 import type { PurchaseDto } from '../../api/types';
 import { Card } from '../../components/Card';
+import { PriceSparkline } from '../../components/PriceSparkline';
 import { COLORS, FONTS, RADIUS, SPACING } from '../../theme';
 
 function yen(n: number | null): string {
@@ -63,6 +64,12 @@ export default function PurchaseHistoryScreen() {
   const stats = data?.priceStats;
   const unit = itemData?.item.unit ?? '';
 
+  // 価格推移スパークライン用（購入日昇順・価格ありのみ）
+  const pricePoints = [...(data?.purchases ?? [])]
+    .filter((p): p is PurchaseDto & { price: number } => p.price != null)
+    .reverse() // data.purchases は新しい順のため、古い順に並べ替える
+    .map((p) => ({ purchasedAt: p.purchasedAt, price: p.price }));
+
   const sourceLabel = (p: PurchaseDto): string => {
     if (p.source === 'gmail') {
       return VENDOR_LABELS[p.externalVendor as ExternalVendor] ?? 'メール取込';
@@ -99,6 +106,7 @@ export default function PurchaseHistoryScreen() {
                 <Text style={styles.statLabel}>最高</Text>
               </View>
             </View>
+            <PriceSparkline points={pricePoints} />
           </Card>
         ) : null
       }

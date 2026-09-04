@@ -6,6 +6,7 @@ import type {
   PurchaseDto,
   PriceStats,
   StockEntry,
+  SuggestedDaysPerUnit,
 } from './types';
 
 // --- 品目 ---
@@ -41,7 +42,11 @@ export async function deleteItem(id: string): Promise<void> {
 // --- 購入履歴 ---
 export async function fetchPurchases(
   itemId: string
-): Promise<{ purchases: PurchaseDto[]; priceStats: PriceStats }> {
+): Promise<{
+  purchases: PurchaseDto[];
+  priceStats: PriceStats;
+  suggestedDaysPerUnit: SuggestedDaysPerUnit | null;
+}> {
   const res = await api.get(`/api/items/${itemId}/purchases`);
   return res.data;
 }

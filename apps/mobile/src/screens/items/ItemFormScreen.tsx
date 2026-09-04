@@ -20,7 +20,7 @@ import {
   type Alternative,
 } from '@stockhome/shared';
 
-import { createItem, fetchItem, updateItem } from '../../api/items';
+import { createItem, fetchItem, fetchPurchases, updateItem } from '../../api/items';
 import { fetchUsers } from '../../api/misc';
 import { Button } from '../../components/Button';
 import { TextField } from '../../components/TextField';
@@ -49,6 +49,13 @@ export default function ItemFormScreen() {
     enabled: isEdit,
   });
   const { data: usersData } = useQuery({ queryKey: ['users'], queryFn: fetchUsers });
+  // 消費ペースの実績提案（編集時のみ。購入履歴から算出）
+  const { data: purchasesData } = useQuery({
+    queryKey: ['purchases', itemId],
+    queryFn: () => fetchPurchases(itemId!),
+    enabled: isEdit,
+  });
+  const suggestion = purchasesData?.suggestedDaysPerUnit ?? null;
 
   const [itemName, setItemName] = useState(!isEdit && prefillName ? prefillName : '');
   const [category, setCategory] = useState('');
@@ -180,6 +187,19 @@ export default function ItemFormScreen() {
             keyboardType="decimal-pad"
             helper="例: 1箱を10日で使うなら 10"
           />
+          {suggestion ? (
+            <TouchableOpacity
+              style={styles.suggestionRow}
+              activeOpacity={0.7}
+              onPress={() => setDaysPerUnit(String(suggestion.value))}
+            >
+              <Ionicons name="sparkles-outline" size={14} color={COLORS.indigo} />
+              <Text style={styles.suggestionText}>
+                実績では約{suggestion.value}日（直近購入間隔{suggestion.sampleCount}件から算出）
+              </Text>
+              <Text style={styles.suggestionAction}>採用</Text>
+            </TouchableOpacity>
+          ) : null}
         </Section>
 
         <Section title="通知設定">
@@ -319,4 +339,17 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.sm,
   },
   altIndex: { fontFamily: FONTS.bold, fontSize: 12, color: COLORS.inkSub },
+  suggestionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: COLORS.indigoSoft,
+    borderRadius: RADIUS.sm,
+    paddingVertical: SPACING.xs + 2,
+    paddingHorizontal: SPACING.sm,
+    marginTop: -SPACING.sm,
+    marginBottom: SPACING.md,
+  },
+  suggestionText: { flex: 1, fontFamily: FONTS.medium, fontSize: 12, color: COLORS.indigo },
+  suggestionAction: { fontFamily: FONTS.bold, fontSize: 12, color: COLORS.indigo, textDecorationLine: 'underline' },
 });
