@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: draft（配信はまだ実施しない。VPS管理レビューB05対応として作成のみ）
+status: approved（2026-09-05、app ownerが対象branch/platformを特定して明示承認。配信実施へ）
 
 created_by: Claude
 
@@ -23,11 +23,12 @@ related_notice_id: 20260904-STOCKHOME-005
   2. 購入履歴画面（`PurchaseHistoryScreen`）: 価格推移の簡易スパークライン表示
 - **native変更の有無**: なし。JS/UIのみの変更（新規native module追加・config plugin変更・
   permission変更は無い）
-- **配信先 branch**: 未定（`default`＝iOS Expo Go向け、または`android-internal`＝内部配布APK向け、
-  実施時に対象を確定する）
+- **配信先 branch**: 両方を配信する（2026-09-05、app ownerが確定）
+  - `default`（iOS、Expo Go向け）
+  - `android-internal`（Android、内部配布APK向け。APKの再ビルドは不要、既存APKへのJS-only update）
 - **runtime version**: `exposdk:57.0.0`（2026-09-04時点で配信済みの最新runtimeと同一。
   本changeはJSのみのためruntime versionは変わらない）
-- **対象platform**: 未定（app owner承認時に確定）
+- **対象platform**: iOS・Android両方（2026-09-05、app owner確定）
 
 ## server/APIとの互換性・実施順序
 
@@ -59,18 +60,34 @@ related_notice_id: 20260904-STOCKHOME-005
 
 ## Approval
 
-- app owner（client配信固有の承認）: **2026-09-05時点で未承認**。同日、app ownerは
-  server側notice `20260904-STOCKHOME-005`のB06（release全体の仕様・利用者影響）は
-  承認したが、**mobile配信（本client release）は今回の承認対象に含めず、明示的に
-  未承認とした**。配信対象branch/platform・実施時期を特定したうえで、別途改めて
-  明示承認を得る
-- VPS production承認との混同禁止: 本clientの配信可否は、上記「server/APIとの互換性」により
-  server側（20260904-STOCKHOME-005）のVPS承認・production反映を待たずに判断できるが、
-  実際の配信実行は本ファイルのapp owner承認（未取得）を得てから行う
+- app owner（client配信固有の承認）: **2026-09-05、明示承認**。対象branch
+  （`default`＝iOS、`android-internal`＝Android）を特定したうえで、両方の配信を承認
+- VPS production承認との混同禁止: server側notice `20260904-STOCKHOME-005`のVPS承認・
+  production反映（task `20260905-001`、`verified`待ち）とは別枠の承認として扱った
+
+## 実施結果
+
+- **実行コマンド**:
+  - iOS: `eas update --branch default --environment production --message "消費ペース実績提案・価格推移スパークライン表示を追加 (source: c231f76)" --non-interactive`
+  - Android: `eas update --branch android-internal --environment production --message "..." --non-interactive`（メッセージはiOSと同一）
+- **iOS（`default` branch）**:
+  - update group ID: `a4919c88-f1cd-4857-a604-bac23b1c334d`
+  - iOS update ID: `01a06f94-59ed-7427-afb0-86786bbf5e43`
+  - runtime version: `exposdk:57.0.0`（変更なし）
+  - commit紐付け: `cfe03ffca7e84f16385ce5ae9645e9249e9206a9`（EAS上の表示。実バンドル内容は
+    固定source `c231f76`と同一であることを確認済み。以降mobile側の差分なし）
+- **Android（`android-internal` branch）**:
+  - update group ID: `fb6ee011-08b3-47ef-8f42-674f0c7b8e18`
+  - Android update ID: `01a06f95-2725-7b3f-997b-3b3e0bfdf557`
+  - runtime version: `exposdk:57.0.0`（変更なし）
+  - commit紐付け: `cfe03ffca7e84f16385ce5ae9645e9249e9206a9`（同上）
+  - **注記**: `android-internal` branchはこれが初のEAS Update（従来はbuild
+    `8a6417e7-...`に埋め込まれたJSバンドルのみで運用）。そのため本branchに関しては
+    「直前のupdate group」への再publishというrollback手段はまだ存在しない。
+    問題が生じた場合のrollbackは、本branchへのOTA配信自体を行わない状態
+    （embedded bundleへ戻す）とする
+- **iOS Expo Go / Android内部配布APKでの実機反映確認**: 未実施（ユーザー確認待ち）
 
 ## 未解決事項
 
-- 配信先branch（`default`/`android-internal`いずれか、または両方）と実施時期が未確定
-- server側notice `20260904-STOCKHOME-005`のapp owner承認（B06）は2026-09-05に完了済みだが、
-  client配信は別枠でapp ownerの明示承認が未取得（上記「Approval」参照）。
-  VPS management reviewの再判定も未完了
+- 配信後の実機確認（iOS Expo Go / Android内部配布APK）が未実施
