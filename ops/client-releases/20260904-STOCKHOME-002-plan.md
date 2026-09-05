@@ -86,8 +86,36 @@ related_notice_id: 20260904-STOCKHOME-005
     「直前のupdate group」への再publishというrollback手段はまだ存在しない。
     問題が生じた場合のrollbackは、本branchへのOTA配信自体を行わない状態
     （embedded bundleへ戻す）とする
-- **iOS Expo Go / Android内部配布APKでの実機反映確認**: 未実施（ユーザー確認待ち）
+
+## インシデント: 接続先URLが埋め込まれず全platformでログイン不能（同日中に修正）
+
+- **事象**: 上記の初回配信後、ユーザーがAndroidでログインを試みると
+  `AxiosError: Network Error`。VPS管理側で確認したところAPI側にログが一切残っておらず、
+  リクエストがサーバーへ到達していなかった
+- **原因**: `eas update`実行時に指定した`--environment production`は、本プロジェクトの
+  EAS上で**変数が一切設定されていない空の環境**だった。実際の接続先URL
+  （`EXPO_PUBLIC_API_BASE_URL`）は`preview`という名前の環境の方に設定されており
+  （Android内部配布APKのbuild profile`android-internal`が`environment: preview`を
+  使っているのはこのため）、`production`環境を指定したことでURLが一切バンドルへ
+  埋め込まれず、`apps/mobile/src/api/client.ts`の`resolveBaseUrl()`が実機到達不能な
+  fallback値（Android: `http://10.0.2.2:4002`というエミュレータ専用ループバック、
+  iOS: `http://localhost:4002`）へ落ちていた。**iOS・Android両方の初回配信
+  （update group `a4919c88-...`・`fb6ee011-...`）が同じ原因で影響を受けていた**
+- **対応**: 両branchへ、`--environment preview`を指定して再度`eas update`を実行し修正した
+  - iOS（`default`）: update group `eb93101b-077f-4b84-ae8b-493e854da132`
+  - Android（`android-internal`）: update group `411b16b8-5b11-4b61-91b3-c2de7e162af2`
+  - 修正後、書き出し済みbundle（`.hbc`）に実際のドメイン文字列
+    （`stockhome.homehub-tools.dedyn.io`）が含まれることを直接確認した
+- **今後の再発防止**: `eas update`／`eas build`で`--environment`を指定する際は、
+  実行前に`eas env:list <environment名>`で対象環境に必要な変数が実在することを
+  確認してから実行する。EAS環境変数が`production`という名前の環境ではなく`preview`に
+  設定されている現状の構成自体が紛らわしく、将来的に変数を`production`環境へ
+  揃えるか、名称と実態を一致させる整理が望ましい（本ファイルでは実施せず、
+  今後の検討事項として記録する）
+- **iOS Expo Go / Android内部配布APKでの実機反映確認**: 未実施（ユーザー確認待ち。
+  修正後のupdate groupで再確認が必要）
 
 ## 未解決事項
 
-- 配信後の実機確認（iOS Expo Go / Android内部配布APK）が未実施
+- 配信後（修正版）の実機確認（iOS Expo Go / Android内部配布APK）が未実施
+- EAS環境変数の`production`/`preview`の名称と実態の不一致は未整理（上記インシデント参照）
