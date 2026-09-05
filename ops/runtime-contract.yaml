@@ -43,6 +43,9 @@
 #     二重起動時の二重加算不具合を修正（B07）、JST日付境界の固定日時回帰testを追加（B08）。
 #     failure_consistencyの記載をB07対応後の内容へ更新。B06（app owner承認）は継続blocker。
 #     production未反映。
+#   2026-09-05 (task_id: 20260905-001): app owner承認、妻への通知・不使用確認、個別production承認後、
+#     source c231f76をAPIへ反映。dump隔離restore、16 test、5 migration、15 table件数一致、
+#     API/DB/health/bind/volume、全行JSONログをVPS管理側が即時確認。19:55定期job確認待ち。
 
 schema_version: 1
 app: stockhome
@@ -50,7 +53,7 @@ app: stockhome
 canonical_repo: https://github.com/soushinyamaoka/StockHome.git
 canonical_ref: main
 updated_at: 2026-09-05
-verified_against_runtime: 2026-09-03  # productionへの本変更反映は未実施。この日付はproduction実機で最後に照合できた時点を指す
+verified_against_runtime: 2026-09-05  # task 20260905-001の即時確認。19:55定期jobの実時刻確認は未完了
 
 runtime:
   type: docker-compose
@@ -103,19 +106,15 @@ data:
     - path: /var/lib/postgresql/data  # container内のmount先。実機named volumeはstockhome_stockhome_pgdata
       backup_required: true
       regenerable: false
-  migrations: automatic            # apps/api/Dockerfile の CMD が起動の都度 `prisma migrate deploy` を実行する
-                                    # 未適用: 20260902073443_add_push_devices、20260902130116_add_push_tickets
-                                    # （push_devices・push_tickets テーブルの新規作成のみ。CREATE TABLE + index + 外部キーだけで、
-                                    # 既存テーブルの変更・データ操作を含まない。両migration.sqlともBEGIN/COMMITで明示的に
-                                    # 囲み、途中失敗時に中途半端な状態を残さない（VPS管理レビューB07対応）。
-                                    # 使い捨てPostgreSQLで全migration履歴(init〜push_tickets)を最初から適用するrehearsalを実施し、
-                                    # 全件成功を確認済み（B07対応）。ローカル開発DBでも個別適用・動作確認済み。
-                                    # production は notice 20260902-STOCKHOME-004 の承認後に反映される。impact_level L3）
+  migrations: automatic            # entrypointが起動の都度 `prisma migrate deploy` を実行する。
+                                    # 2026-09-05のproduction実機では5 migration適用済み・up to date。
+                                    # task 20260905-001はschema/migration変更なし。
   field_semantics:
     - table: item_runtime_states
       fields: [manual_override_qty, manual_override_at, manual_override_by_user_id, manual_override_reason]
       meaning: >-
-        2026-09-04（notice 20260904-STOCKHOME-005、production未反映）以降、この4フィールドは
+        2026-09-05（notice 20260904-STOCKHOME-005、task 20260905-001でproduction反映）以降、
+        この4フィールドは
         「買い足し累積」の書き込み先を兼ねる。従来は利用者が明示的に行う在庫補正（在庫補正画面、
         manual_override_reason は CORRECTION_REASONS 列挙値）専用だったが、追加で
         手動購入登録・Gmail取込確定・夜間バッチのcounted化のいずれかが起きるたびに、
@@ -161,7 +160,7 @@ data:
         したがって運用上「pendingのまま7日以上残る」ことは起こらない（B12対応、
         cleanup関数単体の挙動とjob全体の挙動を区別して記載）。
         削除件数は push_tickets_cleaned イベントでログに残す（task_id 20260902-008、
-        B09対応。ローカルDBで動的確認済み。production未反映）。
+        B09対応。ローカルDBと2026-09-03のproduction定期jobで動的確認済み）。
       backup_impact: >-
         削除対象はExpoのticket ID・状態・エラーコードのみで、利用者データを含まない。
         DB全体backupには削除前の状態が残り得るが、restore後に同じ保持ポリシーが
@@ -243,7 +242,10 @@ deploy:
     DB/schema/data変更がないためDB dumpを省略し、現行source archiveと旧API image tagを保全した。
     health失敗時は旧image tagをCompose overrideで起動し、成立しない場合は旧source archiveを
     別directoryへ展開して同じCompose project名で再buildする。DB schema変更はないため、通常rollbackで
-    DB restoreは行わない。詳細はvps-server-managementのtask 20260901-001 / 20260901-002実行記録を正本とする。
+    DB restoreは行わない。task 20260905-001では、旧imageを
+    stockhome-api:rollback-20260905-001、旧sourceとDB dumpを
+    /home/deploy/stockhome/backups/deploy-20260905-001/へ保全し、hash・restoreを確認した。
+    詳細はvps-server-managementの各production実行記録を正本とする。
 
 logging:
   destinations: [stdout]     # Docker Compose (docker-compose.prod.yml) の logging driver が収集する。アプリ独自のログファイルは無い
@@ -256,7 +258,8 @@ logging:
                               # 実際にbuildし、成功系・失敗系・`docker stop`によるSIGTERM転送（shutdown
                               # イベントの実出力を確認）のすべてで全出力行がJSON.parse可能であることを確認済み。
   schema_version: 1           # 共通ログ規約v1準拠。container全体のstdout/stderrが1行1JSONになったことを実機（ローカルDocker）で確認済み
-                              # 2026-09-02のproduction反映後、起動ログ7行すべてのJSON parse成功、必須field、migration成功を確認済み
+                              # 2026-09-05のproduction反映後も、起動・即時確認ログ13行すべてのJSON parse成功、
+                              # 必須field、migration成功、failure/機微値pattern 0を確認済み
   contains_pii: false         # 実装済みの全ログ呼び出し箇所をコードレビュー・動的確認で検証: password/token/APIキー/メール本文・アドレス/メッセージID/品目名/query文字列付きURL/リクエスト・レスポンスボディを渡していない。
                               # DBエラー（Prismaエラー）はHTTPエラーハンドラで name/code のみをログへ渡し、5xxレスポンスも汎用メッセージのみを返す（task_id: 20260831-006、動的確認済み）。
                               # Prismaクライアント自身のerror/warnイベントもtarget（内部コンポーネント名）のみを渡し、message/metaは渡さない（task_id: 20260831-008、動的確認済み）。

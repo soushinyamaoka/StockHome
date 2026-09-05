@@ -12,7 +12,7 @@ source_commit: c231f76bb8543e462ba78ecc55d0e72a88bf3311
 
 impact_level: L3
 
-status: ready_for_review
+status: accepted
 
 created_by: Claude
 
@@ -20,7 +20,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_started
+deployment_status: applied
 
 ## 改訂履歴
 
@@ -152,7 +152,7 @@ server_impact: approval_required
 
 ## 影響対象
 
-- service/container: `stockhome-api-prod`（次回のDocker build/deployで反映）
+- service/container: `stockhome-api-prod`（task `20260905-001`でproduction反映済み）
 - URL/port/health/bind: 変更なし
 - cron/timer/worker: 既存の夜間バッチ（19:55 JST）のスケジュールは不変。内部処理
   （counted化ロジック）のみ変更（一括UPDATEから品目単位トランザクションでの逐次処理へ、B01対応）。
@@ -169,9 +169,10 @@ server_impact: approval_required
 - 必要性: あり（コンテナ再ビルド・入れ替えのみ。migration不要）
 - 想定作業: `scripts/deploy.ps1`（`npm run deploy`）による通常のcontainer rebuild・入れ替え
 - downtime: brief-restart（apiコンテナのみ再起動。postgresコンテナ・DBデータは変更しない）
-- maintenance window: 未定（VPS管理側の承認後に確定）
+- maintenance window: 2026-09-05 08:26 JSTに実施済み
 
-`production_change: required`のため、`deployment_status: not_started`のままVPS管理側へ引き継ぐ。
+VPS管理側で即時確認まで完了し、`deployment_status: applied`。19:55定期jobの実時刻確認後に
+`verified`へ進める。
 
 ## 利用者への影響
 
@@ -395,8 +396,9 @@ lost updateが発生しない）ことを確認済み。
 - VPS management review: 初回2026-09-04実施・`blocked`（B01〜B06）→B01〜B05対応確認。
   第2回2026-09-05実施・`blocked`（B06継続、B07〜B09新規）→B07〜B09対応・B06承認受領
   （本改訂）。第3回2026-09-05実施・全blocker解消を確認し`accepted`
-- production approval: 未実施
-- related task_id: なし
+- production approval: 2026-09-05、妻への通知・不使用確認後、ユーザーがVPS task
+  `20260905-001`を本計画で即時反映することを個別承認
+- related task_id: 20260905-001
 
 ## 変更後の状態（本改訂時点）
 
@@ -405,4 +407,26 @@ lost updateが発生しない）ことを確認済み。
 - 自動テスト: `npm test --workspace=@stockhome/api`で16件全通過
   （B07の二重起動再現・B08の固定日時JST境界testを追加。既存12件も引き続き通過）
 - 静的確認: shared/api/mobileとも`tsc --noEmit`成功
-- production/EAS配信: 未実施（本改訂作業でも接続・変更を一切行っていない）
+- production: 2026-09-05 08:26 JST、VPS task `20260905-001`でAPI反映・即時検証済み
+- EAS配信: 未実施。client release `20260904-STOCKHOME-002`の別承認待ち
+
+## Production実施結果
+
+- deploy source: `c231f76bb8543e462ba78ecc55d0e72a88bf3311`
+- release artifact SHA-256:
+  `6eff53e3d63ab7bd1d49ceb61ad03c9006c123e5fbf3bd003db9d32509f63191`
+- API image: `sha256:f660ebf312839fc2b8776f2aa7dc267bb35d5ca09f1ee05d76661d5a126a395a`
+- rollback image: `stockhome-api:rollback-20260905-001`
+- backup: `/home/deploy/stockhome/backups/deploy-20260905-001/`
+- DB dump SHA-256:
+  `2f8d54ca0b8b7b75395a4afc9282c02a46387ef0db1afa8f9a688250d4b2ea30`
+- 隔離検証: production dumpのrestore、5 migration、15 public table、API test 16件、
+  `content-type` 2.1.0を確認
+- 即時確認: API/DB running・restart 0、internal/public health 200、未認証bridge/API 401、
+  bind `127.0.0.1:4002`、DB image/container/volume不変
+- data確認: 反映前dumpと反映後productionの15 table件数が一致。反映後の購入・
+  `purchase_accumulated*`書き込みは0件
+- log確認: 起動後13行は全てJSON。必須field欠落、failure/error/critical、機微値patternは0
+- rollback: 未実施
+- 残確認: 2026-09-05 19:55 JSTの`daily_batch`実時刻確認。完了までは`applied`
+- mobile/EAS: 本taskでは未実施
