@@ -53,9 +53,13 @@ export default function CandidateListScreen() {
   const confirmMutation = useMutation({
     mutationFn: ({ id, matchedItemId, price }: { id: string; matchedItemId: string; price?: number }) =>
       confirmCandidate(id, matchedItemId, price),
-    onSuccess: () => {
+    onSuccess: (result) => {
       invalidate();
-      Alert.alert('確定完了', '購入履歴に反映しました');
+      const priceText =
+        result.purchase.price != null
+          ? `（単価: ¥${result.purchase.price.toLocaleString()}）`
+          : '（単価: 未設定）';
+      Alert.alert('確定完了', `購入履歴に反映しました${priceText}`);
     },
     onError: (e: any) => {
       Alert.alert('エラー', e?.response?.data?.message ?? '確定に失敗しました');
@@ -75,7 +79,11 @@ export default function CandidateListScreen() {
     const resolved = isResolved(c.candidateStatus);
     const matchedItem = c.matchedItemId ? items.find((i) => i.id === c.matchedItemId) : null;
     const defaultPriceText =
-      c.priceReliable && c.detectedPrice != null ? String(c.detectedPrice) : '';
+      c.priceReliable && c.detectedPrice != null
+        ? String(c.detectedPrice)
+        : c.priceLikelyUnitPrice && c.detectedPrice != null
+          ? String(c.detectedPrice)
+          : '';
 
     return (
       <Card style={styles.card}>
@@ -138,7 +146,15 @@ export default function CandidateListScreen() {
               onChangeText={(text) => setPriceInputs((s) => ({ ...s, [c.id]: text }))}
               keyboardType="number-pad"
               placeholder="任意（円）"
-              helper={c.priceReliable === false ? (c.priceHoldReason ?? undefined) : undefined}
+              helper={
+                c.priceReliable
+                  ? undefined
+                  : c.priceLikelyUnitPrice
+                    ? '検出した金額は単価として確定できる見込みです。空欄のまま確定すると自動で反映されます'
+                    : c.priceHoldReason
+                      ? `${c.priceHoldReason}。品目を選んで空欄のまま確定すると、購入履歴と照合して自動判定を試みます`
+                      : undefined
+              }
             />
             <View style={styles.buttonRow}>
               <View style={{ flex: 1 }}>

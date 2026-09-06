@@ -86,7 +86,7 @@ const PRICE_MATCH_TOLERANCE = 0.25;
 
 // パーサーが「数量に関わらず単価そのもの」と明示したときに使うラベル。
 // 該当しない・空文字列・未知の値はすべて「未確定」として扱う（安全側）
-const CERTAIN_UNIT_PRICE_SOURCES: ReadonlySet<string> = new Set(['本体価格']);
+export const CERTAIN_UNIT_PRICE_SOURCES: ReadonlySet<string> = new Set(['本体価格']);
 
 function isWithinTolerance(value: number, reference: number, tolerance: number): boolean {
   return Math.abs(value - reference) <= reference * tolerance;

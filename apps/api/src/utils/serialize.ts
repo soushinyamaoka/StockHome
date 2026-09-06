@@ -9,7 +9,7 @@ import type {
   StockCorrectionLog,
   NotificationLog,
 } from '@prisma/client';
-import { candidatePriceReliability } from '../services/candidateIntake';
+import { candidatePriceReliability, CERTAIN_UNIT_PRICE_SOURCES } from '../services/candidateIntake';
 import { formatDateOnly } from './date';
 
 export function serializeItem(item: Item) {
@@ -110,6 +110,10 @@ export function serializeCandidate(c: ImportOrderCandidate) {
     updatedAt: c.updatedAt.toISOString(),
     priceReliable: price.reliable,
     priceHoldReason: price.holdReason,
+    // 品目に依存せず「パーサーが単価と明示済み」かどうか。true なら sets>1 でも
+    // 品目を選んで確定するだけで単価が自動確定する見込みが高い
+    // （実際の確定可否は品目確定時の3層判定に依存する。ここは一覧表示用の目安）
+    priceLikelyUnitPrice: c.priceSource != null && CERTAIN_UNIT_PRICE_SOURCES.has(c.priceSource),
   };
 }
 

@@ -112,6 +112,7 @@ export interface CandidateDto {
   updatedAt: string;
   priceReliable: boolean;
   priceHoldReason: string | null;
+  priceLikelyUnitPrice: boolean;
   // 確定/自動確定済み候補の購入履歴・在庫への反映状況
   reflection?: {
     matchedItemName: string;
