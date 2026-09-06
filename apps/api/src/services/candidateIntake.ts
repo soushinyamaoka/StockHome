@@ -75,6 +75,104 @@ export function candidatePriceReliability(
   return resolvePriceReliability(detectedPrice, sets, suspicious);
 }
 
+// 過去の単価照合に使う直近件数。少なすぎると1件の外れ値に引きずられ、
+// 多すぎると値上がり前の古い単価まで参照してしまうため3件とする
+const PRICE_HISTORY_LOOKBACK = 3;
+
+// 単価候補と参照値の許容誤差。sets>=2のとき「単価」と「単価×sets」は
+// 理論上必ず2倍以上離れるため、25%の許容幅なら両仮説の範囲が重ならない
+// （[0.75P, 1.25P] と [1.5P, 2.5P] は重複しない）
+const PRICE_MATCH_TOLERANCE = 0.25;
+
+// パーサーが「数量に関わらず単価そのもの」と明示したときに使うラベル。
+// 該当しない・空文字列・未知の値はすべて「未確定」として扱う（安全側）
+const CERTAIN_UNIT_PRICE_SOURCES: ReadonlySet<string> = new Set(['本体価格']);
+
+function isWithinTolerance(value: number, reference: number, tolerance: number): boolean {
+  return Math.abs(value - reference) <= reference * tolerance;
+}
+
+// 品目の直近確定単価の中央値を返す。件数が0件ならnull。
+// 平均ではなく中央値にするのは、一度きりのセール価格に引きずられないため
+async function getRecentUnitPriceMedian(itemId: string): Promise<number | null> {
+  const recent = await prisma.purchaseLog.findMany({
+    where: { itemId, price: { not: null } },
+    orderBy: { purchasedAt: 'desc' },
+    take: PRICE_HISTORY_LOOKBACK,
+    select: { price: true },
+  });
+  if (recent.length === 0) return null;
+  const sorted = recent.map((r) => r.price as number).sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+export interface CandidatePriceResolution {
+  reliable: boolean;
+  price: number | null;
+  holdReason: string | null;
+  resolvedBy: 'label' | 'single_set' | 'history' | null;
+}
+
+// 品目が確定した時点での単価/小計の3層判定（層1〜3）。
+// candidatePriceReliability（品目非依存・一覧表示用）とは別物であり、
+// 対象品目が既に確定している経路（自動確定・手動確定）からだけ呼ぶこと
+export async function resolveCandidatePriceForItem(
+  candidate: { detectedPrice: number | null; priceSource: string | null },
+  sets: number,
+  qtySuspicious: boolean,
+  itemId: string
+): Promise<CandidatePriceResolution> {
+  if (candidate.detectedPrice == null) {
+    return { reliable: true, price: null, holdReason: null, resolvedBy: null };
+  }
+  if (qtySuspicious) {
+    return {
+      reliable: false,
+      price: null,
+      holdReason: `数量の解析が不確かなため、検出金額 ${candidate.detectedPrice} 円も単価として信頼できません`,
+      resolvedBy: null,
+    };
+  }
+
+  // 層1: パーサーが単価と明示
+  if (candidate.priceSource && CERTAIN_UNIT_PRICE_SOURCES.has(candidate.priceSource)) {
+    return { reliable: true, price: candidate.detectedPrice, holdReason: null, resolvedBy: 'label' };
+  }
+
+  // 層2: 数量1なら単価/小計の曖昧さが無い（既存動作と同じ結論）
+  if (sets === 1) {
+    return { reliable: true, price: candidate.detectedPrice, holdReason: null, resolvedBy: 'single_set' };
+  }
+
+  // 層3: 当該品目の過去確定単価と照合する
+  const referencePrice = await getRecentUnitPriceMedian(itemId);
+  if (referencePrice != null) {
+    const asUnitPrice = isWithinTolerance(candidate.detectedPrice, referencePrice, PRICE_MATCH_TOLERANCE);
+    const asSubtotal = isWithinTolerance(candidate.detectedPrice, referencePrice * sets, PRICE_MATCH_TOLERANCE);
+    // どちらか一方だけに一致したときだけ採用する。両方一致・どちらも不一致なら
+    // 判別不能として保留する（安全側に倒す）
+    if (asUnitPrice && !asSubtotal) {
+      return { reliable: true, price: candidate.detectedPrice, holdReason: null, resolvedBy: 'history' };
+    }
+    if (asSubtotal && !asUnitPrice) {
+      return {
+        reliable: true,
+        price: candidate.detectedPrice / sets,
+        holdReason: null,
+        resolvedBy: 'history',
+      };
+    }
+  }
+
+  return {
+    reliable: false,
+    price: null,
+    holdReason: `検出金額 ${candidate.detectedPrice} 円が単価か小計か判別できません（検出セット数 ${sets}）`,
+    resolvedBy: null,
+  };
+}
+
 async function getDeliveryBufferDays(householdId: string): Promise<number> {
   const config = await prisma.appConfig.findUnique({
     where: {
@@ -106,14 +204,17 @@ export async function createPurchaseLogFromCandidate(
     candidate.detectedQty,
     item.defaultPurchaseQty
   );
-  const priceCheck = resolvePriceReliability(candidate.detectedPrice, sets, suspicious);
+  const priceCheck =
+    priceOverride !== undefined
+      ? null
+      : await resolveCandidatePriceForItem(candidate, sets, suspicious, matchedItemId);
   // 明示的に単価が渡されたらそれを最優先。渡されず信頼できない検出金額しか無い場合は、
   // 誤った単価を残さないため保存しない（price 未入力として扱う）
   const price =
     priceOverride !== undefined
       ? priceOverride
-      : priceCheck.reliable
-        ? (candidate.detectedPrice ?? null)
+      : priceCheck!.reliable
+        ? priceCheck!.price
         : null;
 
   const bufferDays = await getDeliveryBufferDays(candidate.householdId);
@@ -126,10 +227,12 @@ export async function createPurchaseLogFromCandidate(
     ? `${baseNote}（数量要確認: 検出${rawSets}×${unitsPerSet}→1セット扱い）`
     : baseNote;
   const priceNote =
-    priceOverride !== undefined && priceOverride !== null
-      ? `／単価: 手動入力 ${priceOverride}円（検出 ${candidate.detectedPrice ?? 'なし'}円）`
-      : !priceCheck.reliable
-        ? `／単価: 未保存（${priceCheck.holdReason}）`
+    priceOverride !== undefined
+      ? priceOverride !== null
+        ? `／単価: 手動入力 ${priceOverride}円（検出 ${candidate.detectedPrice ?? 'なし'}円）`
+        : ''
+      : !priceCheck!.reliable
+        ? `／単価: 未保存（${priceCheck!.holdReason}）`
         : '';
   const note = `${noteBase}${priceNote}`;
 
@@ -269,7 +372,7 @@ async function tryAutoConfirmCandidate(
     }
     // 検出金額が単価か小計か判別できない場合も手動確認へ（誤った単価の保存防止）
     // ここに来る時点で suspicious は false（直前の数量ガードで return 済み）
-    const priceCheck = resolvePriceReliability(candidate.detectedPrice, sets, suspicious);
+    const priceCheck = await resolveCandidatePriceForItem(candidate, sets, suspicious, target.id);
     if (!priceCheck.reliable) {
       await prisma.importOrderCandidate.update({
         where: { id: candidate.id },
@@ -390,6 +493,7 @@ async function processSingleCandidate(c: BridgeCandidate, result: IntakeResult) 
             mailDate: new Date(c.mailDate),
             detectedQty: c.detectedQty ?? existing.detectedQty,
             detectedPrice: c.detectedPrice ?? existing.detectedPrice,
+            priceSource: c.priceSource ?? existing.priceSource,
           },
         });
         result.upgraded++;
@@ -445,6 +549,7 @@ async function processSingleCandidate(c: BridgeCandidate, result: IntakeResult) 
       itemNameRaw: c.itemNameRaw ?? null,
       detectedQty: c.detectedQty ?? 1,
       detectedPrice: c.detectedPrice ?? null,
+      priceSource: c.priceSource ?? null,
       candidateStatus,
       rawSubject: c.rawSubject?.substring(0, 300) ?? null,
       rawSnippet: c.rawSnippet?.substring(0, 200) ?? null,

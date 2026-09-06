@@ -220,6 +220,10 @@ model ImportOrderCandidate {
   itemNameRaw       String?  @map("item_name_raw")
   detectedQty       Float?   @map("detected_qty")
   detectedPrice     Float?   @map("detected_price")
+  // 検出価格の根拠ラベル（GASパーサーが付与）。例: '本体価格'=数量に関わらず単価そのもの、
+  // '商品ブロック(JPY表記)'=商品ブロック内で検出したが単価か小計かは未確定。
+  // '本体価格'のみ、数量に関わらず単価として即時確定してよい根拠として扱う
+  priceSource       String?  @map("price_source")
   candidateStatus   String   @default("detected") @map("candidate_status")
   matchedItemId     String?  @map("matched_item_id")
   rawSubject        String?  @map("raw_subject")

@@ -16,6 +16,7 @@ export const bridgeCandidateSchema = z.object({
   itemNameRaw: optionalString,
   detectedQty: optionalNonNegativeNumber,
   detectedPrice: optionalNonNegativeNumber,
+  priceSource: optionalString,
   rawSubject: optionalString,
   rawSnippet: optionalString,
   parseResult: optionalString,
