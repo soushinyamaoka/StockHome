@@ -3,7 +3,7 @@
 ## 概要
 
 家庭用 消耗品在庫管理アプリ。購入履歴と消費設定から在庫切れ時期を予測し、在庫切れ前に通知する。
-GAS 版（`C:\work\PRG\GAS\StockHome`）からの移行プロジェクト。仕様の正は GAS 版の `StockHome_仕様書.md`。
+GAS 版（`C:\work\PRG\ZZ_Other\GAS\StockHome`）からの移行プロジェクト。仕様の正は GAS 版の `StockHome_仕様書.md`。
 
 - **モノレポ構成**: `apps/api`（Fastify + Prisma + PostgreSQL） + `apps/mobile`（Expo） + `packages/shared`（Zod スキーマ・定数）
 - **GAS ブリッジ**: Gmail 自動取込（各ユーザーの Gmail 権限 + 個人トリガー）と ReadyGo Bot への LINE 通知委譲だけは GAS 側に残し、HTTP で連携する
@@ -72,5 +72,5 @@ npm run migrate:sheet   スプレッドシート(xlsx)からのデータ移行
 - `.env` はコミットしない。`.env.production.example` を更新したら README にも反映。
 - Prisma schema 変更時は必ず migration を生成して commit。
 - **lockfile は Windows で生成されるため `@esbuild/linux-x64` が欠落しがち。Dockerfile の回避策を消さないこと。**
-- GAS 側（`C:\work\PRG\GAS\StockHome`）を変更したら `push.bat` → `deploy.bat`（clasp）で反映が必要。
+- GAS 側（`C:\work\PRG\ZZ_Other\GAS\StockHome`）を変更したら `push.bat` → `deploy.bat`（clasp）で反映が必要。
 - VPS デプロイ先は `~/stockhome`（HomeAsset の `~/homeasset` と並列）。`ssh vps` で接続。
