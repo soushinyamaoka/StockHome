@@ -12,16 +12,17 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 02816eeb59c15cb1da8f1e713474f03e0775aa75
+source_commit: 5b2f68a5ea5e426f42b2edb91f57c95a5c08fdf1
 
 production_baseline_commit: 9f5fa864327e5d16b263250ce9e0348966b37f4f
 
-release_commits: `9f5fa86`（baseline）→ `02816ee`（本notice向けAPI実装。task
-`20260907-002`、Codex実装・Claudeレビュー・commit・push済み。GAS側実装は含まない）
+release_commits: `9f5fa86`（baseline）→ `02816ee`（task `20260907-002`、第1回API実装）→
+`47b0b1e`（notice更新）→ `5b2f68a`（task `20260907-004`、第2回レビュー対応。
+GAS側実装は含まない）
 
 impact_level: L3
 
-status: draft
+status: ready_for_review
 
 created_by: Claude
 
@@ -51,12 +52,12 @@ API container作成前の最後のbuild入力変更commit）であることを�
 今後、schema変更（列追加を含む）を伴う反映は、事前にnotice提出・レビューを経てから
 行う。
 
-**2026-09-07 第2回レビュー（`blocked`）を受けた修正中**: VPS管理側がmock再現により
+**2026-09-07 第2回レビュー（`blocked`）への対応完了**: VPS管理側がmock再現により
 実質的なバグ7件（B02〜B06、詳細下記）を確認した。認証境界（自己申告emailで
 他利用者のGmail message IDへアクセス可能）、冪等性（同一候補への複数回書き込みが
 可能）、監査の非原子性（data更新と監査記録が別transaction）が主な内容。
-task `20260907-003`（本notice更新時点でinbox配置前）で修正する。
-詳細は下記「第2回レビュー対応状況」参照。
+task `20260907-004`（commit `5b2f68a`）で修正し、回帰test 22件を含む全38件の
+ローカルDB testが成功した。詳細は下記「第2回レビュー対応状況」参照。
 
 ## 変更理由
 
@@ -103,7 +104,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 - 必要性: あり
 - **API単独stageとGAS+実行stageを分離する（第2回レビューB08反映）**:
   GAS未実装であることを理由にAPI側の受理を無期限に保留しない。API側の
-  blocker（B02〜B07、task `20260907-003`で対応）が解消されれば、
+  blocker（B02〜B07、task `20260907-004`で対応済み）が解消されたため、
   「featureは`HISTORICAL_REPARSE_ENABLED`未設定のため無効のまま」という
   **業務データに一切影響しないstage**として、API deployだけを先行して
   `accepted`・実施可能と判断できる。GAS実装・実行（dry-run/write/canary）は
@@ -188,19 +189,25 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
   write実行と同じ「production DB書き込みを伴う操作」として承認対象に含める
   （下記production変更参照）。
 - 実施テスト: `apps/api/src/services/priceReparse.test.ts`で、第2回レビューが
-  mock再現した7件の問題（B02〜B06）を含む回帰testを用意する。詳細は
-  task `20260907-003`のresult.md、および本notice下部の「第2回レビュー対応状況」参照。
-  27件成功という実績だけでは「確認済み」とはしない（第2回レビュー指摘）。
-- 結果: task `20260907-003`完了後に追記する
+  mock再現した7件の問題（B02〜B06）を含む回帰test22件を追加した（詳細は本notice下部の
+  「第2回レビュー対応状況」参照）。27件成功という第1回の実績だけでは「確認済み」と
+  しなかった（第2回レビュー指摘）。
+- 結果: `apps/api/src/services/priceReparse.test.ts`の新規22件を含め、
+  `npm run test --workspace=@stockhome/api`で**全38件が成功**（失敗0件）。
+  Codex実行環境にはローカルDB接続が無かったため、Claudeが対話セッションで
+  ローカル開発用Postgres（`localhost:5434`）に対して実行し確認した
 - 未実施テストと理由: 実Gmail接続を伴う結合test、production環境でのcanaryは、
   本notice`accepted`後、app owner立ち会いのdry-run実行時に初めて実施する
   （dry-run自体もproduction承認が必要。上記参照）
 
 ## Log・監視（B04/B06反映）
 
-- log量/形式/保存先変更: `job_start`/`job_end`（`job: 'historical_price_reparse'`、
-  `run_id`単位）を新設。件数集計（total/updated/unchanged/skipped/conflict/failed、
-  skip理由別内訳）のみを出力し、row内容（message_id・商品名・金額）は出さない
+- log量/形式/保存先変更: 第2回レビュー指摘を受け、`job_start`/`job_end`のrun単位ペアから、
+  `batch_step`（`job: 'historical_price_reparse'`、POST 1回＝chunk 1回単位）へ変更した。
+  件数集計（total/updated/unchanged/skipped/conflict/failed、skip理由別内訳）のみを
+  出力し、runToken・message_id・商品名・金額は出さない。run単位の集計は
+  `price_reparse_audit`テーブルを`run_id`で集計して確認する運用とする
+  （ログでのrun単位start/end追跡は行わない設計上の割り切り）
 - 新しいalert条件: なし（一度限りの手動batchのため、常設監視は設けない）
 - secret/個人情報対策: 再取得したメール本文は価格抽出後に即座に破棄する
   （既存パイプラインと同じ方針）。`price_reparse_audit`はAPI応答に含めず、
@@ -211,8 +218,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
 - [x] production baselineとrelease全commit・build入力差分を確認した（B01反映、baseline訂正済み）
-- [ ] source commitとnoticeをremoteの対象branchへpushした（**commit・push待ち。
-      ユーザー承認後に実施**）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`5b2f68a`、origin/mainへpush済み）
 - [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回レビューが
       mock再現した7件を含むregression test 22件をローカルDBで実行し全件成功を確認済み）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（上記Deploy・rollback参照）
@@ -233,20 +239,18 @@ app owner判断により今回は対象外（別途手動Codexセッションで
    別途手動Codexセッションで実装する**方針に決定した（2026-09-07）。設計メモは
    `ops/investigations/20260907-historical-price-reparse-gas-design.md`に作成済み
    （第2回レビュー指摘を受けて修正予定、下記参照）。
-2. **task `20260907-003`が本notice更新時点でinbox配置前。** 完了後、実装結果・
-   test結果・runtime contract更新をこのnoticeへ追記する
-3. `runToken`の発行（`createReparseRun`）は関数として用意するのみで、実際の発行・
+2. `runToken`の発行（`createReparseRun`）は関数として用意するのみで、実際の発行・
    GASへの受け渡し方法（Script Propertiesへ手動設定する想定）はproduction承認後に確定する
-4. `HISTORICAL_REPARSE_ENABLED`の実際の設定・解除手順（VPS管理側の`.env`変更）は
+3. `HISTORICAL_REPARSE_ENABLED`の実際の設定・解除手順（VPS管理側の`.env`変更）は
    production承認後に確定する
-5. dry-run実行時のGmail API呼び出し順序・retry方針（GAS設計メモに暫定案あり、
+4. dry-run実行時のGmail API呼び出し順序・retry方針（GAS設計メモに暫定案あり、
    GAS実装時に確定）
 
 ## 希望時期
 
 指定なし。API側task完了・VPS管理再レビューの結果を踏まえて判断する。
 
-## 第2回レビュー対応状況（2026-09-07、task `20260907-003`で対応中）
+## 第2回レビュー対応状況（2026-09-07、task `20260907-004`で対応完了）
 
 VPS管理レビュー正本§9.2〜§9.5がmock再現により確認した7件の問題と対応。
 
@@ -260,14 +264,14 @@ VPS管理レビュー正本§9.2〜§9.5がmock再現により確認した7件�
 | 6 | B03/B04: `skipReason`が自由文字列 | 固定enum（`REPARSE_SKIP_REASONS`）へ変更 |
 | 7 | B07: dry_runが「一切書き込まない」という誤った記載 | 上記Health・テスト節で訂正済み。dry_run実行もproduction承認対象に含める |
 
-上記1（複数の未確定購入が同じ候補に紐づく場合の扱いを含む）はtask `20260907-003`の
-実装・testで対応する。**本notice更新時点でtaskはinbox配置前。** 完了後、
-実装ファイル・commit・test結果をこのnoticeへ追記する。
+上記7件すべてtask `20260907-004`（commit `5b2f68a`）で対応済み。複数の未確定購入が
+同じ候補に紐づく場合（`ambiguous_purchase_match`）を含む回帰test22件をローカルDBで
+実行し、既存分と合わせ全38件の成功を確認した。
 
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: **未実施。task `20260907-003`完了・commit後に行う**
+- ユーザーへの案内: task `20260907-004`完了・commit `5b2f68a`push済み。本notice更新後に実施
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md`
 
@@ -310,12 +314,15 @@ production反映は別承認として扱ってください。」
   候補更新のWHERE句に`priceSource: null`と`detectedPrice: null`の両方が含まれること、
   `resolveCandidatePriceForItem`・`resolvePriceReliability`・`candidatePriceReliability`・
   `resolvePurchaseQty`本体のロジックに差分が無いことを確認した
-- commit: 未実施（Claudeレビュー完了後、ユーザー承認を得て次にcommit・pushする）
+- commit: `5b2f68a`（origin/mainへpush済み）
 
 ## Approval
 
 - app owner: 未実施（B08の実装経路選択のみ2026-09-07に決定済み。dry-run結果への承認は未実施）
-- VPS management review: 未実施（第2回`blocked`。task `20260907-003`完了後に再レビュー依頼）
+- VPS management review: 未実施（第2回`blocked`。本notice改訂・commit `5b2f68a`push済みで
+  再レビュー依頼可能な状態）
 - production approval: 未実施
-- related task_id: 20260907-002（`success`・commit `02816ee`。第2回レビューで問題検出）、
-  20260907-003（本notice更新時点でinbox配置前）
+- related task_id: 20260907-002（第1回API実装、`success`・commit `02816ee`。
+  第2回レビューで問題7件検出）、20260907-003（Codex CLI異常終了のため未完了）、
+  20260907-004（20260907-003の再発行。第2回レビュー対応、`success`・commit `5b2f68a`・
+  ローカルDB test 38件全成功）
