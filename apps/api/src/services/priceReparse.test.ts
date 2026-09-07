@@ -1,12 +1,14 @@
 import 'dotenv/config';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import type { Prisma } from '@prisma/client';
 import type { ReparseResultItem } from '@stockhome/shared';
 import { reparseCandidatesPayloadSchema, reparseResultItemSchema } from '@stockhome/shared';
 import { prisma } from '../lib/prisma';
 import { CERTAIN_UNIT_PRICE_SOURCES } from './candidateIntake';
 import {
   createReparseRun,
+  getReparseRunProgress,
   getReparseTargets,
   processReparseResults,
   ReparseRunInvalidError,
@@ -132,6 +134,30 @@ async function getOnlyAudit(runId: string) {
   const rows = await prisma.priceReparseAudit.findMany({ where: { runId } });
   assert.equal(rows.length, 1);
   return rows[0];
+}
+
+async function withTransactionDelegateMock<T>(
+  patch: (tx: Prisma.TransactionClient) => () => void,
+  fn: () => Promise<T>
+): Promise<T> {
+  type TransactionCallback = (tx: Prisma.TransactionClient) => Promise<unknown>;
+  type TransactionMethod = (callback: TransactionCallback) => Promise<unknown>;
+  const client = prisma as unknown as { $transaction: TransactionMethod };
+  const originalTransaction = prisma.$transaction.bind(prisma) as TransactionMethod;
+  client.$transaction = async (callback) =>
+    originalTransaction(async (tx) => {
+      const restore = patch(tx);
+      try {
+        return await callback(tx);
+      } finally {
+        restore();
+      }
+    });
+  try {
+    return await fn();
+  } finally {
+    client.$transaction = originalTransaction;
+  }
 }
 
 test('candidate-only update records detectedPrice and priceSource', async () => {
@@ -772,6 +798,218 @@ test('candidates created after the run cutoff are excluded and rejected', async 
     assert.equal(counts.conflict, 1);
     assert.equal(counts.bySkipReason.candidate_after_cutoff, 1);
     assert.equal((await getOnlyAudit(run.id)).skipReason, 'candidate_after_cutoff');
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('a skipReason cannot bypass the run household boundary', async () => {
+  const runScope = await createTestScope();
+  const candidateScope = await createTestScope();
+  try {
+    const run = await createRun(runScope);
+    const candidate = await createCandidate(candidateScope, { importedByEmail: OWNER_EMAIL });
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, skipReason: 'message_not_found' },
+    ]);
+
+    assert.equal(counts.conflict, 1);
+    assert.equal(counts.skipped, 0);
+    assert.equal(counts.bySkipReason.candidate_owner_mismatch, 1);
+    const audit = await getOnlyAudit(run.id);
+    assert.equal(audit.candidateId, candidate.id);
+    assert.equal(audit.skipReason, 'candidate_owner_mismatch');
+  } finally {
+    await runScope.cleanup();
+    await candidateScope.cleanup();
+  }
+});
+
+test('an invalid price cannot bypass the run household boundary', async () => {
+  const runScope = await createTestScope();
+  const candidateScope = await createTestScope();
+  try {
+    const run = await createRun(runScope);
+    const candidate = await createCandidate(candidateScope, { importedByEmail: OWNER_EMAIL });
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 0, priceSource: CERTAIN_PRICE_SOURCE },
+    ]);
+
+    assert.equal(counts.conflict, 1);
+    assert.equal(counts.failed, 0);
+    assert.equal(counts.bySkipReason.candidate_owner_mismatch, 1);
+    const audit = await getOnlyAudit(run.id);
+    assert.equal(audit.candidateId, candidate.id);
+    assert.equal(audit.skipReason, 'candidate_owner_mismatch');
+  } finally {
+    await runScope.cleanup();
+    await candidateScope.cleanup();
+  }
+});
+
+test('a matched item in another household is detected even without a purchase', async () => {
+  const scope = await createTestScope();
+  const otherScope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope, {
+      candidateStatus: 'confirmed',
+      matchedItemId: otherScope.itemId,
+      detectedQty: 1,
+    });
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 735, priceSource: CERTAIN_PRICE_SOURCE },
+    ]);
+
+    assert.equal(counts.updatedCandidate, 1);
+    assert.equal(counts.updatedPurchase, 0);
+    assert.equal(counts.bySkipReason.matched_item_missing, 1);
+    const audit = await getOnlyAudit(run.id);
+    assert.equal(audit.skipReason, 'matched_item_missing');
+    assert.equal(audit.purchaseId, null);
+  } finally {
+    await scope.cleanup();
+    await otherScope.cleanup();
+  }
+});
+
+test('a database exception during outcome computation rejects the whole chunk', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope);
+    const expected = new Error('simulated candidate lookup failure');
+
+    await withTransactionDelegateMock(
+      (tx) => {
+        const delegate = tx.importOrderCandidate as unknown as {
+          findUnique: (...args: unknown[]) => Promise<unknown>;
+        };
+        const originalFindUnique = delegate.findUnique;
+        delegate.findUnique = async () => {
+          throw expected;
+        };
+        return () => {
+          delegate.findUnique = originalFindUnique;
+        };
+      },
+      () =>
+        assert.rejects(
+          () => processReparseResults(run.runToken, 'write', [{ candidateId: candidate.id, detectedPrice: 740 }]),
+          (error) => error === expected
+        )
+    );
+
+    assert.equal((await prisma.priceReparseAudit.findMany({ where: { runId: run.id } })).length, 0);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('a non-P2002 audit insert exception rejects the chunk without an audit row', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope);
+    const expected = new Error('simulated audit insert failure');
+
+    await withTransactionDelegateMock(
+      (tx) => {
+        const delegate = tx.priceReparseAudit as unknown as {
+          create: (...args: unknown[]) => Promise<unknown>;
+        };
+        const originalCreate = delegate.create;
+        delegate.create = async () => {
+          throw expected;
+        };
+        return () => {
+          delegate.create = originalCreate;
+        };
+      },
+      () =>
+        assert.rejects(
+          () =>
+            processReparseResults(run.runToken, 'write', [
+              { candidateId: candidate.id, detectedPrice: 745, priceSource: CERTAIN_PRICE_SOURCE },
+            ]),
+          (error) => error === expected
+        )
+    );
+
+    assert.equal((await prisma.priceReparseAudit.findMany({ where: { runId: run.id } })).length, 0);
+    const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
+    assert.equal(reloaded.detectedPrice, null);
+    assert.equal(reloaded.priceSource, null);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('getReparseRunProgress reports an empty run as complete', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    assert.deepEqual(await getReparseRunProgress(run.runToken), {
+      totalTargets: 0,
+      processedCount: 0,
+      remainingCount: 0,
+      complete: true,
+    });
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('getReparseRunProgress preserves the target total across mixed write outcomes', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const updated = await createCandidate(scope);
+    const skipped = await createCandidate(scope);
+    const failed = await createCandidate(scope);
+
+    assert.deepEqual(await getReparseRunProgress(run.runToken), {
+      totalTargets: 3,
+      processedCount: 0,
+      remainingCount: 3,
+      complete: false,
+    });
+
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: updated.id, detectedPrice: 750, priceSource: CERTAIN_PRICE_SOURCE },
+      { candidateId: skipped.id, skipReason: 'message_not_found' },
+      { candidateId: failed.id, detectedPrice: -1 },
+    ]);
+    assert.equal(counts.updatedCandidate, 1);
+    assert.equal(counts.skipped, 1);
+    assert.equal(counts.failed, 1);
+    assert.deepEqual(await getReparseRunProgress(run.runToken), {
+      totalTargets: 3,
+      processedCount: 3,
+      remainingCount: 0,
+      complete: true,
+    });
+    const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: updated.id } });
+    assert.equal(reloaded.detectedPrice, 750);
+    assert.equal(reloaded.priceSource, CERTAIN_PRICE_SOURCE);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('createReparseRun rejects an active household run and succeeds after revocation', async () => {
+  const scope = await createTestScope();
+  try {
+    const active = await createRun(scope);
+    await assert.rejects(
+      () => createReparseRun(OWNER_EMAIL, scope.householdId),
+      /an active price reparse run already exists/
+    );
+
+    await prisma.priceReparseRun.update({ where: { id: active.id }, data: { revokedAt: new Date() } });
+    const replacement = await createReparseRun(OWNER_EMAIL, scope.householdId);
+    assert.equal(replacement.id.length > 0, true);
+    assert.ok(replacement.expiresAt.getTime() > replacement.cutoffAt.getTime());
   } finally {
     await scope.cleanup();
   }

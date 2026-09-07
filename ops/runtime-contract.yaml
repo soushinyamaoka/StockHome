@@ -64,6 +64,15 @@
 #     専用headerへの移動で対応した。fresh隔離DBでのmigration apply/rollback rehearsalを
 #     実施し、最新migrationの取り消しSQLが安全であることを確認した。production未反映
 #     （HISTORICAL_REPARSE_ENABLEDは引き続き未設定のためdeployされても機能上は無効のまま）。
+#   2026-09-08 (task_id: 20260907-006): 第4回レビューが監査/例外の区別不足・household境界の
+#     一部経路での未強制・run進捗復元手段の欠如・migration rollback rehearsalの範囲不足・
+#     runToken非混入testの欠如の6件を検出。監査insert例外をP2002（真の一意制約競合）と
+#     それ以外で区別し後者はchunk再送対象として呼び出し元へ伝播、candidate/matched itemの
+#     household境界チェックを全outcome経路より前へ統一、DBだけからrun進捗を復元する
+#     getReparseRunProgressとsingle active run制約を追加、本機能3 migrationへの明示的
+#     transaction追加とfresh隔離DBでの全rollback rehearsal、runToken非混入のHTTPレベル
+#     regression testを追加して対応した。production未反映
+#     （HISTORICAL_REPARSE_ENABLEDは引き続き未設定のためdeployされても機能上は無効のまま）。
 
 schema_version: 1
 app: stockhome
@@ -199,6 +208,14 @@ data:
         run作成時刻（第3回レビューB02/B04対応、task 20260907-005で追加）で、
         この時刻より後に作成された候補（通常の6時間取込等）はこのrunの対象に含めない
         （対象集合をrun作成時点で固定し、動的に増減しないようにする）。
+        createReparseRunは、呼び出し前に同一household_idで未失効・未期限切れの
+        run（single active run）が既に無いかを確認し、あればエラーとする
+        （第4回レビューR4-03対応、task 20260907-006で追加。二重発行による運用混乱を
+        防ぐ。既存runを差し替える場合は運用者が先にrevoked_atを設定する）。
+        run/chunkの進捗（対象数・処理済み数・残数・完了判定）はDBに専用の状態カラムを
+        持たず、getReparseRunProgress関数がprice_reparse_runsとprice_reparse_auditの
+        既存データから都度導出する（第4回レビューR4-03対応。GAS側のcursor等
+        local stateが失われても、この関数だけで進捗をDBから復元できる）。
       update_paths: >-
         手動発行のみ（HTTP経由の作成route無し）。revoked_atの設定も手動想定。
         cutoff_atはcreateReparseRun実行時に自動設定され、以後変更しない。
@@ -225,14 +242,22 @@ data:
       fields: [run_id, mode, candidate_id, purchase_id, before_*, applied_*, outcome, skip_reason]
       meaning: >-
         2026-09-06（notice 20260907-STOCKHOME-006、production未反映）。過去候補の単価
-        再解析batchが処理した全row（成功・skip・conflict・失敗を問わず、早期return経路も
-        含む。第3回レビューB05/B04対応、task 20260907-005で全経路を監査対象化）の
-        変更前後値を記録する監査ログ。Git管理外（本テーブルのみに保存）。APIレスポンス・
-        通常ログにはrow内容を一切含めない。dry_runの結果は outcome へ dry_run_ 接頭辞を
-        付けて区別し、業務データ（import_order_candidates/purchase_logs）は変更しない。
+        再解析batchが「正常に処理を完了した」全row（成功・skip・conflict・業務判断としての
+        失敗（invalid_price_rejected等）を問わず、早期return経路も含む。第3回レビュー
+        B05/B04対応、task 20260907-005で全経路を監査対象化）の変更前後値を記録する
+        監査ログ。Git管理外（本テーブルのみに保存）。APIレスポンス・通常ログにはrow内容を
+        一切含めない。dry_runの結果は outcome へ dry_run_ 接頭辞を付けて区別し、
+        業務データ（import_order_candidates/purchase_logs）は変更しない。
         modeカラムと(run_id, candidate_id, mode)の一意制約（task 20260907-005で追加）により、
         write再送は既存行を検出して保存済み結果をそのまま返し（再判定しない）、dry_run再実行は
         同じ行へupsertする（重複行を作らない）。
+        **「全row」の範囲（第4回レビューR4-01対応、task 20260907-006で明確化）**:
+        DB接続断等のinfrastructure障害でcomputeOutcome実行中や監査insert自体
+        （真の一意制約競合=P2002を除く）が例外を投げた場合、そのrowには監査行を作らず、
+        例外を呼び出し元（POST /reparse-candidates）まで伝播させてchunk全体をHTTPレベルの
+        失敗として返す。これは「業務判断としての行失敗」とは意図的に区別しており、
+        GAS側はchunk全体を再送すればよい（同じrunToken・mode='write'で既に監査済みの
+        候補は再判定されず、未処理の候補だけが再試行される）。
         保持期限: 自動削除する仕組みは無い（push_ticketsと異なり定期cleanup jobを設けない）。
         一度限りの過去分backfillの監査証跡であり、production反映が完了し結果がreconcile済みと
         app owner・VPS管理側が確認するまでは削除しない。
@@ -248,6 +273,12 @@ data:
         write時、候補・購入の更新と監査insertは同一transaction内で行われ、
         一方だけが確定することはない（task 20260907-004対応、B05）。dry_runの監査upsertは
         独立した別transactionのため、これ自体が失敗しても業務データには影響しない。
+        監査insert自体が例外を投げた場合、Prisma.PrismaClientKnownRequestErrorかつ
+        code==='P2002'（同じ(run_id, candidate_id, mode)への同時insertによる真の競合）の
+        ときだけ「既に別プロセスが書いた」とみなしてtransactionをrollbackし、勝者の
+        保存済み結果を返す。それ以外の例外は握りつぶさず再throwし、chunk全体を
+        再送可能な失敗として呼び出し元へ伝播させる（第4回レビューR4-01対応、
+        task 20260907-006）。
   data_retention:
     - table: push_tickets
       policy: >-
@@ -379,10 +410,13 @@ known_gaps:
     notice 20260907-STOCKHOME-006（過去候補の単価再解析）はproduction未反映。
     HISTORICAL_REPARSE_ENABLED未設定のため、新設したGET/POST /api/bridge/reparse-candidates
     はdeployされても404を返すのみで機能上は無効。VPS管理側の第2回レビュー（mock再現、7件）・
-    第3回レビュー（実DBへのprobe、6件）で検出された問題はいずれもtask 20260907-004・
-    20260907-005で修正済み（household/cutoff境界の強制、run/item単位の価格判定snapshot、
-    監査の冪等化、runTokenのheader化、fresh隔離DBでのmigration/rollback rehearsal）。
-    第3回レビューへの再提出・再レビュー待ち。GAS側バッチは未実装（設計メモのみ
+    第3回レビュー（実DBへのprobe、6件）・第4回レビュー（実装改善確認、残blocker6件）で
+    検出された問題はいずれもtask 20260907-004・20260907-005・20260907-006とClaudeの直接対応
+    （migration）で修正済み（household/cutoff境界を全outcome経路で強制、run/item単位の
+    価格判定snapshot、監査の冪等化とinfrastructure障害/業務判断の区別、runTokenのheader化、
+    DBだけからのrun進捗復元とsingle active run制約、本機能3 migration全体の明示的
+    transaction化とfresh隔離DBでの全rollback rehearsal）。第4回レビューへの再提出・
+    再レビュー待ち。GAS側バッチは未実装（設計メモのみ
     ops/investigations/20260907-historical-price-reparse-gas-design.md）。
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、

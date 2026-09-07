@@ -1,4 +1,4 @@
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
 import { prisma } from '../lib/prisma';
 import type { ReparseResultItem } from '@stockhome/shared';
@@ -9,6 +9,10 @@ const REPARSE_LOOKUP_LIMIT = 50;
 
 function isPlausiblePrice(price: number): boolean {
   return Number.isFinite(price) && price > 0 && Number.isInteger(price) && price <= MAX_PLAUSIBLE_UNIT_PRICE;
+}
+
+function isUniqueConstraintViolation(e: unknown): boolean {
+  return e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002';
 }
 
 export class ReparseRunInvalidError extends Error {}
@@ -100,25 +104,26 @@ function auditRowToApplyResult(row: AuditRow): ApplyResult {
 
 // 1候補分の判定を行い、write判定であれば同一transaction内で候補・購入も更新する
 // （commitするか rollback するかは呼び出し元 applyOne が決める）。
-// 早期returnも含め、ここでは監査を書かない（呼び出し元が必ず1回だけ書く。B05）
+// 早期returnも含め、ここでは監査を書かない（呼び出し元が必ず1回だけ書く。B05）。
+// household・owner・cutoffの境界チェックは、skip/invalid判定を含む「どのoutcomeを
+// 返す場合でも」必ず最初に行う（第4回R4-02: 境界チェックより前にreturnする経路を作らない）
 async function computeOutcome(tx: Prisma.TransactionClient, run: ActiveRun, item: ReparseResultItem): Promise<ApplyResult> {
-  if (item.skipReason) {
-    return { outcome: 'skipped', skipReason: item.skipReason, purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
-  }
-  if (item.detectedPrice != null && !isPlausiblePrice(item.detectedPrice)) {
-    return { outcome: 'failed', skipReason: 'invalid_price_rejected', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
-  }
-
   const candidate = await tx.importOrderCandidate.findUnique({ where: { id: item.candidateId } });
   if (!candidate) {
     return { outcome: 'conflict', skipReason: 'candidate_not_found', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
   }
-  // household・owner・run作成時cutoffのすべてが一致する候補だけを対象にする（第3回B03）
   if (candidate.householdId !== run.householdId || candidate.importedByEmail !== run.importedByEmail) {
     return { outcome: 'conflict', skipReason: 'candidate_owner_mismatch', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
   }
   if (candidate.createdAt.getTime() > run.cutoffAt.getTime()) {
     return { outcome: 'conflict', skipReason: 'candidate_after_cutoff', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
+  }
+
+  if (item.skipReason) {
+    return { outcome: 'skipped', skipReason: item.skipReason, purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
+  }
+  if (item.detectedPrice != null && !isPlausiblePrice(item.detectedPrice)) {
+    return { outcome: 'failed', skipReason: 'invalid_price_rejected', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
   }
   if (candidate.priceSource != null || candidate.detectedPrice != null) {
     return { outcome: 'conflict', skipReason: 'already_has_price', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
@@ -149,15 +154,20 @@ async function computeOutcome(tx: Prisma.TransactionClient, run: ActiveRun, item
     return { outcome: 'updated', skipReason: null, purchaseId: null, before, applied };
   }
 
-  // household・itemも一致するpurchaseだけを対象にする（第3回B02/B06:
-  // 別householdのpurchaseが更新されるprobeを踏まえた修正）
+  // matched itemのhouseholdをrunと照合する。purchaseの有無によらず必ずここで検証する
+  // （第4回R4-02: 以前はpurchaseが0件だとmatched itemを取得せずreturnしていた）
+  const matchedItem = await tx.item.findUnique({ where: { id: candidate.matchedItemId } });
+  if (!matchedItem || matchedItem.householdId !== run.householdId) {
+    return { outcome: 'updated', skipReason: 'matched_item_missing', purchaseId: null, before, applied };
+  }
+
   const linkIds = [candidate.id, candidate.legacyId].filter((v): v is string => v != null);
   const purchases = await tx.purchaseLog.findMany({
     where: {
       importCandidateId: { in: linkIds },
       price: null,
       householdId: run.householdId,
-      itemId: candidate.matchedItemId,
+      itemId: matchedItem.id,
     },
   });
   if (purchases.length === 0) {
@@ -169,16 +179,7 @@ async function computeOutcome(tx: Prisma.TransactionClient, run: ActiveRun, item
   const purchase = purchases[0];
   before.purchasePrice = purchase.price;
 
-  const matchedItem = await tx.item.findUnique({
-    where: { id: candidate.matchedItemId },
-  });
-  if (!matchedItem || matchedItem.householdId !== run.householdId) {
-    return { outcome: 'updated', skipReason: 'matched_item_missing', purchaseId: purchase.id, before, applied };
-  }
-
   const { sets, suspicious } = resolvePurchaseQty(candidate.detectedQty, matchedItem.defaultPurchaseQty);
-  // 層3の判定に使う参照単価は、run内で最初に必要になった時点でsnapshotを取り、
-  // 以後dry_run/write・chunk・順序を問わず同じ値を使う（第3回B02/B06）
   const referencePrice = await getOrCreateItemSnapshot(run.id, matchedItem.id);
   const priceCheck = await resolveCandidatePriceForItem(
     { detectedPrice: item.detectedPrice, priceSource: item.priceSource ?? null },
@@ -211,8 +212,10 @@ async function computeOutcome(tx: Prisma.TransactionClient, run: ActiveRun, item
 const ROLLBACK = Symbol('reparse_rollback');
 
 // write: 冪等（同一(run,candidate,mode='write')の再送は保存済み結果をそのまま返し、
-// 再判定・再更新しない）。同時実行で監査insertが競合した場合は自分の更新を破棄し、
-// 先に確定した側の結果を返す。
+// 再判定・再更新しない）。同時実行で監査insertが「一意制約違反(P2002)」に触れた場合のみ
+// 真の競合として扱い、自分の更新を破棄して先に確定した側の結果を返す。それ以外の例外
+// （DB接続断等の真のinfrastructure障害）は監査を書かずに呼び出し元へそのまま伝播させ、
+// chunk全体を再送可能な失敗として扱う（row単位の業務判定とは区別する。第4回R4-01対応）。
 // dry_run: 常に再計算し、同じ(run,candidate,mode='dry_run')行へupsertする
 // （再実行のたびに監査が増えないようにする。第3回B02/B04）
 async function applyOne(run: ActiveRun, item: ReparseResultItem, mode: 'dry_run' | 'write'): Promise<ApplyResult> {
@@ -226,54 +229,57 @@ async function applyOne(run: ActiveRun, item: ReparseResultItem, mode: 'dry_run'
   }
 
   let captured: ApplyResult | undefined;
-  let rollbackReason: 'dry_run' | 'audit_race_lost' | null = null;
+  let auditRaceLost = false;
   try {
     await prisma.$transaction(async (tx) => {
       captured = await computeOutcome(tx, run, item);
       if (mode === 'dry_run') {
-        rollbackReason = 'dry_run';
         throw ROLLBACK;
       }
+      const toWrite = captured;
       try {
         await tx.priceReparseAudit.create({
           data: {
             runId: run.id,
             mode: 'write',
             candidateId: item.candidateId,
-            purchaseId: captured.purchaseId,
-            beforeDetectedPrice: captured.before.detectedPrice,
-            beforePriceSource: captured.before.priceSource,
-            beforePurchasePrice: captured.before.purchasePrice,
-            appliedDetectedPrice: captured.applied.detectedPrice,
-            appliedPriceSource: captured.applied.priceSource,
-            appliedPurchasePrice: captured.applied.purchasePrice,
-            outcome: captured.outcome,
-            skipReason: captured.skipReason,
+            purchaseId: toWrite.purchaseId,
+            beforeDetectedPrice: toWrite.before.detectedPrice,
+            beforePriceSource: toWrite.before.priceSource,
+            beforePurchasePrice: toWrite.before.purchasePrice,
+            appliedDetectedPrice: toWrite.applied.detectedPrice,
+            appliedPriceSource: toWrite.applied.priceSource,
+            appliedPurchasePrice: toWrite.applied.purchasePrice,
+            outcome: toWrite.outcome,
+            skipReason: toWrite.skipReason,
           },
         });
-      } catch {
-        // 同じ(run, candidate, write)へ同時に別プロセスが先に監査を作った。
+      } catch (e) {
+        if (!isUniqueConstraintViolation(e)) throw e;
+        // 同じ(run, candidate, write)へ同時に別プロセスが先に監査を作った（真の競合のみ）。
         // 自分の更新は破棄し、勝った側の結果を後で取得する
-        rollbackReason = 'audit_race_lost';
+        auditRaceLost = true;
         throw ROLLBACK;
       }
     });
   } catch (e) {
-    if (e !== ROLLBACK) {
-      return { outcome: 'failed', skipReason: 'exception', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
-    }
+    if (e !== ROLLBACK) throw e;
   }
 
-  if (rollbackReason === 'audit_race_lost') {
+  if (auditRaceLost) {
     const winning = await prisma.priceReparseAudit.findUnique({
       where: { runId_candidateId_mode: { runId: run.id, candidateId: item.candidateId, mode: 'write' } },
     });
-    return winning
-      ? auditRowToApplyResult(winning)
-      : { outcome: 'failed', skipReason: 'exception', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
+    if (!winning) {
+      throw new Error(`reparse audit race detected without a winning row (run=${run.id}, candidate=${item.candidateId})`);
+    }
+    return auditRowToApplyResult(winning);
   }
 
-  if (rollbackReason === 'dry_run' && captured) {
+  if (mode === 'dry_run') {
+    if (!captured) {
+      throw new Error(`reparse computeOutcome produced no result (run=${run.id}, candidate=${item.candidateId})`);
+    }
     const c = captured;
     await prisma.priceReparseAudit.upsert({
       where: { runId_candidateId_mode: { runId: run.id, candidateId: item.candidateId, mode: 'dry_run' } },
@@ -303,9 +309,13 @@ async function applyOne(run: ActiveRun, item: ReparseResultItem, mode: 'dry_run'
         skipReason: c.skipReason,
       },
     });
+    return c;
   }
 
-  return captured ?? { outcome: 'failed', skipReason: 'exception', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
+  if (!captured) {
+    throw new Error(`reparse computeOutcome produced no result (run=${run.id}, candidate=${item.candidateId})`);
+  }
+  return captured;
 }
 
 export interface ReparseOutcomeCounts {
@@ -338,12 +348,10 @@ export async function processReparseResults(
   };
   for (const item of results) {
     counts.total++;
-    let r: ApplyResult;
-    try {
-      r = await applyOne(run, item, mode);
-    } catch {
-      r = { outcome: 'failed', skipReason: 'exception', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
-    }
+    // applyOneが投げる例外は、chunk全体を再送すべきinfrastructure障害として
+    // そのまま呼び出し元（route）へ伝播させる。業務判断としての失敗（invalid_price_rejected等）は
+    // 例外ではなく通常の戻り値として扱われるため、ここでは意図的にcatchしない（第4回R4-01対応）
+    const r = await applyOne(run, item, mode);
     if (r.outcome === 'updated') {
       counts.updatedCandidate++;
       if (r.applied.purchasePrice != null) counts.updatedPurchase++;
@@ -374,22 +382,80 @@ export async function getReparseTargets(runToken: string, cursor: string | undef
   });
 }
 
-// 運用者が事前に1件だけ発行する（HTTP非公開）。production承認後、手動scriptから呼ぶ想定。
-// 本task範囲では呼び出し元（一回限りのscript等）は作成しない。関数のみ用意する
+export interface ReparseRunProgress {
+  totalTargets: number;
+  processedCount: number;
+  remainingCount: number;
+  complete: boolean;
+}
+
+// runの進捗をDBだけから復元する（第4回R4-03対応。GAS側のcursor等local stateが
+// 失われても、この関数だけでrunの完了・未処理数を判定できるようにする）。
+// 「対象」は、run作成時点のcutoff・household・owner に一致する候補のうち、
+// (a) 現在もprice_source/detected_priceがNULLのまま残っている候補、
+// (b) このrunで既にmode='write'の監査が付いた候補（priceが確定して条件(a)から
+// 外れたものを含む）のunion。「処理済み」は(b)。「残り」は(a)から(b)を除いたもの
+export async function getReparseRunProgress(runToken: string): Promise<ReparseRunProgress> {
+  const run = await findActiveRun(runToken);
+
+  const [stillUnpriced, processedAudits] = await Promise.all([
+    prisma.importOrderCandidate.findMany({
+      where: {
+        householdId: run.householdId,
+        importedByEmail: run.importedByEmail,
+        priceSource: null,
+        detectedPrice: null,
+        createdAt: { lte: run.cutoffAt },
+      },
+      select: { id: true },
+    }),
+    prisma.priceReparseAudit.findMany({
+      where: { runId: run.id, mode: 'write' },
+      select: { candidateId: true },
+    }),
+  ]);
+
+  const processedIds = new Set(processedAudits.map((a) => a.candidateId));
+  const remainingIds = stillUnpriced.map((c) => c.id).filter((id) => !processedIds.has(id));
+  const totalTargets = new Set([...stillUnpriced.map((c) => c.id), ...processedIds]).size;
+  const remainingCount = remainingIds.length;
+
+  return {
+    totalTargets,
+    processedCount: totalTargets - remainingCount,
+    remainingCount,
+    complete: remainingCount === 0,
+  };
+}
+
+// production承認後、運用者が事前に1件だけ発行する（HTTP非公開）。同一household向けの
+// 有効なrun（未失効・未期限切れ）が既に存在する場合はエラーとする（第4回R4-03:
+// single active runの制約。二重発行による混乱を防ぐ）。既存runを差し替える場合は
+// 呼び出し側が先にPriceReparseRun.revokedAtを設定してから本関数を呼ぶ
 export async function createReparseRun(
   importedByEmail: string,
   householdId: string,
   expiresInHours = 72
 ): Promise<{ id: string; runToken: string; cutoffAt: Date; expiresAt: Date }> {
+  const now = new Date();
+  const activeRun = await prisma.priceReparseRun.findFirst({
+    where: { householdId, revokedAt: null, expiresAt: { gt: now } },
+  });
+  if (activeRun) {
+    throw new Error(
+      `an active price reparse run already exists for this household (id=${activeRun.id}). revoke it (set revokedAt) before creating a new one.`
+    );
+  }
+
   const runToken = `rrun_${randomBytes(32).toString('hex')}`;
-  const cutoffAt = new Date();
+  const cutoffAt = now;
   const run = await prisma.priceReparseRun.create({
     data: {
       runToken,
       importedByEmail,
       householdId,
       cutoffAt,
-      expiresAt: new Date(Date.now() + expiresInHours * 60 * 60 * 1000),
+      expiresAt: new Date(now.getTime() + expiresInHours * 60 * 60 * 1000),
     },
   });
   return { id: run.id, runToken: run.runToken, cutoffAt: run.cutoffAt, expiresAt: run.expiresAt };

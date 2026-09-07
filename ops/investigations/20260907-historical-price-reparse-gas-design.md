@@ -1,10 +1,11 @@
-# GAS側: 過去候補の単価再解析バッチ 設計メモ（第3回VPS管理レビュー反映版）
+# GAS側: 過去候補の単価再解析バッチ 設計メモ（第4回VPS管理レビュー反映版）
 
 notice: `20260907-STOCKHOME-006`のB08対応。GAS側の実装は今回のセッションでは行わず、
 app ownerが別途手動でCodexセッションを`C:\work\PRG\ZZ_Other\GAS\StockHome`にて起動し、
 本メモを指示書として実装する想定。API側（対応するGET/POST）はtask `20260907-002`
-（第1回実装）・`20260907-004`（第2回レビュー対応）・`20260907-005`（第3回レビュー対応）
-として通常のStockHome-ClaudeToCodexパイプラインで実装済み（別ファイル参照）。
+（第1回実装）・`20260907-004`（第2回レビュー対応）・`20260907-005`（第3回レビュー対応）・
+`20260907-006`（第4回レビュー対応）として通常のStockHome-ClaudeToCodexパイプラインで
+実装済み（別ファイル参照）。
 
 **2026-09-07 第2回VPS管理レビューを受けて全面改訂**: API側の認可方式が
 自己申告emailから事前発行済み`runToken`へ変更されたため、本メモの該当箇所を
@@ -19,6 +20,14 @@ dry-runとwriteで価格判定が食い違う問題等が新たに確認され�
 照合するようになった（cutoff以降に新規取込された候補は今回のrunでは扱われない）。
 write再送は保存済み結果がそのまま返る（再判定されない）ため、GAS側は同じ結果を
 安全に再送してよい。
+
+**2026-09-08 第4回VPS管理レビューを受けて再改訂**: POSTがinfrastructure障害
+（DB接続断等）とrow単位の業務判断としての失敗を区別するようAPI側が修正され、
+前者はHTTPレベルの失敗（5xx）としてchunk全体に返るようになった（以前は
+すべて200で返り、GAS側からは区別できなかった）。また、運用者向けに
+`createReparseRun`のsingle active run制約（同一household向けの有効runは同時に
+1つまで）と、DBだけからrunの進捗を確認できる`getReparseRunProgress`関数が
+追加された（いずれもGAS自体は呼び出さないが、運用手順に関わるため記載する）。
 
 ## 対象repository・実装担当
 
@@ -45,6 +54,11 @@ write再送は保存済み結果がそのまま返る（再判定されない）
 1回だけ登録する**。GASコード自身はこのtokenを生成しない。取得は
 `PropertiesService.getScriptProperties().getProperty('REPARSE_RUN_TOKEN')`のみで、
 Session情報（`Session.getActiveUser().getEmail()`）は使わない。
+
+`createReparseRun`は、同一household向けの有効な（未失効・未期限切れ）runが既に
+存在する場合はエラーになる（第4回レビューR4-03: single active runの制約、
+二重発行による運用混乱を防ぐ）。運用者が新しいrunを発行し直す場合は、
+古いrunの`revokedAt`をVPS上で先に設定してから`createReparseRun`を呼ぶ。
 
 ## 新設する関数（`GmailImportService.js`へ追加）
 
@@ -97,6 +111,12 @@ Session情報（`Session.getActiveUser().getEmail()`）は使わない。
    **write再送は、API側が(runToken, candidateId, mode)の組で既存の監査記録を検出し、
    再判定せず保存済みの結果をそのまま返す**（第3回レビューB02/B04対応）ため、
    同じ候補を含むchunkを重複して送っても安全（二重更新にはならない）。
+   **5xxの意味（第4回レビューR4-01対応）**: API側は、DB接続断等の
+   infrastructure障害と、row単位の業務判断としての失敗（`invalid_price_rejected`等、
+   通常どおり200のsummaryへ集計される）を区別するようになった。5xxが返った場合、
+   chunk内の一部候補はまだ監査記録すら作られていない可能性があるため、
+   cursorを進めず同じchunkをそのまま再送してよい（既に監査済みの候補は
+   再判定されずスキップされるため、二重更新にはならない）。
 9. まだ候補が残っていそうなら、続けて4以降を繰り返す
    （1回の関数呼び出し内でループしてよいが、5分の時間予算は厳守する）
 ```
