@@ -31,6 +31,7 @@ GAS Web アプリは「アクセスユーザーとして実行（要ログイン
 
 GAS 側スクリプトプロパティ: `STOCKHOME_API_URL` / `STOCKHOME_BRIDGE_TOKEN`（未設定の間は従来のシート保存で動作）。
 API 側 env: `BRIDGE_TOKEN`（GAS 側トークンと同一値にする）。
+`HISTORICAL_REPARSE_ENABLED`（過去候補の単価再解析routeを有効化する一時フラグ。notice `20260907-STOCKHOME-006`参照。VPS管理側のproduction承認後にのみ設定する）。
 
 ## セットアップ（ローカル）
 

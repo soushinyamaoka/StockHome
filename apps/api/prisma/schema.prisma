@@ -241,6 +241,32 @@ model ImportOrderCandidate {
   @@map("import_order_candidates")
 }
 
+// 過去候補の単価再解析バッチ（notice 20260907-STOCKHOME-006）専用の監査ログ。
+// production row の変更前後値を Git 管理外（本テーブル、VPS 側 Postgres）にのみ保存する。
+// API レスポンスには一切含めず、chat・notice・通常ログへも row 内容を出さない。
+// 処理した全 row（更新した/しなかった/skipした/失敗した）を outcome 付きで記録し、
+// run 単位の集計・rollback（同一 run が書いた値から後続変更が無い row だけを戻す）に使う
+model PriceReparseAudit {
+  id                   String   @id @default(cuid())
+  runId                String   @map("run_id")
+  candidateId          String   @map("candidate_id")
+  purchaseId           String?  @map("purchase_id")
+  beforeDetectedPrice  Float?   @map("before_detected_price")
+  beforePriceSource    String?  @map("before_price_source")
+  beforePurchasePrice  Float?   @map("before_purchase_price")
+  appliedDetectedPrice Float?   @map("applied_detected_price")
+  appliedPriceSource   String?  @map("applied_price_source")
+  appliedPurchasePrice Float?   @map("applied_purchase_price")
+  // updated | unchanged | skipped | conflict | failed
+  outcome              String   @map("outcome")
+  skipReason           String?  @map("skip_reason")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@index([runId])
+  @@index([candidateId])
+  @@map("price_reparse_audit")
+}
+
 // 在庫補正履歴（GAS: stock_correction_log シート）
 model StockCorrectionLog {
   id                  String   @id @default(cuid())

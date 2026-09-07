@@ -6,5 +6,6 @@ export * from './schemas/item';
 export * from './schemas/purchase';
 export * from './schemas/correction';
 export * from './schemas/importCandidate';
+export * from './schemas/priceReparse';
 export * from './schemas/appConfig';
 export * from './schemas/pushDevice';
