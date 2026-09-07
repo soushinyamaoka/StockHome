@@ -12,12 +12,13 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 5b2f68a5ea5e426f42b2edb91f57c95a5c08fdf1
+source_commit: 1c1b2ba186cb37e80094dadad48678f0fd7052b4
 
 production_baseline_commit: 9f5fa864327e5d16b263250ce9e0348966b37f4f
 
 release_commits: `9f5fa86`（baseline）→ `02816ee`（task `20260907-002`、第1回API実装）→
 `47b0b1e`（notice更新）→ `5b2f68a`（task `20260907-004`、第2回レビュー対応。
+GAS側実装は含まない）→ `1c1b2ba`（task `20260907-005`、第3回レビュー対応。
 GAS側実装は含まない）
 
 impact_level: L3
@@ -273,7 +274,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
 - [x] production baselineとrelease全commit・build入力差分を確認した（B01反映、baseline訂正済み）
-- [x] source commitとnoticeをremoteの対象branchへpushした（本notice末尾のcommit記録欄参照、origin/mainへpush予定）
+- [ ] source commitとnoticeをremoteの対象branchへpushした（`1c1b2ba`でlocal commit済み、push未実施）
 - [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回・第3回レビューが
       mock再現・実DBへのprobeで確認した計13件の問題を含むregression test 30件を含む
       全46件をローカルDBで実行し全件成功を確認済み）
@@ -348,7 +349,7 @@ VPS管理レビュー正本§10.3〜§10.4が実DBへのprobeにより確認し�
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: task `20260907-004`完了・commit `5b2f68a`push済み。本notice更新後に実施
+- ユーザーへの案内: task `20260907-005`完了・commit `1c1b2ba`（push未実施。push後に案内可能）
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md`
 
@@ -357,7 +358,7 @@ VPS管理レビュー正本§10.3〜§10.4が実DBへのprobeにより確認し�
 
 次に、VPS管理チャットへ以下を送ってください。
 「stockhomeの変更通知書 C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md を確認し、
-第2回レビュー§9.3〜§9.5への対応状況を確認のうえ、再レビューをしてください。
+第3回レビュー§10.3〜§10.4への対応状況を確認のうえ、再レビューをしてください。
 production反映は別承認として扱ってください。」
 ```
 
@@ -419,7 +420,7 @@ production反映は別承認として扱ってください。」
 - `apps/api/prisma/`・`ops/`はtask対象外として変更なし（Claudeが別途対応）
 - fresh隔離DBでのmigration apply/rollback rehearsalはClaudeが別途対応（上記
   「Data・migration・backup」節参照）
-- commit: 本notice末尾のcommit記録欄を参照（このセクション記入時点で未commit）
+- commit: `1c1b2ba`（origin/mainへpush前）
 
 ## Approval
 
@@ -431,5 +432,5 @@ production反映は別承認として扱ってください。」
   第2回レビューで問題7件検出）、20260907-003（Codex CLI異常終了のため未完了）、
   20260907-004（20260907-003の再発行。第2回レビュー対応、`success`・commit `5b2f68a`・
   ローカルDB test 38件全成功。第3回レビューで問題6件検出）、
-  20260907-005（第3回レビュー対応、`success`。ローカルDB test 46件全成功、
-  fresh隔離DB migration/rollback rehearsal実施済み。commitは本notice末尾を参照）
+  20260907-005（第3回レビュー対応、`success`・commit `1c1b2ba`。
+  ローカルDB test 46件全成功、fresh隔離DB migration/rollback rehearsal実施済み）
