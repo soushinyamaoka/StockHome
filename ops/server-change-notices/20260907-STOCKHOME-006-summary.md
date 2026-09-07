@@ -12,18 +12,16 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 未定（本notice更新時点でtask `20260907-002`は`inbox`配置前。実装完了後、
-このnoticeを再更新しfull SHAを記載する）
+source_commit: 02816eeb59c15cb1da8f1e713474f03e0775aa75
 
 production_baseline_commit: 9f5fa864327e5d16b263250ce9e0348966b37f4f
 
-release_commits: baseline（`9f5fa86`）以降、本notice向けの実装commitはまだ存在しない
-（`priceReparse.ts`/`priceReparse.test.ts`/`bridge.ts`修正等は`packages/shared`・
-`apps/api`ともにworking tree上のみで未commit。実装完了後に列挙する）
+release_commits: `9f5fa86`（baseline）→ `02816ee`（本notice向けAPI実装。task
+`20260907-002`、Codex実装・Claudeレビュー・commit・push済み。GAS側実装は含まない）
 
 impact_level: L3
 
-status: draft
+status: ready_for_review
 
 created_by: Claude
 
@@ -189,31 +187,30 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
 - [x] production baselineとrelease全commit・build入力差分を確認した（B01反映、baseline訂正済み）
-- [ ] source commitとnoticeをremoteの対象branchへpushした（task `20260907-002`完了後に実施）
-- [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（D2実装・test項目に反映）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`02816ee`、origin/mainへpush済み）
+- [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（D2実装・testで確認済み。
+      `priceReparse.test.ts`11件、ローカルDBでの動的test全件pass）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（上記Deploy・rollback参照）
-- [ ] job/log/retention、runtime/dependency、client配信の該当有無を確認した
-      （job/logは設計済み・実装待ち。client配信は不要と確定）
+- [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した
+      （`job_start`/`job_end`実装済み。client配信は不要と確定）
 - [ ] app owner、VPS review、production承認、client配信承認を分離した（B07で4段階に分離済み。
-      実際の承認取得はこれから）
+      **実際の承認取得はこれから**）
 - [x] secret非混入とtracked working tree cleanを確認した
 
-未確認・該当なしの理由: source commitのpush、job/log実装、承認取得は、task
-`20260907-002`（API側実装）の完了とレビュー後に行う。GAS側は未実装のため
-該当チェックが完了できない（B08参照）。
+未確認・該当なしの理由: 4段階の承認取得（app owner承認①〜production承認③）は、
+本notice改訂によるVPS管理再レビュー後に行う。GAS側バッチ実装（B08）は
+app owner判断により今回は対象外（別途手動Codexセッションで実装予定）。
 
 ## 未解決事項
 
 1. **B08（実装経路）**: GAS側バッチの実装は、app owner判断により**今回は実装せず、
    別途手動Codexセッションで実装する**方針に決定した（2026-09-07）。設計メモは
    `ops/investigations/20260907-historical-price-reparse-gas-design.md`に作成済み。
-   実装後、本noticeへcommit証跡・test結果を追記する
-2. API側実装（task `20260907-002`）は本notice更新時点でinbox配置前。完了後、
-   source commitのfull SHA・test結果を本noticeへ追記する
-3. `HISTORICAL_REPARSE_ENABLED`の実際の設定・解除手順（VPS管理側の`.env`変更）は
+   実装後、本noticeへcommit証跡・test結果を追記する（**GAS側は本notice時点で未着手のまま**）
+2. `HISTORICAL_REPARSE_ENABLED`の実際の設定・解除手順（VPS管理側の`.env`変更）は
    production承認後に確定する
-4. dry-run実行時のGmail API呼び出し順序・retry方針（GAS設計メモに暫定案あり、
-   実装時に確定）
+3. dry-run実行時のGmail API呼び出し順序・retry方針（GAS設計メモに暫定案あり、
+   GAS実装時に確定）
 
 ## 希望時期
 
@@ -222,7 +219,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: 未実施（task `20260907-002`完了後に案内する）
+- ユーザーへの案内: 本notice更新後に実施予定（task `20260907-002`完了・commit `02816ee`済み）
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md`
 
@@ -253,4 +250,5 @@ production反映は別承認として扱ってください。」
 - app owner: 未実施（B08の実装経路選択のみ2026-09-07に決定済み。dry-run結果への承認は未実施）
 - VPS management review: 未実施（本改訂での再レビュー待ち）
 - production approval: 未実施
-- related task_id: 20260907-002（API側実装、StockHome-ClaudeToCodex、本notice更新時点でinbox配置前）
+- related task_id: 20260907-002（API側実装、StockHome-ClaudeToCodex、`success`完了・
+  commit `02816ee`・origin/mainへpush済み。GAS側は未実装）
