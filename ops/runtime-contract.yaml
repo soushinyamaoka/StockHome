@@ -46,6 +46,16 @@
 #   2026-09-05 (task_id: 20260905-001): app owner承認、妻への通知・不使用確認、個別production承認後、
 #     source c231f76をAPIへ反映。dump隔離restore、16 test、5 migration、15 table件数一致、
 #     API/DB/health/bind/volume、全行JSONログをVPS管理側が即時確認。19:55定期job確認待ち。
+#   2026-09-06 (task_id: 20260906-001): 過去のGmail取込候補・購入履歴の単価保存不備を修正。
+#     import_order_candidates へ price_source 列を追加し、単価/小計判定を3層化。
+#     schema変更を伴うがserver_impact: noneと自己判定し、VPS管理レビューを経ずアプリ側から
+#     直接npm run deployで反映した（2026-09-07の第2回VPS管理レビューでB01として指摘、
+#     本ポリシーと不一致と判定された。以後、列追加を伴う反映は事前notice提出必須とする）。
+#   2026-09-07: notice 20260907-STOCKHOME-006（過去候補の単価再解析、GET/POST
+#     /api/bridge/reparse-candidates、price_reparse_audit・price_reparse_runsテーブル）を
+#     VPS管理側が第1回・第2回ともblocked判定。第2回はmock再現により認証境界・冪等性・
+#     監査の非原子性等7件の問題を検出。task 20260907-003で修正中、production未反映
+#     （HISTORICAL_REPARSE_ENABLED未設定のためdeployされても機能上は無効のまま）。
 
 schema_version: 1
 app: stockhome
@@ -97,6 +107,10 @@ config:
     - { name: POSTGRES_USER, required: true, secret: true }
     - { name: POSTGRES_PASSWORD, required: true, secret: true }
     - { name: POSTGRES_DB, required: true, secret: false }
+    - { name: HISTORICAL_REPARSE_ENABLED, required: false, secret: false }
+      # notice 20260907-STOCKHOME-006。'true'のときだけ GET/POST /api/bridge/reparse-candidates
+      # を有効化する一時フラグ（未設定時は404）。2026-09-07時点でproduction未設定・未反映。
+      # docker-compose.prod.ymlのapp.environmentへの受け渡し追加はtask 20260907-003で対応
   secret_provisioning: manual     # .env.production.example を cp して手動設定（README記載）
 
 data:
@@ -150,6 +164,45 @@ data:
         レスポンスへ suggestedDaysPerUnit（{value, sampleCount} | null。直近の購入間隔から
         算出した消費ペースの目安）を追加。既存フィールド（purchases, priceStats）は不変で、
         旧クライアントとの後方互換性を維持する。
+    - table: import_order_candidates
+      fields: [price_source]
+      meaning: >-
+        2026-09-06（task 20260906-001）追加。検出価格の根拠ラベル（GASパーサーが付与）。
+        '本体価格'のみ、数量に関わらず単価そのものとして即時確定してよい根拠として扱う
+        （candidateIntake.ts の CERTAIN_UNIT_PRICE_SOURCES）。それ以外の値・NULLは
+        単価/小計を判別できないものとして扱う（layer1では確定しない）。
+      update_paths: >-
+        GASブリッジ（POST /api/bridge/import-candidates）からの新規候補作成・upgrade時。
+        notice 20260907-STOCKHOME-006の再解析route（未production反映、下記参照）でも
+        NULL→値の一方向でのみ更新する。
+      failure_consistency: 通常の候補作成と同一のトランザクション内で設定される。単独では更新しない。
+    - table: price_reparse_runs
+      fields: [run_token, imported_by_email, household_id, expires_at, revoked_at]
+      meaning: >-
+        2026-09-07（notice 20260907-STOCKHOME-006、task 20260907-003で追加、
+        production未反映）。過去候補の単価再解析APIへの認可専用テーブル。GAS側の
+        呼び出しを、この事前発行済みrun_tokenが指すimported_by_emailの候補だけに限定する
+        （共有BRIDGE_TOKEN保持者が任意のemailを自己申告して他利用者のGmail message ID・
+        商品名へアクセスすることを防ぐ）。行の作成はHTTP経由では行わず、production承認後に
+        運用者がローカル/VPS上で直接1件だけ発行する想定（createReparseRun関数、
+        本notice時点で未実運用）。
+      update_paths: 手動発行のみ（HTTP経由の作成route無し）。revoked_atの設定も手動想定。
+      failure_consistency: 該当なし（認可専用、業務データではない）。
+    - table: price_reparse_audit
+      fields: [run_id, candidate_id, purchase_id, before_*, applied_*, outcome, skip_reason]
+      meaning: >-
+        2026-09-06（notice 20260907-STOCKHOME-006、production未反映）。過去候補の単価
+        再解析batchが処理した全row（成功・skip・conflict・失敗を問わず）の変更前後値を
+        記録する監査ログ。Git管理外（本テーブルのみに保存）。APIレスポンス・通常ログには
+        row内容を一切含めない。dry_runの結果は outcome へ dry_run_ 接頭辞を付けて区別し、
+        業務データ（import_order_candidates/purchase_logs）は変更しない。
+      update_paths: >-
+        POST /api/bridge/reparse-candidates（write時: 業務データ更新と同一transaction内。
+        dry_run時: 業務データ更新をrollbackした後、監査insertのみ独立して行う）。
+      failure_consistency: >-
+        write時、候補・購入の更新と監査insertは同一transaction内で行われ、
+        一方だけが確定することはない（task 20260907-003対応、B05）。dry_runの監査insertは
+        独立した別transactionのため、これ自体が失敗しても業務データには影響しない。
   data_retention:
     - table: push_tickets
       policy: >-
@@ -277,6 +330,12 @@ user_impact:
 
 # 既知の未解決事項（隠さずそのまま記録する）
 known_gaps:
+  - >-
+    notice 20260907-STOCKHOME-006（過去候補の単価再解析）はproduction未反映。
+    HISTORICAL_REPARSE_ENABLED未設定のため、新設したGET/POST /api/bridge/reparse-candidates
+    はdeployされても404を返すのみで機能上は無効。VPS管理側の第2回レビューでmock再現された
+    7件の問題（認証境界・冪等性・監査の非原子性等）をtask 20260907-003で修正中。
+    GAS側バッチは未実装（設計メモのみ ops/investigations/20260907-historical-price-reparse-gas-design.md）。
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。

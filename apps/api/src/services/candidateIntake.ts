@@ -27,7 +27,7 @@ function jstDateOnly(d: Date): Date {
 // パーサーが「24缶」等の個数をセット数として拾うと 24×24=576 のような過大値になるため、
 // 1注文明細としてあり得ないセット数（MAX_PLAUSIBLE_SETS 超）は取り違えとみなし 1 セット扱いにする。
 const MAX_PLAUSIBLE_SETS = 12;
-function resolvePurchaseQty(detectedQty: number | null, defaultPurchaseQty: number) {
+export function resolvePurchaseQty(detectedQty: number | null, defaultPurchaseQty: number) {
   const unitsPerSet = Math.max(1, Math.round(defaultPurchaseQty));
   const rawSets = Math.max(1, Math.round(detectedQty ?? 1));
   const suspicious = rawSets > MAX_PLAUSIBLE_SETS;

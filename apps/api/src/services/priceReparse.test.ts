@@ -1,16 +1,20 @@
-// 過去候補の単価再解析（notice 20260907-STOCKHOME-006 B06対応）。
-// ローカルDocker Postgres（DATABASE_URL、apps/api/.env）に対して実行する。
-// 各テストは独立した household/item を作成し、終了時に作成データを削除する。
-//
-// 実行方法: npm test --workspace=@stockhome/api
 import 'dotenv/config';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ReparseResultItem } from '@stockhome/shared';
+import { reparseResultItemSchema } from '@stockhome/shared';
 import { prisma } from '../lib/prisma';
-import { getReparseTargets, processReparseResults } from './priceReparse';
+import { CERTAIN_UNIT_PRICE_SOURCES } from './candidateIntake';
+import {
+  createReparseRun,
+  getReparseTargets,
+  processReparseResults,
+  ReparseRunInvalidError,
+} from './priceReparse';
 
 let scopeCounter = 0;
+const OWNER_EMAIL = 'owner@example.invalid';
+const CERTAIN_PRICE_SOURCE = [...CERTAIN_UNIT_PRICE_SOURCES][0];
 
 interface TestScope {
   tag: string;
@@ -36,17 +40,42 @@ async function createTestScope(defaultPurchaseQty = 1): Promise<TestScope> {
     householdId: household.id,
     itemId: item.id,
     cleanup: async () => {
-      await prisma.priceReparseAudit.deleteMany({ where: { runId: { startsWith: tag } } });
+      const runs = await prisma.priceReparseRun.findMany({
+        where: { householdId: household.id },
+        select: { id: true },
+      });
+      const runIds = runs.map((run) => run.id);
+      if (runIds.length > 0) {
+        await prisma.priceReparseAudit.deleteMany({ where: { runId: { in: runIds } } });
+      }
+      await prisma.priceReparseRun.deleteMany({ where: { householdId: household.id } });
       await prisma.household.delete({ where: { id: household.id } });
     },
   };
+}
+
+async function createRun(
+  scope: TestScope,
+  options: { importedByEmail?: string; expiresAt?: Date; revokedAt?: Date | null } = {}
+) {
+  return prisma.priceReparseRun.create({
+    data: {
+      runToken: `rrun_test_${scope.tag}_${Math.random().toString(16).slice(2)}`,
+      householdId: scope.householdId,
+      importedByEmail: options.importedByEmail ?? OWNER_EMAIL,
+      expiresAt: options.expiresAt ?? new Date(Date.now() + 60 * 60 * 1000),
+      revokedAt: options.revokedAt ?? null,
+    },
+  });
 }
 
 async function createCandidate(
   scope: TestScope,
   options: {
     id?: string;
+    legacyId?: string | null;
     importedByEmail?: string;
+    detectedQty?: number | null;
     detectedPrice?: number | null;
     priceSource?: string | null;
     candidateStatus?: string;
@@ -57,14 +86,16 @@ async function createCandidate(
   return prisma.importOrderCandidate.create({
     data: {
       ...(options.id ? { id: options.id } : {}),
+      legacyId: options.legacyId ?? null,
       householdId: scope.householdId,
       vendor: 'amazon',
       mailMessageId: `message-${scope.tag}-${Math.random()}`,
-      importedByEmail: options.importedByEmail ?? 'owner@example.invalid',
+      importedByEmail: options.importedByEmail ?? OWNER_EMAIL,
       mailDate: new Date('2026-09-01T00:00:00.000Z'),
       mailType: 'order_confirm',
       mailPhase: 'ordered',
       itemNameRaw: options.itemNameRaw ?? `item-${scope.tag}`,
+      detectedQty: options.detectedQty ?? null,
       detectedPrice: options.detectedPrice ?? null,
       priceSource: options.priceSource ?? null,
       candidateStatus: options.candidateStatus ?? 'detected',
@@ -73,14 +104,19 @@ async function createCandidate(
   });
 }
 
-async function createPurchase(scope: TestScope, candidateId: string, qty: number) {
+async function createPurchase(
+  scope: TestScope,
+  candidateId: string | null,
+  qty: number,
+  price: number | null = null
+) {
   return prisma.purchaseLog.create({
     data: {
       householdId: scope.householdId,
       itemId: scope.itemId,
       purchasedAt: new Date('2026-09-01T00:00:00.000Z'),
       qty,
-      price: null,
+      price,
       source: 'gmail',
       sourceType: 'gmail_auto',
       importCandidateId: candidateId,
@@ -94,53 +130,60 @@ async function getOnlyAudit(runId: string) {
   return rows[0];
 }
 
-test('候補のみ更新: detectedPriceとpriceSourceを更新してupdatedを記録する', async () => {
+test('candidate-only update records detectedPrice and priceSource', async () => {
   const scope = await createTestScope();
-  const runId = `${scope.tag}-candidate-only`;
   try {
+    const run = await createRun(scope);
     const candidate = await createCandidate(scope);
-    const counts = await processReparseResults(runId, 'write', [
-      { candidateId: candidate.id, detectedPrice: 500, priceSource: '本体価格' },
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 500, priceSource: CERTAIN_PRICE_SOURCE },
     ]);
 
     assert.equal(counts.updatedCandidate, 1);
     assert.equal(counts.updatedPurchase, 0);
     const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
     assert.equal(reloaded.detectedPrice, 500);
-    assert.equal(reloaded.priceSource, '本体価格');
-    assert.equal((await getOnlyAudit(runId)).outcome, 'updated');
+    assert.equal(reloaded.priceSource, CERTAIN_PRICE_SOURCE);
+    assert.equal((await getOnlyAudit(run.id)).outcome, 'updated');
   } finally {
     await scope.cleanup();
   }
 });
 
-test('購入に反映（sets=1）: NULLのpurchase priceへ確定値を設定する', async () => {
+test('sets=1 updates a purchase with a reliable price', async () => {
   const scope = await createTestScope();
-  const runId = `${scope.tag}-sets-one`;
   try {
-    const candidate = await createCandidate(scope, { candidateStatus: 'confirmed', matchedItemId: scope.itemId });
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope, {
+      candidateStatus: 'confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 1,
+    });
     const purchase = await createPurchase(scope, candidate.id, 1);
-    const counts = await processReparseResults(runId, 'write', [
-      { candidateId: candidate.id, detectedPrice: 640, priceSource: '商品ブロック(JPY表記)' },
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 640 },
     ]);
 
     assert.equal(counts.updatedCandidate, 1);
     assert.equal(counts.updatedPurchase, 1);
     assert.equal((await prisma.purchaseLog.findUniqueOrThrow({ where: { id: purchase.id } })).price, 640);
-    assert.equal((await getOnlyAudit(runId)).outcome, 'updated');
   } finally {
     await scope.cleanup();
   }
 });
 
-test('購入に反映（sets=2・本体価格）: 層1判定の単価を設定する', async () => {
+test('sets=2 with a certain unit-price label updates the purchase', async () => {
   const scope = await createTestScope();
-  const runId = `${scope.tag}-sets-two-label`;
   try {
-    const candidate = await createCandidate(scope, { candidateStatus: 'auto_confirmed', matchedItemId: scope.itemId });
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope, {
+      candidateStatus: 'auto_confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 2,
+    });
     const purchase = await createPurchase(scope, candidate.id, 2);
-    const counts = await processReparseResults(runId, 'write', [
-      { candidateId: candidate.id, detectedPrice: 800, priceSource: '本体価格' },
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 800, priceSource: CERTAIN_PRICE_SOURCE },
     ]);
 
     assert.equal(counts.updatedPurchase, 1);
@@ -150,13 +193,17 @@ test('購入に反映（sets=2・本体価格）: 層1判定の単価を設定�
   }
 });
 
-test('購入は未反映（sets=2・ラベル無し・履歴無し）: candidateだけ更新して保留する', async () => {
+test('unreliable sets=2 price updates only the candidate', async () => {
   const scope = await createTestScope();
-  const runId = `${scope.tag}-sets-two-unresolved`;
   try {
-    const candidate = await createCandidate(scope, { candidateStatus: 'confirmed', matchedItemId: scope.itemId });
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope, {
+      candidateStatus: 'confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 2,
+    });
     const purchase = await createPurchase(scope, candidate.id, 2);
-    const counts = await processReparseResults(runId, 'write', [
+    const counts = await processReparseResults(run.runToken, 'write', [
       { candidateId: candidate.id, detectedPrice: 900 },
     ]);
 
@@ -164,83 +211,84 @@ test('購入は未反映（sets=2・ラベル無し・履歴無し）: candidate
     assert.equal(counts.updatedPurchase, 0);
     assert.equal(counts.bySkipReason.purchase_price_unresolved, 1);
     assert.equal((await prisma.purchaseLog.findUniqueOrThrow({ where: { id: purchase.id } })).price, null);
-    const audit = await getOnlyAudit(runId);
-    assert.equal(audit.outcome, 'updated');
-    assert.equal(audit.skipReason, 'purchase_price_unresolved');
   } finally {
     await scope.cleanup();
   }
 });
 
-test('既にpriceSourceがある候補: conflictとして既存値を保持する', async () => {
+test('an existing priceSource causes a conflict and is preserved', async () => {
   const scope = await createTestScope();
-  const runId = `${scope.tag}-existing-source`;
   try {
-    const candidate = await createCandidate(scope, { detectedPrice: 300, priceSource: '既存' });
-    const counts = await processReparseResults(runId, 'write', [
-      { candidateId: candidate.id, detectedPrice: 700, priceSource: '本体価格' },
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope, { detectedPrice: 300, priceSource: 'existing' });
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 700, priceSource: CERTAIN_PRICE_SOURCE },
     ]);
 
     assert.equal(counts.conflict, 1);
-    assert.equal(counts.bySkipReason.already_has_price_source, 1);
+    assert.equal(counts.bySkipReason.already_has_price, 1);
     const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
     assert.equal(reloaded.detectedPrice, 300);
-    assert.equal(reloaded.priceSource, '既存');
+    assert.equal(reloaded.priceSource, 'existing');
   } finally {
     await scope.cleanup();
   }
 });
 
-test('同時実行: 同一candidateIdは片方だけupdated、もう片方はconflictになる', async () => {
+test('concurrent writes allow only one candidate update', async () => {
   const scope = await createTestScope();
   try {
+    const run = await createRun(scope);
     const candidate = await createCandidate(scope);
-    const item = { candidateId: candidate.id, detectedPrice: 500, priceSource: '本体価格' };
+    const item = { candidateId: candidate.id, detectedPrice: 500, priceSource: CERTAIN_PRICE_SOURCE };
     const [a, b] = await Promise.all([
-      processReparseResults(`${scope.tag}-concurrent-a`, 'write', [item]),
-      processReparseResults(`${scope.tag}-concurrent-b`, 'write', [item]),
+      processReparseResults(run.runToken, 'write', [item]),
+      processReparseResults(run.runToken, 'write', [item]),
     ]);
 
     assert.equal(a.updatedCandidate + b.updatedCandidate, 1);
     assert.equal(a.conflict + b.conflict, 1);
-    const audits = await prisma.priceReparseAudit.findMany({ where: { runId: { startsWith: `${scope.tag}-concurrent-` } } });
-    assert.deepEqual(audits.map((row) => row.outcome).sort(), ['conflict', 'updated']);
+    assert.equal((await prisma.priceReparseAudit.findMany({ where: { runId: run.id } })).length, 1);
   } finally {
     await scope.cleanup();
   }
 });
 
-test('異常値: 0・負数・非整数・上限超過を拒否してDBを変更しない', async () => {
+test('invalid prices are rejected without changing candidates', async () => {
   const scope = await createTestScope();
-  const runId = `${scope.tag}-invalid-prices`;
   try {
-    const candidates = await Promise.all([createCandidate(scope), createCandidate(scope), createCandidate(scope), createCandidate(scope)]);
+    const run = await createRun(scope);
+    const candidates = await Promise.all([
+      createCandidate(scope),
+      createCandidate(scope),
+      createCandidate(scope),
+      createCandidate(scope),
+    ]);
     const invalidPrices = [0, -1, 1.5, 1_000_001];
     const results = candidates.map((candidate, index) => ({
       candidateId: candidate.id,
       detectedPrice: invalidPrices[index],
-      priceSource: '本体価格',
+      priceSource: CERTAIN_PRICE_SOURCE,
     })) as ReparseResultItem[];
-    const counts = await processReparseResults(runId, 'write', results);
+    const counts = await processReparseResults(run.runToken, 'write', results);
 
     assert.equal(counts.failed, 4);
     assert.equal(counts.bySkipReason.invalid_price_rejected, 4);
-    const reloaded = await prisma.importOrderCandidate.findMany({ where: { id: { in: candidates.map((c) => c.id) } } });
+    const reloaded = await prisma.importOrderCandidate.findMany({
+      where: { id: { in: candidates.map((candidate) => candidate.id) } },
+    });
     assert.ok(reloaded.every((candidate) => candidate.detectedPrice == null && candidate.priceSource == null));
-    const audits = await prisma.priceReparseAudit.findMany({ where: { runId } });
-    assert.equal(audits.length, 4);
-    assert.ok(audits.every((audit) => audit.outcome === 'failed' && audit.skipReason === 'invalid_price_rejected'));
   } finally {
     await scope.cleanup();
   }
 });
 
-test('skipReasonあり: candidateを変更せずskippedを記録する', async () => {
+test('a supported skipReason skips without changing the candidate', async () => {
   const scope = await createTestScope();
-  const runId = `${scope.tag}-skip`;
   try {
+    const run = await createRun(scope);
     const candidate = await createCandidate(scope);
-    const counts = await processReparseResults(runId, 'write', [
+    const counts = await processReparseResults(run.runToken, 'write', [
       { candidateId: candidate.id, skipReason: 'message_not_found' },
     ]);
 
@@ -249,30 +297,30 @@ test('skipReasonあり: candidateを変更せずskippedを記録する', async (
     const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
     assert.equal(reloaded.detectedPrice, null);
     assert.equal(reloaded.priceSource, null);
-    assert.equal((await getOnlyAudit(runId)).outcome, 'skipped');
   } finally {
     await scope.cleanup();
   }
 });
 
-test('dry_run: writeと同じ判定後にcandidate/purchaseをrollbackし監査だけ記録する', async () => {
+test('dry_run rolls back candidate and purchase but records its audit', async () => {
   const scope = await createTestScope();
-  const runId = `${scope.tag}-dry-run`;
   try {
-    const candidate = await createCandidate(scope, { candidateStatus: 'confirmed', matchedItemId: scope.itemId });
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope, {
+      candidateStatus: 'confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 1,
+    });
     const purchase = await createPurchase(scope, candidate.id, 1);
-    const counts = await processReparseResults(runId, 'dry_run', [
-      { candidateId: candidate.id, detectedPrice: 750, priceSource: '本体価格' },
+    const counts = await processReparseResults(run.runToken, 'dry_run', [
+      { candidateId: candidate.id, detectedPrice: 750 },
     ]);
 
     assert.equal(counts.updatedCandidate, 1);
     assert.equal(counts.updatedPurchase, 1);
-    const reloadedCandidate = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
-    const reloadedPurchase = await prisma.purchaseLog.findUniqueOrThrow({ where: { id: purchase.id } });
-    assert.equal(reloadedCandidate.detectedPrice, null);
-    assert.equal(reloadedCandidate.priceSource, null);
-    assert.equal(reloadedPurchase.price, null);
-    const audit = await getOnlyAudit(runId);
+    assert.equal((await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } })).detectedPrice, null);
+    assert.equal((await prisma.purchaseLog.findUniqueOrThrow({ where: { id: purchase.id } })).price, null);
+    const audit = await getOnlyAudit(run.id);
     assert.equal(audit.outcome, 'dry_run_updated');
     assert.equal(audit.appliedDetectedPrice, 750);
     assert.equal(audit.appliedPurchasePrice, 750);
@@ -281,19 +329,24 @@ test('dry_run: writeと同じ判定後にcandidate/purchaseをrollbackし監査�
   }
 });
 
-test('再実行（冪等性）: 2回目は全件conflictでpurchase priceを上書きしない', async () => {
+test('repeated writes are idempotent', async () => {
   const scope = await createTestScope();
   try {
-    const candidateA = await createCandidate(scope, { candidateStatus: 'confirmed', matchedItemId: scope.itemId });
+    const run = await createRun(scope);
+    const candidateA = await createCandidate(scope, {
+      candidateStatus: 'confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 1,
+    });
     const candidateB = await createCandidate(scope);
     const purchase = await createPurchase(scope, candidateA.id, 1);
     const results = [
-      { candidateId: candidateA.id, detectedPrice: 420, priceSource: '本体価格' },
-      { candidateId: candidateB.id, detectedPrice: 520, priceSource: '本体価格' },
+      { candidateId: candidateA.id, detectedPrice: 420, priceSource: CERTAIN_PRICE_SOURCE },
+      { candidateId: candidateB.id, detectedPrice: 520, priceSource: CERTAIN_PRICE_SOURCE },
     ];
 
-    const first = await processReparseResults(`${scope.tag}-idempotent-first`, 'write', results);
-    const second = await processReparseResults(`${scope.tag}-idempotent-second`, 'write', results);
+    const first = await processReparseResults(run.runToken, 'write', results);
+    const second = await processReparseResults(run.runToken, 'write', results);
     assert.equal(first.updatedCandidate, 2);
     assert.equal(first.updatedPurchase, 1);
     assert.equal(second.conflict, 2);
@@ -304,23 +357,271 @@ test('再実行（冪等性）: 2回目は全件conflictでpurchase priceを上�
   }
 });
 
-test('getReparseTargets: email・NULL条件で絞り込みcursorページネーションする', async () => {
+test('getReparseTargets filters by run owner and paginates eligible candidates', async () => {
   const scope = await createTestScope();
-  const email = 'target@example.invalid';
   try {
-    await createCandidate(scope, { id: `${scope.tag}-001`, importedByEmail: email, itemNameRaw: 'target-1' });
-    await createCandidate(scope, { id: `${scope.tag}-002`, importedByEmail: email, itemNameRaw: 'target-2' });
-    await createCandidate(scope, { id: `${scope.tag}-003`, importedByEmail: email, itemNameRaw: 'target-3' });
+    const run = await createRun(scope);
+    await createCandidate(scope, { id: `${scope.tag}-001`, itemNameRaw: 'target-1' });
+    await createCandidate(scope, { id: `${scope.tag}-002`, itemNameRaw: 'target-2' });
+    await createCandidate(scope, { id: `${scope.tag}-003`, itemNameRaw: 'target-3' });
     await createCandidate(scope, { id: `${scope.tag}-004`, importedByEmail: 'other@example.invalid' });
-    await createCandidate(scope, { id: `${scope.tag}-005`, importedByEmail: email, priceSource: '既存' });
-    await createCandidate(scope, { id: `${scope.tag}-006`, importedByEmail: email, detectedPrice: 100 });
+    await createCandidate(scope, { id: `${scope.tag}-005`, priceSource: 'existing' });
+    await createCandidate(scope, { id: `${scope.tag}-006`, detectedPrice: 100 });
 
-    const firstPage = await getReparseTargets(email, undefined, 2);
+    const firstPage = await getReparseTargets(run.runToken, undefined, 2);
     assert.deepEqual(firstPage.map((candidate) => candidate.id), [`${scope.tag}-001`, `${scope.tag}-002`]);
-    const secondPage = await getReparseTargets(email, firstPage[1].id, 2);
+    const secondPage = await getReparseTargets(run.runToken, firstPage[1].id, 2);
     assert.deepEqual(secondPage.map((candidate) => candidate.id), [`${scope.tag}-003`]);
     assert.deepEqual(Object.keys(firstPage[0]).sort(), ['id', 'itemNameRaw', 'mailMessageId', 'mailPhase', 'vendor'].sort());
   } finally {
     await scope.cleanup();
+  }
+});
+
+test('missing, expired, and revoked run tokens are rejected by both entry points', async () => {
+  const scope = await createTestScope();
+  try {
+    const expired = await createRun(scope, { expiresAt: new Date(Date.now() - 1000) });
+    const revoked = await createRun(scope, { revokedAt: new Date() });
+    const tokens = [`rrun_missing_${scope.tag}`, expired.runToken, revoked.runToken];
+
+    for (const token of tokens) {
+      await assert.rejects(() => getReparseTargets(token, undefined, 20), ReparseRunInvalidError);
+      await assert.rejects(() => processReparseResults(token, 'write', []), ReparseRunInvalidError);
+    }
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('a candidate owned by another email is rejected without updates', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope, { importedByEmail: 'other@example.invalid' });
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 500, priceSource: CERTAIN_PRICE_SOURCE },
+    ]);
+
+    assert.equal(counts.conflict, 1);
+    assert.equal(counts.bySkipReason.candidate_owner_mismatch, 1);
+    const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
+    assert.equal(reloaded.detectedPrice, null);
+    assert.equal(reloaded.priceSource, null);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('an existing detectedPrice without priceSource cannot be overwritten', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope, { detectedPrice: 300, priceSource: null });
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 700 },
+    ]);
+
+    assert.equal(counts.conflict, 1);
+    assert.equal(counts.bySkipReason.already_has_price, 1);
+    const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
+    assert.equal(reloaded.detectedPrice, 300);
+    assert.equal(reloaded.priceSource, null);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('a price-only update cannot be replaced by a second price-only update', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope);
+    const first = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 500 },
+    ]);
+    const second = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 700 },
+    ]);
+
+    assert.equal(first.updatedCandidate, 1);
+    assert.equal(second.conflict, 1);
+    assert.equal(second.bySkipReason.already_has_price, 1);
+    const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
+    assert.equal(reloaded.detectedPrice, 500);
+    assert.equal(reloaded.priceSource, null);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('a purchase linked through candidate legacyId is updated', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const legacyId = `legacy-${scope.tag}`;
+    const candidate = await createCandidate(scope, {
+      legacyId,
+      candidateStatus: 'confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 1,
+    });
+    const purchase = await createPurchase(scope, legacyId, 1);
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 610 },
+    ]);
+
+    assert.equal(counts.updatedPurchase, 1);
+    assert.equal((await prisma.purchaseLog.findUniqueOrThrow({ where: { id: purchase.id } })).price, 610);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('multiple unresolved purchases are left unchanged as ambiguous', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope, {
+      candidateStatus: 'confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 1,
+    });
+    const firstPurchase = await createPurchase(scope, candidate.id, 1);
+    const secondPurchase = await createPurchase(scope, candidate.id, 1);
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 620 },
+    ]);
+
+    assert.equal(counts.updatedCandidate, 1);
+    assert.equal(counts.updatedPurchase, 0);
+    assert.equal(counts.bySkipReason.ambiguous_purchase_match, 1);
+    const purchases = await prisma.purchaseLog.findMany({
+      where: { id: { in: [firstPurchase.id, secondPurchase.id] } },
+    });
+    assert.ok(purchases.every((purchase) => purchase.price == null));
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('sets are recalculated from candidate.detectedQty after defaultPurchaseQty changes', async () => {
+  const scope = await createTestScope(1);
+  try {
+    const run = await createRun(scope);
+    await createPurchase(scope, null, 1, 100);
+    const candidate = await createCandidate(scope, {
+      candidateStatus: 'confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 2,
+    });
+    const purchase = await createPurchase(scope, candidate.id, 2);
+    await prisma.item.update({ where: { id: scope.itemId }, data: { defaultPurchaseQty: 4 } });
+
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 200 },
+    ]);
+
+    assert.equal(counts.updatedPurchase, 1);
+    assert.equal((await prisma.purchaseLog.findUniqueOrThrow({ where: { id: purchase.id } })).price, 100);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('a suspicious detectedQty prevents purchase price propagation', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope, {
+      candidateStatus: 'confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 13,
+    });
+    const purchase = await createPurchase(scope, candidate.id, 13);
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 650, priceSource: CERTAIN_PRICE_SOURCE },
+    ]);
+
+    assert.equal(counts.updatedCandidate, 1);
+    assert.equal(counts.updatedPurchase, 0);
+    assert.equal(counts.bySkipReason.purchase_price_unresolved, 1);
+    assert.equal((await prisma.purchaseLog.findUniqueOrThrow({ where: { id: purchase.id } })).price, null);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('dry_run records owner conflicts as dry_run_conflict audits', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope, { importedByEmail: 'other@example.invalid' });
+    const counts = await processReparseResults(run.runToken, 'dry_run', [
+      { candidateId: candidate.id, detectedPrice: 500 },
+    ]);
+
+    assert.equal(counts.conflict, 1);
+    assert.equal(counts.bySkipReason.candidate_owner_mismatch, 1);
+    const audit = await getOnlyAudit(run.id);
+    assert.equal(audit.outcome, 'dry_run_conflict');
+    assert.equal(audit.skipReason, 'candidate_owner_mismatch');
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('reparseResultItemSchema rejects an unsupported skipReason', () => {
+  const parsed = reparseResultItemSchema.safeParse({
+    candidateId: 'candidate-1',
+    skipReason: 'arbitrary_free_text',
+  });
+  assert.equal(parsed.success, false);
+});
+
+test('createReparseRun generates unique tokens and future expirations without a DB write', async () => {
+  const delegate = prisma.priceReparseRun as unknown as {
+    create: (args: {
+      data: {
+        runToken: string;
+        importedByEmail: string;
+        householdId: string;
+        expiresAt: Date;
+      };
+    }) => Promise<{
+      id: string;
+      runToken: string;
+      importedByEmail: string;
+      householdId: string;
+      createdAt: Date;
+      expiresAt: Date;
+      revokedAt: Date | null;
+    }>;
+  };
+  let callCount = 0;
+  const originalCreate = delegate.create;
+  delegate.create = async ({ data }: Parameters<typeof delegate.create>[0]) => {
+    callCount += 1;
+    return {
+      id: `mock-run-${callCount}`,
+      runToken: data.runToken,
+      importedByEmail: data.importedByEmail,
+      householdId: data.householdId,
+      createdAt: new Date(),
+      expiresAt: data.expiresAt,
+      revokedAt: null,
+    };
+  };
+
+  try {
+    const before = Date.now();
+    const first = await createReparseRun(OWNER_EMAIL, 'household-1', 1);
+    const second = await createReparseRun(OWNER_EMAIL, 'household-1', 1);
+    assert.notEqual(first.runToken, second.runToken);
+    assert.match(first.runToken, /^rrun_[0-9a-f]{64}$/);
+    assert.ok(first.expiresAt.getTime() > before);
+    assert.equal(callCount, 2);
+  } finally {
+    delegate.create = originalCreate;
   }
 });

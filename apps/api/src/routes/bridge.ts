@@ -5,7 +5,7 @@ import { appLogger, ERROR_KINDS, LOG_EVENTS, safeErr } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { parseBody } from '../utils/validate';
 import { processBridgeCandidates } from '../services/candidateIntake';
-import { getReparseTargets, processReparseResults } from '../services/priceReparse';
+import { getReparseTargets, processReparseResults, ReparseRunInvalidError } from '../services/priceReparse';
 
 // GAS ブリッジ用ルート（JWT ではなく共有トークンで認証）
 // GAS の Gmail 取込（各ユーザーの個人トリガー）が解析済み候補を POST してくる
@@ -27,16 +27,23 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
 
   // 過去候補の単価再解析: 対象一覧の取得（notice 20260907-STOCKHOME-006 B02/B03対応）
   // HISTORICAL_REPARSE_ENABLED が 'true' の間だけ有効な一時的route。
-  // mail_message_id は個人のGmailを参照する識別子のため、呼び出し元が自己申告する
-  // email で対象を絞る（既存 import-candidates の importedByEmail と同じ信頼境界）
+  // mail_message_id は個人のGmailを参照する識別子のため、事前発行したrunTokenから
+  // server側でownerを確定し、そのownerの候補だけに対象を絞る。
   app.get('/reparse-candidates', async (req, reply) => {
     if (process.env.HISTORICAL_REPARSE_ENABLED !== 'true') {
       return reply.code(404).send({ message: 'not found' });
     }
     const query = parseBody(reparseCandidatesQuerySchema, req.query, reply);
     if (!query) return;
-    const candidates = await getReparseTargets(query.email, query.cursor, query.limit ?? 20);
-    return { candidates };
+    try {
+      const candidates = await getReparseTargets(query.runToken, query.cursor, query.limit ?? 20);
+      return { candidates };
+    } catch (e) {
+      if (e instanceof ReparseRunInvalidError) {
+        return reply.code(404).send({ message: 'not found' });
+      }
+      throw e;
+    }
   });
 
   // 過去候補の単価再解析: 結果の反映（dry_run/write。notice 20260907-STOCKHOME-006）
@@ -47,22 +54,25 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
     const data = parseBody(reparseCandidatesPayloadSchema, req.body, reply);
     if (!data) return;
 
+    let counts;
+    try {
+      counts = await processReparseResults(data.runToken, data.mode, data.results);
+    } catch (e) {
+      if (e instanceof ReparseRunInvalidError) {
+        return reply.code(404).send({ message: 'not found' });
+      }
+      throw e;
+    }
+
+    // run単位のstart/endではなく、chunk（1回のPOST）単位のBATCH_STEPとして記録する。
+    // run_id・email・message_id・金額等の個別値は出さず、集計値のみ
     appLogger.info({
-      event: LOG_EVENTS.JOB_START,
+      event: LOG_EVENTS.BATCH_STEP,
       job: 'historical_price_reparse',
-      run_id: data.runId,
-      mode: data.mode,
-    });
-    const counts = await processReparseResults(data.runId, data.mode, data.results);
-    appLogger.info({
-      event: LOG_EVENTS.JOB_END,
-      job: 'historical_price_reparse',
-      run_id: data.runId,
-      mode: data.mode,
-      status: counts.failed > 0 ? (counts.updatedCandidate + counts.unchanged > 0 ? 'partial' : 'failure') : 'success',
+      step: data.mode,
       ...counts,
     });
-    return { runId: data.runId, mode: data.mode, summary: counts };
+    return { mode: data.mode, summary: counts };
   });
 
   // 解析済み候補のバッチ投入

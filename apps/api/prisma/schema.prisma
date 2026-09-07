@@ -241,6 +241,24 @@ model ImportOrderCandidate {
   @@map("import_order_candidates")
 }
 
+// 過去候補の単価再解析（notice 20260907-STOCKHOME-006）の実行スコープ。
+// 対象owner（Gmailメールアドレス）・householdを事前に1件だけ紐付けたrunだけを許可する。
+// GAS側は自己申告のemailではなく、この事前発行済みrunTokenでGET/POSTを呼ぶことで、
+// 共有BRIDGE_TOKEN保持者が任意のemailを指定して他利用者のmessage IDへアクセスすることを
+// 防ぐ（VPS管理レビュー第2回B03対応）。作成はHTTP経由では公開せず、production承認を得た
+// 運用者がローカル/VPS上で直接1件だけ発行する
+model PriceReparseRun {
+  id              String    @id @default(cuid())
+  runToken        String    @unique @map("run_token")
+  householdId     String    @map("household_id")
+  importedByEmail String    @map("imported_by_email")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  expiresAt       DateTime  @map("expires_at")
+  revokedAt       DateTime? @map("revoked_at")
+
+  @@map("price_reparse_runs")
+}
+
 // 過去候補の単価再解析バッチ（notice 20260907-STOCKHOME-006）専用の監査ログ。
 // production row の変更前後値を Git 管理外（本テーブル、VPS 側 Postgres）にのみ保存する。
 // API レスポンスには一切含めず、chat・notice・通常ログへも row 内容を出さない。
