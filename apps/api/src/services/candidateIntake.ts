@@ -94,7 +94,7 @@ function isWithinTolerance(value: number, reference: number, tolerance: number):
 
 // 品目の直近確定単価の中央値を返す。件数が0件ならnull。
 // 平均ではなく中央値にするのは、一度きりのセール価格に引きずられないため
-async function getRecentUnitPriceMedian(itemId: string): Promise<number | null> {
+export async function getRecentUnitPriceMedian(itemId: string): Promise<number | null> {
   const recent = await prisma.purchaseLog.findMany({
     where: { itemId, price: { not: null } },
     orderBy: { purchasedAt: 'desc' },
@@ -121,7 +121,8 @@ export async function resolveCandidatePriceForItem(
   candidate: { detectedPrice: number | null; priceSource: string | null },
   sets: number,
   qtySuspicious: boolean,
-  itemId: string
+  itemId: string,
+  options?: { referencePriceOverride?: number | null }
 ): Promise<CandidatePriceResolution> {
   if (candidate.detectedPrice == null) {
     return { reliable: true, price: null, holdReason: null, resolvedBy: null };
@@ -146,7 +147,10 @@ export async function resolveCandidatePriceForItem(
   }
 
   // 層3: 当該品目の過去確定単価と照合する
-  const referencePrice = await getRecentUnitPriceMedian(itemId);
+  const referencePrice =
+    options && Object.prototype.hasOwnProperty.call(options, 'referencePriceOverride')
+      ? (options.referencePriceOverride ?? null)
+      : await getRecentUnitPriceMedian(itemId);
   if (referencePrice != null) {
     const asUnitPrice = isWithinTolerance(candidate.detectedPrice, referencePrice, PRICE_MATCH_TOLERANCE);
     const asSubtotal = isWithinTolerance(candidate.detectedPrice, referencePrice * sets, PRICE_MATCH_TOLERANCE);

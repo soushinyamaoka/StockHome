@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ReparseResultItem } from '@stockhome/shared';
-import { reparseResultItemSchema } from '@stockhome/shared';
+import { reparseCandidatesPayloadSchema, reparseResultItemSchema } from '@stockhome/shared';
 import { prisma } from '../lib/prisma';
 import { CERTAIN_UNIT_PRICE_SOURCES } from './candidateIntake';
 import {
@@ -47,6 +47,7 @@ async function createTestScope(defaultPurchaseQty = 1): Promise<TestScope> {
       const runIds = runs.map((run) => run.id);
       if (runIds.length > 0) {
         await prisma.priceReparseAudit.deleteMany({ where: { runId: { in: runIds } } });
+        await prisma.priceReparseItemSnapshot.deleteMany({ where: { runId: { in: runIds } } });
       }
       await prisma.priceReparseRun.deleteMany({ where: { householdId: household.id } });
       await prisma.household.delete({ where: { id: household.id } });
@@ -56,13 +57,14 @@ async function createTestScope(defaultPurchaseQty = 1): Promise<TestScope> {
 
 async function createRun(
   scope: TestScope,
-  options: { importedByEmail?: string; expiresAt?: Date; revokedAt?: Date | null } = {}
+  options: { importedByEmail?: string; cutoffAt?: Date; expiresAt?: Date; revokedAt?: Date | null } = {}
 ) {
   return prisma.priceReparseRun.create({
     data: {
       runToken: `rrun_test_${scope.tag}_${Math.random().toString(16).slice(2)}`,
       householdId: scope.householdId,
       importedByEmail: options.importedByEmail ?? OWNER_EMAIL,
+      cutoffAt: options.cutoffAt ?? new Date(Date.now() + 60 * 60 * 1000),
       expiresAt: options.expiresAt ?? new Date(Date.now() + 60 * 60 * 1000),
       revokedAt: options.revokedAt ?? null,
     },
@@ -81,6 +83,7 @@ async function createCandidate(
     candidateStatus?: string;
     matchedItemId?: string | null;
     itemNameRaw?: string | null;
+    createdAt?: Date;
   } = {}
 ) {
   return prisma.importOrderCandidate.create({
@@ -100,6 +103,7 @@ async function createCandidate(
       priceSource: options.priceSource ?? null,
       candidateStatus: options.candidateStatus ?? 'detected',
       matchedItemId: options.matchedItemId ?? null,
+      ...(options.createdAt ? { createdAt: options.createdAt } : {}),
     },
   });
 }
@@ -235,7 +239,7 @@ test('an existing priceSource causes a conflict and is preserved', async () => {
   }
 });
 
-test('concurrent writes allow only one candidate update', async () => {
+test('concurrent write retries return the same saved outcome', async () => {
   const scope = await createTestScope();
   try {
     const run = await createRun(scope);
@@ -246,8 +250,8 @@ test('concurrent writes allow only one candidate update', async () => {
       processReparseResults(run.runToken, 'write', [item]),
     ]);
 
-    assert.equal(a.updatedCandidate + b.updatedCandidate, 1);
-    assert.equal(a.conflict + b.conflict, 1);
+    assert.equal(a.updatedCandidate + b.updatedCandidate, 2);
+    assert.equal(a.conflict + b.conflict, 0);
     assert.equal((await prisma.priceReparseAudit.findMany({ where: { runId: run.id } })).length, 1);
   } finally {
     await scope.cleanup();
@@ -274,6 +278,7 @@ test('invalid prices are rejected without changing candidates', async () => {
 
     assert.equal(counts.failed, 4);
     assert.equal(counts.bySkipReason.invalid_price_rejected, 4);
+    assert.equal((await prisma.priceReparseAudit.findMany({ where: { runId: run.id } })).length, 4);
     const reloaded = await prisma.importOrderCandidate.findMany({
       where: { id: { in: candidates.map((candidate) => candidate.id) } },
     });
@@ -294,6 +299,7 @@ test('a supported skipReason skips without changing the candidate', async () => 
 
     assert.equal(counts.skipped, 1);
     assert.equal(counts.bySkipReason.message_not_found, 1);
+    assert.equal((await getOnlyAudit(run.id)).outcome, 'skipped');
     const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
     assert.equal(reloaded.detectedPrice, null);
     assert.equal(reloaded.priceSource, null);
@@ -346,11 +352,21 @@ test('repeated writes are idempotent', async () => {
     ];
 
     const first = await processReparseResults(run.runToken, 'write', results);
+    const firstAudits = await prisma.priceReparseAudit.findMany({
+      where: { runId: run.id, mode: 'write' },
+      orderBy: { candidateId: 'asc' },
+    });
     const second = await processReparseResults(run.runToken, 'write', results);
+    const secondAudits = await prisma.priceReparseAudit.findMany({
+      where: { runId: run.id, mode: 'write' },
+      orderBy: { candidateId: 'asc' },
+    });
     assert.equal(first.updatedCandidate, 2);
     assert.equal(first.updatedPurchase, 1);
-    assert.equal(second.conflict, 2);
-    assert.equal(second.updatedCandidate, 0);
+    assert.equal(second.updatedCandidate, 2);
+    assert.equal(second.updatedPurchase, 1);
+    assert.equal(second.conflict, 0);
+    assert.deepEqual(secondAudits, firstAudits);
     assert.equal((await prisma.purchaseLog.findUniqueOrThrow({ where: { id: purchase.id } })).price, 420);
   } finally {
     await scope.cleanup();
@@ -405,9 +421,52 @@ test('a candidate owned by another email is rejected without updates', async () 
 
     assert.equal(counts.conflict, 1);
     assert.equal(counts.bySkipReason.candidate_owner_mismatch, 1);
+    assert.equal((await getOnlyAudit(run.id)).skipReason, 'candidate_owner_mismatch');
     const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
     assert.equal(reloaded.detectedPrice, null);
     assert.equal(reloaded.priceSource, null);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('a candidate in another household with the same owner email is rejected without updates', async () => {
+  const runScope = await createTestScope();
+  const candidateScope = await createTestScope();
+  try {
+    const run = await createRun(runScope);
+    const candidate = await createCandidate(candidateScope, { importedByEmail: OWNER_EMAIL });
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 505, priceSource: CERTAIN_PRICE_SOURCE },
+    ]);
+
+    assert.equal(counts.conflict, 1);
+    assert.equal(counts.bySkipReason.candidate_owner_mismatch, 1);
+    const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
+    assert.equal(reloaded.detectedPrice, null);
+    assert.equal(reloaded.priceSource, null);
+    assert.equal((await getOnlyAudit(run.id)).skipReason, 'candidate_owner_mismatch');
+  } finally {
+    await runScope.cleanup();
+    await candidateScope.cleanup();
+  }
+});
+
+test('a missing candidate records a write audit', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const candidateId = `missing-${scope.tag}`;
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId, detectedPrice: 510 },
+    ]);
+
+    assert.equal(counts.conflict, 1);
+    assert.equal(counts.bySkipReason.candidate_not_found, 1);
+    const audit = await getOnlyAudit(run.id);
+    assert.equal(audit.candidateId, candidateId);
+    assert.equal(audit.outcome, 'conflict');
+    assert.equal(audit.skipReason, 'candidate_not_found');
   } finally {
     await scope.cleanup();
   }
@@ -424,6 +483,7 @@ test('an existing detectedPrice without priceSource cannot be overwritten', asyn
 
     assert.equal(counts.conflict, 1);
     assert.equal(counts.bySkipReason.already_has_price, 1);
+    assert.equal((await getOnlyAudit(run.id)).skipReason, 'already_has_price');
     const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
     assert.equal(reloaded.detectedPrice, 300);
     assert.equal(reloaded.priceSource, null);
@@ -432,7 +492,7 @@ test('an existing detectedPrice without priceSource cannot be overwritten', asyn
   }
 });
 
-test('a price-only update cannot be replaced by a second price-only update', async () => {
+test('a price-only write retry returns the first saved outcome without replacing it', async () => {
   const scope = await createTestScope();
   try {
     const run = await createRun(scope);
@@ -445,8 +505,8 @@ test('a price-only update cannot be replaced by a second price-only update', asy
     ]);
 
     assert.equal(first.updatedCandidate, 1);
-    assert.equal(second.conflict, 1);
-    assert.equal(second.bySkipReason.already_has_price, 1);
+    assert.equal(second.updatedCandidate, 1);
+    assert.equal(second.conflict, 0);
     const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
     assert.equal(reloaded.detectedPrice, 500);
     assert.equal(reloaded.priceSource, null);
@@ -502,6 +562,65 @@ test('multiple unresolved purchases are left unchanged as ambiguous', async () =
     assert.ok(purchases.every((purchase) => purchase.price == null));
   } finally {
     await scope.cleanup();
+  }
+});
+
+test('purchases with a different household or item are not updated', async () => {
+  const scope = await createTestScope();
+  const otherScope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const otherItem = await prisma.item.create({
+      data: {
+        householdId: scope.householdId,
+        itemName: `other-item-${scope.tag}`,
+        daysPerUnit: 10,
+        defaultPurchaseQty: 1,
+      },
+    });
+    const candidate = await createCandidate(scope, {
+      candidateStatus: 'confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 1,
+    });
+    const wrongHouseholdPurchase = await prisma.purchaseLog.create({
+      data: {
+        householdId: otherScope.householdId,
+        itemId: otherScope.itemId,
+        purchasedAt: new Date('2026-09-01T00:00:00.000Z'),
+        qty: 1,
+        price: null,
+        source: 'gmail',
+        sourceType: 'gmail_auto',
+        importCandidateId: candidate.id,
+      },
+    });
+    const wrongItemPurchase = await prisma.purchaseLog.create({
+      data: {
+        householdId: scope.householdId,
+        itemId: otherItem.id,
+        purchasedAt: new Date('2026-09-01T00:00:00.000Z'),
+        qty: 1,
+        price: null,
+        source: 'gmail',
+        sourceType: 'gmail_auto',
+        importCandidateId: candidate.id,
+      },
+    });
+
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 615 },
+    ]);
+
+    assert.equal(counts.updatedCandidate, 1);
+    assert.equal(counts.updatedPurchase, 0);
+    const purchases = await prisma.purchaseLog.findMany({
+      where: { id: { in: [wrongHouseholdPurchase.id, wrongItemPurchase.id] } },
+    });
+    assert.ok(purchases.every((purchase) => purchase.price == null));
+  } finally {
+    await scope.cleanup();
+    await otherScope.cleanup();
   }
 });
 
@@ -571,10 +690,113 @@ test('dry_run records owner conflicts as dry_run_conflict audits', async () => {
   }
 });
 
+test('repeated dry runs keep one audit row and overwrite it with the latest result', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    const candidate = await createCandidate(scope);
+
+    const first = await processReparseResults(run.runToken, 'dry_run', [
+      { candidateId: candidate.id, detectedPrice: 500 },
+    ]);
+    const second = await processReparseResults(run.runToken, 'dry_run', [
+      { candidateId: candidate.id, detectedPrice: 700 },
+    ]);
+
+    assert.equal(first.updatedCandidate, 1);
+    assert.equal(second.updatedCandidate, 1);
+    const audit = await getOnlyAudit(run.id);
+    assert.equal(audit.mode, 'dry_run');
+    assert.equal(audit.outcome, 'dry_run_updated');
+    assert.equal(audit.appliedDetectedPrice, 700);
+    assert.equal((await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } })).detectedPrice, null);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('a run snapshot keeps layer-3 purchase decisions consistent across dry-run and write chunks', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    await createPurchase(scope, null, 1, 100);
+    const labeledCandidate = await createCandidate(scope, {
+      candidateStatus: 'confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 2,
+    });
+    const historyCandidate = await createCandidate(scope, {
+      candidateStatus: 'confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 2,
+    });
+    const labeledPurchase = await createPurchase(scope, labeledCandidate.id, 2);
+    const historyPurchase = await createPurchase(scope, historyCandidate.id, 2);
+    const labeledResult = {
+      candidateId: labeledCandidate.id,
+      detectedPrice: 200,
+      priceSource: CERTAIN_PRICE_SOURCE,
+    };
+    const historyResult = { candidateId: historyCandidate.id, detectedPrice: 200 };
+
+    const dryRunFirst = await processReparseResults(run.runToken, 'dry_run', [labeledResult]);
+    const dryRunSecond = await processReparseResults(run.runToken, 'dry_run', [historyResult]);
+    const writeFirst = await processReparseResults(run.runToken, 'write', [labeledResult]);
+    const writeSecond = await processReparseResults(run.runToken, 'write', [historyResult]);
+
+    assert.equal(dryRunFirst.updatedPurchase + dryRunSecond.updatedPurchase, 2);
+    assert.equal(writeFirst.updatedPurchase + writeSecond.updatedPurchase, 2);
+    assert.equal((await prisma.priceReparseItemSnapshot.findMany({ where: { runId: run.id } })).length, 1);
+    assert.equal((await prisma.purchaseLog.findUniqueOrThrow({ where: { id: labeledPurchase.id } })).price, 200);
+    assert.equal((await prisma.purchaseLog.findUniqueOrThrow({ where: { id: historyPurchase.id } })).price, 100);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('candidates created after the run cutoff are excluded and rejected', async () => {
+  const scope = await createTestScope();
+  try {
+    const cutoffAt = new Date(Date.now() - 1000);
+    const run = await createRun(scope, { cutoffAt });
+    const candidate = await createCandidate(scope, {
+      id: `${scope.tag}-after-cutoff`,
+      createdAt: new Date(cutoffAt.getTime() + 500),
+    });
+
+    const targets = await getReparseTargets(run.runToken, undefined, 20);
+    assert.ok(!targets.some((target) => target.id === candidate.id));
+    const counts = await processReparseResults(run.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 720 },
+    ]);
+    assert.equal(counts.conflict, 1);
+    assert.equal(counts.bySkipReason.candidate_after_cutoff, 1);
+    assert.equal((await getOnlyAudit(run.id)).skipReason, 'candidate_after_cutoff');
+  } finally {
+    await scope.cleanup();
+  }
+});
+
 test('reparseResultItemSchema rejects an unsupported skipReason', () => {
   const parsed = reparseResultItemSchema.safeParse({
     candidateId: 'candidate-1',
     skipReason: 'arbitrary_free_text',
+  });
+  assert.equal(parsed.success, false);
+});
+
+test('reparse payload rejects priceSource without detectedPrice', () => {
+  const parsed = reparseCandidatesPayloadSchema.safeParse({
+    mode: 'write',
+    results: [{ candidateId: 'candidate-1', priceSource: CERTAIN_PRICE_SOURCE }],
+  });
+  assert.equal(parsed.success, false);
+});
+
+test('reparse payload rejects skipReason together with price fields', () => {
+  const parsed = reparseCandidatesPayloadSchema.safeParse({
+    mode: 'write',
+    results: [{ candidateId: 'candidate-1', detectedPrice: 500, skipReason: 'message_not_found' }],
   });
   assert.equal(parsed.success, false);
 });
@@ -586,6 +808,7 @@ test('createReparseRun generates unique tokens and future expirations without a 
         runToken: string;
         importedByEmail: string;
         householdId: string;
+        cutoffAt: Date;
         expiresAt: Date;
       };
     }) => Promise<{
@@ -593,6 +816,7 @@ test('createReparseRun generates unique tokens and future expirations without a 
       runToken: string;
       importedByEmail: string;
       householdId: string;
+      cutoffAt: Date;
       createdAt: Date;
       expiresAt: Date;
       revokedAt: Date | null;
@@ -607,6 +831,7 @@ test('createReparseRun generates unique tokens and future expirations without a 
       runToken: data.runToken,
       importedByEmail: data.importedByEmail,
       householdId: data.householdId,
+      cutoffAt: data.cutoffAt,
       createdAt: new Date(),
       expiresAt: data.expiresAt,
       revokedAt: null,

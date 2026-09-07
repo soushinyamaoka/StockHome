@@ -252,6 +252,9 @@ model PriceReparseRun {
   runToken        String    @unique @map("run_token")
   householdId     String    @map("household_id")
   importedByEmail String    @map("imported_by_email")
+  // 第3回レビューB02/B04対応: run作成時点で対象集合を固定する。この時刻より後に
+  // 作成された候補（通常の6時間取込等）は本runの対象に含めない
+  cutoffAt        DateTime  @default(now()) @map("cutoff_at")
   createdAt       DateTime  @default(now()) @map("created_at")
   expiresAt       DateTime  @map("expires_at")
   revokedAt       DateTime? @map("revoked_at")
@@ -259,14 +262,33 @@ model PriceReparseRun {
   @@map("price_reparse_runs")
 }
 
+// run開始時点の品目別「参照単価」snapshot（第3回レビューB02/B06対応）。
+// resolveCandidatePriceForItemの層3判定は本来DBの最新購入履歴を都度読むが、
+// それだとdry-runとwrite・chunk分割・処理順序で結果が変わってしまう
+// （probeで実証済み）。同一runの中では、品目ごとに最初に必要になった時点の値へ固定し、
+// 以後は同じrun内のどのchunk・どのmode（dry_run/write）でも同じ値を使い回す
+model PriceReparseItemSnapshot {
+  id             String  @id @default(cuid())
+  runId          String  @map("run_id")
+  itemId         String  @map("item_id")
+  referencePrice Float?  @map("reference_price") // nullは「参照できる購入履歴が無い」ことを表す
+
+  @@unique([runId, itemId])
+  @@map("price_reparse_item_snapshots")
+}
+
 // 過去候補の単価再解析バッチ（notice 20260907-STOCKHOME-006）専用の監査ログ。
 // production row の変更前後値を Git 管理外（本テーブル、VPS 側 Postgres）にのみ保存する。
 // API レスポンスには一切含めず、chat・notice・通常ログへも row 内容を出さない。
-// 処理した全 row（更新した/しなかった/skipした/失敗した）を outcome 付きで記録し、
-// run 単位の集計・rollback（同一 run が書いた値から後続変更が無い row だけを戻す）に使う
+// 処理した全 row（更新した/しなかった/skipした/失敗した）を必ず1行記録する
+// （第3回レビューB05対応。早期returnも含め例外なく記録する）。
+// (runId, candidateId, mode) を一意にすることで、write の再送は保存済みの結果を
+// そのまま返せる（冪等）。dry_run は同じキーへ upsert し、再実行のたびに1行のまま保つ
 model PriceReparseAudit {
   id                   String   @id @default(cuid())
   runId                String   @map("run_id")
+  // dry_run | write（第3回レビューB02/B04: 冪等性のunique keyに使う）
+  mode                 String   @default("write") @map("mode")
   candidateId          String   @map("candidate_id")
   purchaseId           String?  @map("purchase_id")
   beforeDetectedPrice  Float?   @map("before_detected_price")
@@ -280,6 +302,7 @@ model PriceReparseAudit {
   skipReason           String?  @map("skip_reason")
   createdAt            DateTime @default(now()) @map("created_at")
 
+  @@unique([runId, candidateId, mode])
   @@index([runId])
   @@index([candidateId])
   @@map("price_reparse_audit")

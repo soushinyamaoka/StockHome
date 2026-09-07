@@ -54,8 +54,16 @@
 #   2026-09-07: notice 20260907-STOCKHOME-006（過去候補の単価再解析、GET/POST
 #     /api/bridge/reparse-candidates、price_reparse_audit・price_reparse_runsテーブル）を
 #     VPS管理側が第1回・第2回ともblocked判定。第2回はmock再現により認証境界・冪等性・
-#     監査の非原子性等7件の問題を検出。task 20260907-003で修正中、production未反映
-#     （HISTORICAL_REPARSE_ENABLED未設定のためdeployされても機能上は無効のまま）。
+#     監査の非原子性等7件の問題を検出。task 20260907-004で修正し、production未反映のまま
+#     第3回レビューへ。
+#   2026-09-07 (task_id: 20260907-005): 第3回レビューが実DBへのprobeによりhousehold境界・
+#     purchase household/item不整合・監査カバレッジ不足・dry-run/write判定不一致・
+#     write冪等性・payload field組合せ検証の6件を検出。household/cutoff境界の強制、
+#     price_reparse_item_snapshotsテーブル新設によるrun内価格判定固定、監査の
+#     (run_id, candidate_id, mode)一意制約による冪等化、runTokenのquery string/bodyから
+#     専用headerへの移動で対応した。fresh隔離DBでのmigration apply/rollback rehearsalを
+#     実施し、最新migrationの取り消しSQLが安全であることを確認した。production未反映
+#     （HISTORICAL_REPARSE_ENABLEDは引き続き未設定のためdeployされても機能上は無効のまま）。
 
 schema_version: 1
 app: stockhome
@@ -110,7 +118,9 @@ config:
     - { name: HISTORICAL_REPARSE_ENABLED, required: false, secret: false }
       # notice 20260907-STOCKHOME-006。'true'のときだけ GET/POST /api/bridge/reparse-candidates
       # を有効化する一時フラグ（未設定時は404）。2026-09-07時点でproduction未設定・未反映。
-      # docker-compose.prod.ymlのapp.environmentへの受け渡し追加はtask 20260907-003で対応
+      # docker-compose.prod.ymlのapp.environmentへの受け渡し追加はtask 20260907-004で対応済み。
+      # runToken自体は環境変数ではなくAPI呼び出し側が専用header（X-Reparse-Run-Token）で渡す
+      # （第3回レビューB03対応、task 20260907-005）
   secret_provisioning: manual     # .env.production.example を cp して手動設定（README記載）
 
 data:
@@ -177,31 +187,66 @@ data:
         NULL→値の一方向でのみ更新する。
       failure_consistency: 通常の候補作成と同一のトランザクション内で設定される。単独では更新しない。
     - table: price_reparse_runs
-      fields: [run_token, imported_by_email, household_id, expires_at, revoked_at]
+      fields: [run_token, imported_by_email, household_id, cutoff_at, expires_at, revoked_at]
       meaning: >-
-        2026-09-07（notice 20260907-STOCKHOME-006、task 20260907-003で追加、
+        2026-09-07（notice 20260907-STOCKHOME-006、task 20260907-004で追加、
         production未反映）。過去候補の単価再解析APIへの認可専用テーブル。GAS側の
-        呼び出しを、この事前発行済みrun_tokenが指すimported_by_emailの候補だけに限定する
-        （共有BRIDGE_TOKEN保持者が任意のemailを自己申告して他利用者のGmail message ID・
-        商品名へアクセスすることを防ぐ）。行の作成はHTTP経由では行わず、production承認後に
-        運用者がローカル/VPS上で直接1件だけ発行する想定（createReparseRun関数、
-        本notice時点で未実運用）。
-      update_paths: 手動発行のみ（HTTP経由の作成route無し）。revoked_atの設定も手動想定。
+        呼び出しを、この事前発行済みrun_tokenが指すimported_by_email・household_idの
+        候補だけに限定する（共有BRIDGE_TOKEN保持者が任意のemailを自己申告して
+        他利用者のGmail message ID・商品名へアクセスすることを防ぐ）。行の作成は
+        HTTP経由では行わず、production承認後に運用者がローカル/VPS上で直接1件だけ
+        発行する想定（createReparseRun関数、本notice時点で未実運用）。cutoff_atは
+        run作成時刻（第3回レビューB02/B04対応、task 20260907-005で追加）で、
+        この時刻より後に作成された候補（通常の6時間取込等）はこのrunの対象に含めない
+        （対象集合をrun作成時点で固定し、動的に増減しないようにする）。
+      update_paths: >-
+        手動発行のみ（HTTP経由の作成route無し）。revoked_atの設定も手動想定。
+        cutoff_atはcreateReparseRun実行時に自動設定され、以後変更しない。
       failure_consistency: 該当なし（認可専用、業務データではない）。
+    - table: price_reparse_item_snapshots
+      fields: [run_id, item_id, reference_price]
+      meaning: >-
+        2026-09-07（notice 20260907-STOCKHOME-006、task 20260907-005で追加、
+        production未反映）。run内で品目ごとに1回だけ計算・固定する「参照単価」の
+        snapshot。resolveCandidatePriceForItemの層3判定（過去の確定単価との照合）が
+        毎回最新の購入履歴を読むと、同一run内の処理順序・dry-run/write・chunk分割で
+        判定結果が変わってしまう問題（第3回レビューB02/B06、実DBへのprobeで確認済み）を
+        防ぐため、run内で最初にその品目が必要になった時点の値を固定して使い回す。
+      update_paths: >-
+        priceReparse.tsのgetOrCreateItemSnapshotのみ。呼び出し元のtransaction
+        （dry_runでrollbackされる場合を含む）とは独立したprisma呼び出しで作成するため、
+        dry_runでも実際にrowが残る。同一(run_id, item_id)への同時作成はunique制約で
+        検知し、先に作成された側の値を再取得して使う。
+      failure_consistency: >-
+        作成のみで更新・削除は行わない（値が一度確定すれば同一run内では不変）。
+        このテーブル単体の作成失敗は、呼び出し元のcomputeOutcomeの判定自体を
+        失敗させる（例外がpriceReparse.ts側の失敗集計へ反映される）。
     - table: price_reparse_audit
-      fields: [run_id, candidate_id, purchase_id, before_*, applied_*, outcome, skip_reason]
+      fields: [run_id, mode, candidate_id, purchase_id, before_*, applied_*, outcome, skip_reason]
       meaning: >-
         2026-09-06（notice 20260907-STOCKHOME-006、production未反映）。過去候補の単価
-        再解析batchが処理した全row（成功・skip・conflict・失敗を問わず）の変更前後値を
-        記録する監査ログ。Git管理外（本テーブルのみに保存）。APIレスポンス・通常ログには
-        row内容を一切含めない。dry_runの結果は outcome へ dry_run_ 接頭辞を付けて区別し、
-        業務データ（import_order_candidates/purchase_logs）は変更しない。
+        再解析batchが処理した全row（成功・skip・conflict・失敗を問わず、早期return経路も
+        含む。第3回レビューB05/B04対応、task 20260907-005で全経路を監査対象化）の
+        変更前後値を記録する監査ログ。Git管理外（本テーブルのみに保存）。APIレスポンス・
+        通常ログにはrow内容を一切含めない。dry_runの結果は outcome へ dry_run_ 接頭辞を
+        付けて区別し、業務データ（import_order_candidates/purchase_logs）は変更しない。
+        modeカラムと(run_id, candidate_id, mode)の一意制約（task 20260907-005で追加）により、
+        write再送は既存行を検出して保存済み結果をそのまま返し（再判定しない）、dry_run再実行は
+        同じ行へupsertする（重複行を作らない）。
+        保持期限: 自動削除する仕組みは無い（push_ticketsと異なり定期cleanup jobを設けない）。
+        一度限りの過去分backfillの監査証跡であり、production反映が完了し結果がreconcile済みと
+        app owner・VPS管理側が確認するまでは削除しない。
+        閲覧者: VPS上での直接psql操作に限定する。API応答・ログにはrow内容を出さない。
+        削除条件: 自動削除なし。将来削除する場合はapp owner・VPS管理側の合意のうえ、
+        VPS上で手動SQLを実行し、削除前に対象run_idの内容をdumpとして保全する。
       update_paths: >-
-        POST /api/bridge/reparse-candidates（write時: 業務データ更新と同一transaction内。
-        dry_run時: 業務データ更新をrollbackした後、監査insertのみ独立して行う）。
+        POST /api/bridge/reparse-candidates（write時: 既存監査が無ければ業務データ更新と
+        同一transaction内でinsertし、同時実行でinsertが競合した場合は自分の更新を破棄して
+        先に確定した側の結果を返す。dry_run時: 業務データ更新をrollbackした後、
+        upsertで監査だけを独立して書く）。
       failure_consistency: >-
         write時、候補・購入の更新と監査insertは同一transaction内で行われ、
-        一方だけが確定することはない（task 20260907-003対応、B05）。dry_runの監査insertは
+        一方だけが確定することはない（task 20260907-004対応、B05）。dry_runの監査upsertは
         独立した別transactionのため、これ自体が失敗しても業務データには影響しない。
   data_retention:
     - table: push_tickets
@@ -333,9 +378,12 @@ known_gaps:
   - >-
     notice 20260907-STOCKHOME-006（過去候補の単価再解析）はproduction未反映。
     HISTORICAL_REPARSE_ENABLED未設定のため、新設したGET/POST /api/bridge/reparse-candidates
-    はdeployされても404を返すのみで機能上は無効。VPS管理側の第2回レビューでmock再現された
-    7件の問題（認証境界・冪等性・監査の非原子性等）をtask 20260907-003で修正中。
-    GAS側バッチは未実装（設計メモのみ ops/investigations/20260907-historical-price-reparse-gas-design.md）。
+    はdeployされても404を返すのみで機能上は無効。VPS管理側の第2回レビュー（mock再現、7件）・
+    第3回レビュー（実DBへのprobe、6件）で検出された問題はいずれもtask 20260907-004・
+    20260907-005で修正済み（household/cutoff境界の強制、run/item単位の価格判定snapshot、
+    監査の冪等化、runTokenのheader化、fresh隔離DBでのmigration/rollback rehearsal）。
+    第3回レビューへの再提出・再レビュー待ち。GAS側バッチは未実装（設計メモのみ
+    ops/investigations/20260907-historical-price-reparse-gas-design.md）。
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。

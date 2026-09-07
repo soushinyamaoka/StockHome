@@ -23,20 +23,26 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  const REPARSE_TOKEN_HEADER = 'x-reparse-run-token';
+
   app.get('/health', async () => ({ ok: true }));
 
-  // 過去候補の単価再解析: 対象一覧の取得（notice 20260907-STOCKHOME-006 B02/B03対応）
+  // 過去候補の単価再解析: 対象一覧の取得（notice 20260907-STOCKHOME-006）
   // HISTORICAL_REPARSE_ENABLED が 'true' の間だけ有効な一時的route。
-  // mail_message_id は個人のGmailを参照する識別子のため、事前発行したrunTokenから
-  // server側でownerを確定し、そのownerの候補だけに対象を絞る。
+  // runTokenは専用headerで受け取る（query stringに載せない。第3回レビューB03:
+  // bearer secretがaccess logへ残ることを防ぐ）
   app.get('/reparse-candidates', async (req, reply) => {
     if (process.env.HISTORICAL_REPARSE_ENABLED !== 'true') {
+      return reply.code(404).send({ message: 'not found' });
+    }
+    const runToken = req.headers[REPARSE_TOKEN_HEADER] as string | undefined;
+    if (!runToken) {
       return reply.code(404).send({ message: 'not found' });
     }
     const query = parseBody(reparseCandidatesQuerySchema, req.query, reply);
     if (!query) return;
     try {
-      const candidates = await getReparseTargets(query.runToken, query.cursor, query.limit ?? 20);
+      const candidates = await getReparseTargets(runToken, query.cursor, query.limit ?? 20);
       return { candidates };
     } catch (e) {
       if (e instanceof ReparseRunInvalidError) {
@@ -51,12 +57,16 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
     if (process.env.HISTORICAL_REPARSE_ENABLED !== 'true') {
       return reply.code(404).send({ message: 'not found' });
     }
+    const runToken = req.headers[REPARSE_TOKEN_HEADER] as string | undefined;
+    if (!runToken) {
+      return reply.code(404).send({ message: 'not found' });
+    }
     const data = parseBody(reparseCandidatesPayloadSchema, req.body, reply);
     if (!data) return;
 
     let counts;
     try {
-      counts = await processReparseResults(data.runToken, data.mode, data.results);
+      counts = await processReparseResults(runToken, data.mode, data.results);
     } catch (e) {
       if (e instanceof ReparseRunInvalidError) {
         return reply.code(404).send({ message: 'not found' });
@@ -64,8 +74,6 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
       throw e;
     }
 
-    // run単位のstart/endではなく、chunk（1回のPOST）単位のBATCH_STEPとして記録する。
-    // run_id・email・message_id・金額等の個別値は出さず、集計値のみ
     appLogger.info({
       event: LOG_EVENTS.BATCH_STEP,
       job: 'historical_price_reparse',

@@ -2,12 +2,10 @@ import { z } from 'zod';
 import { optionalString, optionalNonNegativeNumber } from './common';
 
 // GET /api/bridge/reparse-candidates のクエリ。
-// runToken は運用者が事前発行した PriceReparseRun.runToken
-// （production承認後にのみ、HTTPを介さず直接発行する）。
-// 自己申告のemailは受け付けない（B03: 共有BRIDGE_TOKEN保持者が任意のownerを
-// 指定して他利用者のmessage IDへアクセスすることを防ぐ）
+// runToken はquery stringではなく専用header（X-Reparse-Run-Token）で受け取る
+// （第3回レビューB03: bearer secretがaccess logへ残ることを防ぐ）。
+// そのためquery schemaにはcursor/limitだけを残す
 export const reparseCandidatesQuerySchema = z.object({
-  runToken: z.string().min(20),
   cursor: optionalString,
   limit: z.coerce.number().int().min(1).max(50).optional(),
 });
@@ -22,8 +20,6 @@ export const reparseCandidateTargetSchema = z.object({
 });
 export type ReparseCandidateTarget = z.infer<typeof reparseCandidateTargetSchema>;
 
-// GASが再取得・再解析できなかった場合に入れる理由。自由文字列にしない
-// （B03/B04: 任意文字列がログの集計キーへそのまま到達しないようにする）
 export const REPARSE_SKIP_REASONS = [
   'message_not_found',
   'item_not_found_in_reparse',
@@ -31,17 +27,26 @@ export const REPARSE_SKIP_REASONS = [
 ] as const;
 export const reparseSkipReasonSchema = z.enum(REPARSE_SKIP_REASONS);
 
-export const reparseResultItemSchema = z.object({
-  candidateId: z.string().min(1),
-  detectedPrice: optionalNonNegativeNumber,
-  priceSource: optionalString,
-  skipReason: reparseSkipReasonSchema.optional(),
-});
+// 第3回レビューB02対応: skipReasonと価格系フィールドは排他。
+// priceSourceを送るならdetectedPriceも必須（price_sourceだけが入って
+// detected_priceがNULLのまま残り、以後対象外になる不具合を防ぐ）
+export const reparseResultItemSchema = z
+  .object({
+    candidateId: z.string().min(1),
+    detectedPrice: optionalNonNegativeNumber,
+    priceSource: optionalString,
+    skipReason: reparseSkipReasonSchema.optional(),
+  })
+  .refine((v) => !(v.skipReason != null && (v.detectedPrice != null || v.priceSource != null)), {
+    message: 'skipReasonと価格フィールドは同時に指定できません',
+  })
+  .refine((v) => !(v.priceSource != null && v.detectedPrice == null), {
+    message: 'priceSourceを指定する場合はdetectedPriceも必須です',
+  });
 export type ReparseResultItem = z.infer<typeof reparseResultItemSchema>;
 
-// runId（自由文字列）は廃止。runToken自体が対象runを特定する
+// runToken はbodyからも除去し、専用headerで受け取る（GETと同じ理由）
 export const reparseCandidatesPayloadSchema = z.object({
-  runToken: z.string().min(20),
   mode: z.enum(['dry_run', 'write']),
   results: z.array(reparseResultItemSchema).max(50),
 });

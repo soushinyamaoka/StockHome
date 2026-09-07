@@ -1,15 +1,24 @@
-# GAS側: 過去候補の単価再解析バッチ 設計メモ（第2回VPS管理レビュー反映版）
+# GAS側: 過去候補の単価再解析バッチ 設計メモ（第3回VPS管理レビュー反映版）
 
 notice: `20260907-STOCKHOME-006`のB08対応。GAS側の実装は今回のセッションでは行わず、
 app ownerが別途手動でCodexセッションを`C:\work\PRG\ZZ_Other\GAS\StockHome`にて起動し、
 本メモを指示書として実装する想定。API側（対応するGET/POST）はtask `20260907-002`
-（第1回実装）・`20260907-003`（第2回レビュー対応）として通常のStockHome-ClaudeToCodex
-パイプラインで実装する（別ファイル参照）。
+（第1回実装）・`20260907-004`（第2回レビュー対応）・`20260907-005`（第3回レビュー対応）
+として通常のStockHome-ClaudeToCodexパイプラインで実装済み（別ファイル参照）。
 
 **2026-09-07 第2回VPS管理レビューを受けて全面改訂**: API側の認可方式が
 自己申告emailから事前発行済み`runToken`へ変更されたため、本メモの該当箇所を
 書き換えた。また`detectedPrice: null`送信がAPI schemaで拒否される問題と、
 `push.bat`実行に関する誤った記載を修正した。
+
+**2026-09-07 第3回VPS管理レビューを受けて再改訂**: 実DBへのprobeにより、
+`runToken`をGETのquery stringへ載せるとaccess logへ残り得る問題、同一runでも
+dry-runとwriteで価格判定が食い違う問題等が新たに確認され、API側で修正された。
+本メモも次の点を書き換えた: `runToken`はquery stringではなく専用header
+（`X-Reparse-Run-Token`）で送る。GET/POSTともAPI側がrunのhousehold・cutoff時刻も
+照合するようになった（cutoff以降に新規取込された候補は今回のrunでは扱われない）。
+write再送は保存済み結果がそのまま返る（再判定されない）ため、GAS側は同じ結果を
+安全に再送してよい。
 
 ## 対象repository・実装担当
 
@@ -50,10 +59,16 @@ Session情報（`Session.getActiveUser().getEmail()`）は使わない。
    - REPARSE_RUN_TOKEN が無ければ「未設定」としてログに残し終了する
      （運用者がまだrunTokenを発行・登録していない状態）
    - cursor は無ければ null から開始する（前回の続きがあれば再開する）
-3. GET /api/bridge/reparse-candidates?runToken=<REPARSE_RUN_TOKEN>&cursor=<cursor>&limit=20 を呼ぶ
-   - 404の場合、HISTORICAL_REPARSE_ENABLED未設定・runToken無効/期限切れ/失効済みの
-     いずれかを区別できない（意図的にAPI側で同一挙動にしている）。
+3. GET /api/bridge/reparse-candidates?cursor=<cursor>&limit=20 を呼ぶ。
+   **runTokenはquery stringに含めず、専用header `X-Reparse-Run-Token: <REPARSE_RUN_TOKEN>`
+   で送る**（第3回レビューB03対応。query stringに載せるとNginx等のaccess logへ
+   URIと一緒に残り得るため）。
+   - 404の場合、HISTORICAL_REPARSE_ENABLED未設定・runToken無効/期限切れ/失効済み・
+     header未設定のいずれかを区別できない（意図的にAPI側で同一挙動にしている）。
      「対象なし、またはproduction側の準備が完了していません」としてログに残し終了する
+   - 返る候補は、runToken発行時点（cutoff_at）以前に作成された候補のみ。
+     run発行後に通常の6時間取込で新規追加された候補は、このrunでは一切対象にならない
+     （第3回レビューB02/B04対応。対象集合をrun作成時点で固定する設計）
 4. 返ってきた候補が0件なら、cursorをクリアして「完了」ログを出し終了する
 5. 各候補について:
    a. try { GmailApp.getMessageById(mailMessageId) } catch → skipReason: 'message_not_found'
@@ -71,14 +86,17 @@ Session情報（`Session.getActiveUser().getEmail()`）は使わない。
       同じ意味として扱われる。
 6. 実行時間が5分を超えたら、残りは次回に回してcursorを保存し終了する
    （Apps Scriptの実行時間制限が6分のため、余裕を持って打ち切る）
-7. POST /api/bridge/reparse-candidates へ { runToken, mode, results } を送る
-   （`runId`は送らない。API側がrunTokenから内部的に対応するrunを特定し、
+7. POST /api/bridge/reparse-candidates へ、header `X-Reparse-Run-Token`
+   （GETと同じ値）を付けて { mode, results } を送る（`runToken`はbodyにも
+   query stringにも含めない。API側がheaderの値から内部的に対応するrunを特定し、
    監査ログの紐付けに使う）
    - レスポンスは集計のみ（下記API設計参照）。ログには集計値だけを出し、
      message_id・商品名・価格の値そのものはログへ出さない
 8. **cursorは、直前のPOSTが正常応答（200）を確認できた後にのみ進めて保存する。**
-   タイムアウト・5xx・応答喪失時はcursorを進めず、次回同じ範囲から再送する
-   （API側はrunToken+候補IDの組で冪等に判定するため、同じ候補の再送は安全）。
+   タイムアウト・5xx・応答喪失時はcursorを進めず、次回同じ範囲から再送する。
+   **write再送は、API側が(runToken, candidateId, mode)の組で既存の監査記録を検出し、
+   再判定せず保存済みの結果をそのまま返す**（第3回レビューB02/B04対応）ため、
+   同じ候補を含むchunkを重複して送っても安全（二重更新にはならない）。
 9. まだ候補が残っていそうなら、続けて4以降を繰り返す
    （1回の関数呼び出し内でループしてよいが、5分の時間予算は厳守する）
 ```
@@ -88,17 +106,28 @@ Session情報（`Session.getActiveUser().getEmail()`）は使わない。
 - **dry-run**: スクリプトエディタから `reparseHistoricalCandidates('dry_run')` を手動実行。
   **業務データ（候補・購入）は変更しないが、監査テーブルへの記録は行われる。
   「何も変更しない」わけではないため、dry-run実行自体もproduction承認の対象とする**
-  （2026-09-07訂正。詳細はAPI側notice参照）。
+  （2026-09-07訂正。詳細はAPI側notice参照）。同じ候補へdry-runを複数回実行しても、
+  監査は候補ごとに1行のまま最新の判定内容で上書きされる（重複して増えない。
+  第3回レビューB02/B04対応）ため、GAS側は同じrunで何度dry-runを繰り返しても安全。
 - **write**: dry-runの集計をapp ownerが確認し、production承認を得てから
   `reparseHistoricalCandidates('write')` を手動実行する。
 
-## 安全設計のポイント（B04対応）
+## 安全設計のポイント（B04対応、第3回レビューでhousehold/cutoff/価格判定の一貫性を追加強化）
 
 - **cursorは最適化であって正しさの前提ではない**: APIの対象抽出条件は常に
   `price_source IS NULL AND detected_price IS NULL`であり、GAS側のcursorがずれていても、
   既に埋まった候補はAPI側で自然にスキップされる（`updateMany`のWHERE句が
   両方のNULL条件を再確認する）。つまり「cursorを失っても実害はない、単に一部を
   重複チェックするだけ」という設計にする。
+- **household・cutoff境界はAPI側が強制する**: GAS側が誤ったrunTokenを使った場合でも、
+  API側がcandidate/purchase/matched itemのhouseholdをrunと照合し、不一致は
+  conflictとして拒否する。cutoff（run発行時刻）より後に作成された候補も同様に
+  対象から除外される。GAS側はこれらの境界チェックを自前で行う必要はない
+  （第3回レビューB03/B02/B04対応）。
+- **同一runでのdry-run/write判定は品目ごとに固定される**: API側が品目ごとの
+  参照単価をrun内で最初の1回だけ計算・固定するため（`price_reparse_item_snapshots`）、
+  GAS側がchunkの分割方法や送信順序を変えても、同じ候補集合に対する判定結果は
+  変わらない（第3回レビューB02/B06対応）。GAS側でこの一貫性を保証する工夫は不要。
 - **同時実行防止**: `LockService`でGAS側の二重起動を防ぐ。API側もrow単位の
   条件付き`updateMany`で二重更新を防ぐ（詳細はAPI側task参照）。
 - **既存の6時間cron（`runMyGmailImport`）との同時実行**: 通常の新規取込と本バッチが
