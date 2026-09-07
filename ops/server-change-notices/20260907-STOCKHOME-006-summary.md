@@ -12,14 +12,15 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 1c1b2ba186cb37e80094dadad48678f0fd7052b4
+source_commit: 9b84b1f35a83430c0d32c8baed423ade78f1cc24
 
 production_baseline_commit: 9f5fa864327e5d16b263250ce9e0348966b37f4f
 
 release_commits: `9f5fa86`（baseline）→ `02816ee`（task `20260907-002`、第1回API実装）→
 `47b0b1e`（notice更新）→ `5b2f68a`（task `20260907-004`、第2回レビュー対応。
 GAS側実装は含まない）→ `1c1b2ba`（task `20260907-005`、第3回レビュー対応。
-GAS側実装は含まない）
+GAS側実装は含まない）→ `fb12ce1`（notice更新）→ `9b84b1f`（task `20260907-006`、
+第4回レビュー対応。GAS側実装は含まない）
 
 impact_level: L3
 
@@ -332,7 +333,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 
 - [x] production baselineとrelease全commit・build入力差分を確認した（B01反映、baseline訂正済み）
 - [ ] source commitとnoticeをremoteの対象branchへpushした（第3回対応`1c1b2ba`・`fb12ce1`は
-      origin/mainへpush済み。第4回対応は本notice末尾のcommit記録欄参照、push未実施）
+      origin/mainへpush済み。第4回対応`9b84b1f`はlocal commit済み、push未実施）
 - [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回・第3回・第4回
       レビューがmock再現・実DBへのprobeで確認した計19件の問題を含むregression test 38件を
       含む全57件をローカルDBで実行し全件成功を確認済み）
@@ -426,8 +427,7 @@ HTTPレベルtest3件（`bridge.reparse.test.ts`）を新設し、既存分と�
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: task `20260907-006`完了・commit（push未実施。本notice末尾の
-  commit記録欄参照。push後に案内可能）
+- ユーザーへの案内: task `20260907-006`完了・commit `9b84b1f`（push未実施。push後に案内可能）
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md`
 
@@ -524,7 +524,7 @@ production反映は別承認として扱ってください。」
 - `apps/api/prisma/`・`ops/`はtask対象外として変更なし（Claudeが別途対応。
   3 migrationへの明示的transaction追加とfresh隔離DBでの全rollback rehearsalは
   Claudeが本task実行前に完了済み）
-- commit: 本notice末尾のcommit記録欄を参照（このセクション記入時点で未commit）
+- commit: `9b84b1f`（origin/mainへpush前）
 
 ## Approval
 
@@ -539,5 +539,5 @@ production反映は別承認として扱ってください。」
   20260907-005（第3回レビュー対応、`success`・commit `1c1b2ba`。
   ローカルDB test 46件全成功、fresh隔離DB migration/rollback rehearsal実施済み。
   第4回レビューで問題6件検出）、
-  20260907-006（第4回レビュー対応、`success`。ローカルDB test 57件全成功、
-  fresh隔離DBでの全migration・全rollback rehearsal実施済み。commitは本notice末尾を参照）
+  20260907-006（第4回レビュー対応、`success`・commit `9b84b1f`。ローカルDB test 57件全成功、
+  fresh隔離DBでの全migration・全rollback rehearsal実施済み）
