@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: e2a38574fa4f3d27a30e5b3480d408ebcb1fa73b
+source_commit: 5e209e04a517fa2daf785013cffb1bd26fd7835b
 
 production_baseline_commit: 9f5fa864327e5d16b263250ce9e0348966b37f4f
 
@@ -23,7 +23,8 @@ GAS側実装は含まない）→ `fb12ce1`（notice更新）→ `9b84b1f`（tas
 第4回レビュー対応。GAS側実装は含まない）→ `60bb6cc`（notice更新）→
 `21676c3`（task `20260907-007`、第5回レビュー対応。GAS側実装は含まない）→
 `2c32da9`（notice更新）→ `e2a3857`（task `20260907-008`、第6回レビュー対応。
-GAS側実装は含まない）
+GAS側実装は含まない）→ `bf7ee66`（notice更新）→ `5e209e0`（task `20260907-009`、
+第7回レビュー対応。GAS側実装は含まない）
 
 impact_level: L3
 
@@ -467,8 +468,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 - [x] production baselineとrelease全commit・build入力差分を確認した（B01反映、baseline訂正済み）
 - [ ] source commitとnoticeをremoteの対象branchへpushした（第3回対応`1c1b2ba`・`fb12ce1`、
       第4回対応`9b84b1f`・`60bb6cc`、第5回対応`21676c3`・`2c32da9`、第6回対応`e2a3857`・
-      `bf7ee66`はorigin/mainへpush済み。第7回対応は本notice末尾のcommit記録欄参照、
-      push未実施）
+      `bf7ee66`はorigin/mainへpush済み。第7回対応`5e209e0`はlocal commit済み、push未実施）
 - [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回〜第7回
       レビューがmock再現・実DBへのprobeで確認した計32件の問題を含むregression test 52件を
       含む全73件をローカルDBで実行し全件成功を確認済み）
@@ -617,8 +617,7 @@ run存在時拒否の新規test5件（`priceReparse.test.ts`）を追加し、�
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: task `20260907-009`完了・commit（push未実施。本notice末尾の
-  commit記録欄参照。push後に案内可能）
+- ユーザーへの案内: task `20260907-009`完了・commit `5e209e0`（push未実施。push後に案内可能）
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md`
 
@@ -798,7 +797,7 @@ production反映は別承認として扱ってください。」
   （新規HTTP routeを追加しない指示どおり）を確認した
 - `apps/api/prisma/`・`ops/`はtask対象外として変更なし（今回はmigration変更が
   無いため、Claude側の追加対応も無し）
-- commit: 本notice末尾のcommit記録欄を参照（このセクション記入時点で未commit）
+- commit: `5e209e0`（origin/mainへpush前）
 
 ## Approval
 
@@ -821,5 +820,5 @@ production反映は別承認として扱ってください。」
   rehearsal実施済み。第6回レビューで問題4件検出）、
   20260907-008（第6回レビュー対応、`success`・commit `e2a3857`・`bf7ee66`。
   ローカルDB test 68件全成功。第7回レビューで問題3件検出）、
-  20260907-009（第7回レビュー対応、`success`。ローカルDB test 73件全成功。
-  commitは本notice末尾を参照）
+  20260907-009（第7回レビュー対応、`success`・commit `5e209e0`。
+  ローカルDB test 73件全成功）
