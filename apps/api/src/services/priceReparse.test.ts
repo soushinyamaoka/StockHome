@@ -48,6 +48,7 @@ async function createTestScope(defaultPurchaseQty = 1): Promise<TestScope> {
       });
       const runIds = runs.map((run) => run.id);
       if (runIds.length > 0) {
+        await prisma.priceReparseTarget.deleteMany({ where: { runId: { in: runIds } } });
         await prisma.priceReparseAudit.deleteMany({ where: { runId: { in: runIds } } });
         await prisma.priceReparseItemSnapshot.deleteMany({ where: { runId: { in: runIds } } });
       }
@@ -847,7 +848,7 @@ test('an invalid price cannot bypass the run household boundary', async () => {
   }
 });
 
-test('a matched item in another household is detected even without a purchase', async () => {
+test('a matched item in another household is rejected before any write', async () => {
   const scope = await createTestScope();
   const otherScope = await createTestScope();
   try {
@@ -861,12 +862,16 @@ test('a matched item in another household is detected even without a purchase', 
       { candidateId: candidate.id, detectedPrice: 735, priceSource: CERTAIN_PRICE_SOURCE },
     ]);
 
-    assert.equal(counts.updatedCandidate, 1);
-    assert.equal(counts.updatedPurchase, 0);
+    assert.equal(counts.conflict, 1);
+    assert.equal(counts.updatedCandidate, 0);
     assert.equal(counts.bySkipReason.matched_item_missing, 1);
     const audit = await getOnlyAudit(run.id);
+    assert.equal(audit.outcome, 'conflict');
     assert.equal(audit.skipReason, 'matched_item_missing');
     assert.equal(audit.purchaseId, null);
+    const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
+    assert.equal(reloaded.detectedPrice, null);
+    assert.equal(reloaded.priceSource, null);
   } finally {
     await scope.cleanup();
     await otherScope.cleanup();
@@ -945,6 +950,48 @@ test('a non-P2002 audit insert exception rejects the chunk without an audit row'
   }
 });
 
+test('a non-P2002 item snapshot exception rolls back candidate changes and audit creation', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope);
+    await createPurchase(scope, null, 1, 100);
+    const candidate = await createCandidate(scope, {
+      candidateStatus: 'confirmed',
+      matchedItemId: scope.itemId,
+      detectedQty: 1,
+    });
+    const purchase = await createPurchase(scope, candidate.id, 1);
+    const expected = new Error('simulated item snapshot insert failure');
+    const delegate = prisma.priceReparseItemSnapshot as unknown as {
+      create: (...args: unknown[]) => Promise<unknown>;
+    };
+    const originalCreate = delegate.create;
+    delegate.create = async () => {
+      throw expected;
+    };
+
+    try {
+      await assert.rejects(
+        () =>
+          processReparseResults(run.runToken, 'write', [
+            { candidateId: candidate.id, detectedPrice: 745, priceSource: CERTAIN_PRICE_SOURCE },
+          ]),
+        (error) => error === expected
+      );
+    } finally {
+      delegate.create = originalCreate;
+    }
+
+    assert.equal((await prisma.priceReparseAudit.findMany({ where: { runId: run.id } })).length, 0);
+    const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
+    assert.equal(reloaded.detectedPrice, null);
+    assert.equal(reloaded.priceSource, null);
+    assert.equal((await prisma.purchaseLog.findUniqueOrThrow({ where: { id: purchase.id } })).price, null);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
 test('getReparseRunProgress reports an empty run as complete', async () => {
   const scope = await createTestScope();
   try {
@@ -963,10 +1010,10 @@ test('getReparseRunProgress reports an empty run as complete', async () => {
 test('getReparseRunProgress preserves the target total across mixed write outcomes', async () => {
   const scope = await createTestScope();
   try {
-    const run = await createRun(scope);
     const updated = await createCandidate(scope);
     const skipped = await createCandidate(scope);
     const failed = await createCandidate(scope);
+    const run = await createReparseRun(OWNER_EMAIL, scope.householdId);
 
     assert.deepEqual(await getReparseRunProgress(run.runToken), {
       totalTargets: 3,
@@ -992,6 +1039,84 @@ test('getReparseRunProgress preserves the target total across mixed write outcom
     const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: updated.id } });
     assert.equal(reloaded.detectedPrice, 750);
     assert.equal(reloaded.priceSource, CERTAIN_PRICE_SOURCE);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('createReparseRun freezes the target manifest before later candidates are created', async () => {
+  const scope = await createTestScope();
+  try {
+    const eligible = await createCandidate(scope);
+    const before = Date.now();
+    const run = await createReparseRun(OWNER_EMAIL, scope.householdId, 1);
+    const createdAfterRun = await createCandidate(scope);
+
+    const targets = await prisma.priceReparseTarget.findMany({
+      where: { runId: run.id },
+      orderBy: { candidateId: 'asc' },
+    });
+    assert.deepEqual(targets.map((target) => target.candidateId), [eligible.id]);
+    assert.ok(!targets.some((target) => target.candidateId === createdAfterRun.id));
+    assert.match(run.runToken, /^rrun_[0-9a-f]{64}$/);
+    assert.ok(run.expiresAt.getTime() > before);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('getReparseRunProgress keeps an externally priced target unprocessed in the fixed manifest', async () => {
+  const scope = await createTestScope();
+  try {
+    const candidate = await createCandidate(scope);
+    const run = await createReparseRun(OWNER_EMAIL, scope.householdId);
+
+    await prisma.importOrderCandidate.update({
+      where: { id: candidate.id },
+      data: { detectedPrice: 760, priceSource: CERTAIN_PRICE_SOURCE },
+    });
+
+    assert.deepEqual(await getReparseRunProgress(run.runToken), {
+      totalTargets: 1,
+      processedCount: 0,
+      remainingCount: 1,
+      complete: false,
+    });
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('getReparseRunProgress remains available after the run expires', async () => {
+  const scope = await createTestScope();
+  try {
+    const candidate = await createCandidate(scope);
+    const run = await createRun(scope, { expiresAt: new Date(Date.now() - 1000) });
+    await prisma.priceReparseTarget.create({
+      data: { runId: run.id, candidateId: candidate.id },
+    });
+
+    assert.deepEqual(await getReparseRunProgress(run.runToken), {
+      totalTargets: 1,
+      processedCount: 0,
+      remainingCount: 1,
+      complete: false,
+    });
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('concurrent createReparseRun calls create only one active run per household', async () => {
+  const scope = await createTestScope();
+  try {
+    const results = await Promise.allSettled([
+      createReparseRun(OWNER_EMAIL, scope.householdId),
+      createReparseRun(OWNER_EMAIL, scope.householdId),
+    ]);
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+    assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
+    assert.equal(await prisma.priceReparseRun.count({ where: { householdId: scope.householdId } }), 1);
   } finally {
     await scope.cleanup();
   }
@@ -1037,54 +1162,4 @@ test('reparse payload rejects skipReason together with price fields', () => {
     results: [{ candidateId: 'candidate-1', detectedPrice: 500, skipReason: 'message_not_found' }],
   });
   assert.equal(parsed.success, false);
-});
-
-test('createReparseRun generates unique tokens and future expirations without a DB write', async () => {
-  const delegate = prisma.priceReparseRun as unknown as {
-    create: (args: {
-      data: {
-        runToken: string;
-        importedByEmail: string;
-        householdId: string;
-        cutoffAt: Date;
-        expiresAt: Date;
-      };
-    }) => Promise<{
-      id: string;
-      runToken: string;
-      importedByEmail: string;
-      householdId: string;
-      cutoffAt: Date;
-      createdAt: Date;
-      expiresAt: Date;
-      revokedAt: Date | null;
-    }>;
-  };
-  let callCount = 0;
-  const originalCreate = delegate.create;
-  delegate.create = async ({ data }: Parameters<typeof delegate.create>[0]) => {
-    callCount += 1;
-    return {
-      id: `mock-run-${callCount}`,
-      runToken: data.runToken,
-      importedByEmail: data.importedByEmail,
-      householdId: data.householdId,
-      cutoffAt: data.cutoffAt,
-      createdAt: new Date(),
-      expiresAt: data.expiresAt,
-      revokedAt: null,
-    };
-  };
-
-  try {
-    const before = Date.now();
-    const first = await createReparseRun(OWNER_EMAIL, 'household-1', 1);
-    const second = await createReparseRun(OWNER_EMAIL, 'household-1', 1);
-    assert.notEqual(first.runToken, second.runToken);
-    assert.match(first.runToken, /^rrun_[0-9a-f]{64}$/);
-    assert.ok(first.expiresAt.getTime() > before);
-    assert.equal(callCount, 2);
-  } finally {
-    delegate.create = originalCreate;
-  }
 });

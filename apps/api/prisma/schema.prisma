@@ -262,6 +262,21 @@ model PriceReparseRun {
   @@map("price_reparse_runs")
 }
 
+// run作成時点で対象となる候補IDを固定するmanifest（第5回レビューR5-02対応）。
+// getReparseRunProgressの「対象」は、動的なprice_source IS NULL等の条件では
+// run作成後の外部要因（他経路での価格確定等）で母数が変わってしまうため、
+// createReparseRun実行時点で対象候補を確定してこのテーブルへ書き込み、
+// 以後はこのmanifestを不変の分母として進捗を計算する
+model PriceReparseTarget {
+  id          String @id @default(cuid())
+  runId       String @map("run_id")
+  candidateId String @map("candidate_id")
+
+  @@unique([runId, candidateId])
+  @@index([runId])
+  @@map("price_reparse_targets")
+}
+
 // run開始時点の品目別「参照単価」snapshot（第3回レビューB02/B06対応）。
 // resolveCandidatePriceForItemの層3判定は本来DBの最新購入履歴を都度読むが、
 // それだとdry-runとwrite・chunk分割・処理順序で結果が変わってしまう

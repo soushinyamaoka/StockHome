@@ -99,6 +99,145 @@ async function captureFailingRequestStdout(runToken: string): Promise<string> {
   });
 }
 
+async function captureProductionPathStdout(
+  scenario: 'success' | 'infrastructure_failure',
+  runToken: string
+): Promise<string> {
+  const script = `
+    import 'dotenv/config';
+    import Fastify from 'fastify';
+    import bridgeRoutes from './src/routes/bridge.ts';
+    import { registerHttpErrorHandling } from './src/lib/httpErrorHandling.ts';
+    import { appLogger } from './src/lib/logger.ts';
+    import { prisma } from './src/lib/prisma.ts';
+
+    const app = Fastify({ loggerInstance: appLogger, disableRequestLogging: true });
+    registerHttpErrorHandling(app);
+    app.removeContentTypeParser('application/json');
+    app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
+      const text = body ?? '';
+      if (text.trim() === '') return done(null, {});
+      try { done(null, JSON.parse(text)); } catch (error) { done(error, undefined); }
+    });
+
+    const scenario = process.env.REPARSE_TEST_SCENARIO;
+    const runToken = process.env.REPARSE_TEST_TOKEN;
+    let householdId;
+    let runId;
+    let candidateId;
+    const runDelegate = prisma.priceReparseRun;
+    const originalFindUnique = runDelegate.findUnique;
+
+    try {
+      if (scenario === 'success') {
+        const household = await prisma.household.create({
+          data: { name: 'bridge-reparse-log-test-' + Date.now() },
+        });
+        householdId = household.id;
+        const candidate = await prisma.importOrderCandidate.create({
+          data: {
+            householdId,
+            vendor: 'amazon',
+            mailMessageId: 'bridge-reparse-log-test-' + Date.now(),
+            importedByEmail: 'owner@example.invalid',
+            mailDate: new Date('2026-09-01T00:00:00.000Z'),
+            mailType: 'order_confirm',
+            mailPhase: 'ordered',
+            itemNameRaw: 'bridge reparse log test item',
+            candidateStatus: 'detected',
+          },
+        });
+        candidateId = candidate.id;
+        const run = await prisma.priceReparseRun.create({
+          data: {
+            runToken,
+            householdId,
+            importedByEmail: 'owner@example.invalid',
+            cutoffAt: new Date(Date.now() + 60_000),
+            expiresAt: new Date(Date.now() + 3_600_000),
+          },
+        });
+        runId = run.id;
+      } else {
+        runDelegate.findUnique = async () => {
+          throw new Error('simulated reparse run lookup infrastructure failure');
+        };
+      }
+
+      await app.register(bridgeRoutes, { prefix: '/api/bridge' });
+      await app.ready();
+      const response = await app.inject(
+        scenario === 'success'
+          ? {
+              method: 'POST',
+              url: '/api/bridge/reparse-candidates',
+              headers: {
+                'x-bridge-token': process.env.BRIDGE_TOKEN,
+                'x-reparse-run-token': runToken,
+                'content-type': 'application/json',
+              },
+              payload: JSON.stringify({
+                mode: 'dry_run',
+                results: [{ candidateId, detectedPrice: 500 }],
+              }),
+            }
+          : {
+              method: 'GET',
+              url: '/api/bridge/reparse-progress',
+              headers: {
+                'x-bridge-token': process.env.BRIDGE_TOKEN,
+                'x-reparse-run-token': runToken,
+              },
+            }
+      );
+      const expectedStatus = scenario === 'success' ? 200 : 500;
+      if (response.statusCode !== expectedStatus) process.exitCode = 1;
+    } finally {
+      runDelegate.findUnique = originalFindUnique;
+      await app.close();
+      if (runId) {
+        await prisma.priceReparseTarget.deleteMany({ where: { runId } });
+        await prisma.priceReparseAudit.deleteMany({ where: { runId } });
+        await prisma.priceReparseItemSnapshot.deleteMany({ where: { runId } });
+        await prisma.priceReparseRun.delete({ where: { id: runId } });
+      }
+      if (householdId) {
+        await prisma.household.delete({ where: { id: householdId } });
+      }
+      await prisma.$disconnect();
+    }
+  `;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        BRIDGE_TOKEN,
+        HISTORICAL_REPARSE_ENABLED: 'true',
+        REPARSE_TEST_SCENARIO: scenario,
+        REPARSE_TEST_TOKEN: runToken,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once('error', reject);
+    child.once('close', (code) => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`production log probe child failed with exit code ${code}: ${stderr}`));
+    });
+  });
+}
+
 test('GET /reparse-candidates requires the header token and rejects a query-string token', async () => {
   await withEnv({ BRIDGE_TOKEN, HISTORICAL_REPARSE_ENABLED: 'true' }, async () => {
     const app = buildTestApp();
@@ -147,4 +286,20 @@ test('the reparse run token never appears in stdout log output for a failing req
   const secretToken = 'rrun_should_never_appear_in_any_log_line';
   const output = await captureFailingRequestStdout(secretToken);
   assert.ok(!output.includes(secretToken), 'stdout leaked the reparse run token');
+});
+
+test('production batch_step and request logs omit the run token after a successful dry run', async () => {
+  const runToken = `rrun_${'b'.repeat(64)}`;
+  const output = await captureProductionPathStdout('success', runToken);
+  assert.match(output, /"event":"batch_step"/);
+  assert.match(output, /"event":"http_request"/);
+  assert.ok(!output.includes(runToken), 'stdout leaked the reparse run token');
+});
+
+test('production error and request logs omit the run token after an infrastructure failure', async () => {
+  const runToken = `rrun_${'a'.repeat(64)}`;
+  const output = await captureProductionPathStdout('infrastructure_failure', runToken);
+  assert.match(output, /"event":"request_failed"/);
+  assert.match(output, /"event":"http_request"/);
+  assert.ok(!output.includes(runToken), 'stdout leaked the reparse run token');
 });

@@ -1,11 +1,11 @@
-# GAS側: 過去候補の単価再解析バッチ 設計メモ（第4回VPS管理レビュー反映版）
+# GAS側: 過去候補の単価再解析バッチ 設計メモ（第5回VPS管理レビュー反映版）
 
 notice: `20260907-STOCKHOME-006`のB08対応。GAS側の実装は今回のセッションでは行わず、
 app ownerが別途手動でCodexセッションを`C:\work\PRG\ZZ_Other\GAS\StockHome`にて起動し、
 本メモを指示書として実装する想定。API側（対応するGET/POST）はtask `20260907-002`
 （第1回実装）・`20260907-004`（第2回レビュー対応）・`20260907-005`（第3回レビュー対応）・
-`20260907-006`（第4回レビュー対応）として通常のStockHome-ClaudeToCodexパイプラインで
-実装済み（別ファイル参照）。
+`20260907-006`（第4回レビュー対応）・`20260907-007`（第5回レビュー対応）として通常の
+StockHome-ClaudeToCodexパイプラインで実装済み（別ファイル参照）。
 
 **2026-09-07 第2回VPS管理レビューを受けて全面改訂**: API側の認可方式が
 自己申告emailから事前発行済み`runToken`へ変更されたため、本メモの該当箇所を
@@ -28,6 +28,17 @@ write再送は保存済み結果がそのまま返る（再判定されない）
 `createReparseRun`のsingle active run制約（同一household向けの有効runは同時に
 1つまで）と、DBだけからrunの進捗を確認できる`getReparseRunProgress`関数が
 追加された（いずれもGAS自体は呼び出さないが、運用手順に関わるため記載する）。
+
+**2026-09-08 第5回VPS管理レビューを受けて再改訂**: matched itemがrunと別household
+だった場合、以前はcandidateの価格だけ更新が確定してしまう実装漏れがあったが、
+API側でcandidate更新前に検知し候補・購入とも一切変更しないよう修正された
+（GAS側の呼び出し方は変わらない）。`createReparseRun`のsingle active run制約は
+DB transactionレベルの真の排他制御へ強化された（運用者が同時に2つのrunを
+発行しようとした場合、片方が確実に失敗するようになった）。また、運用者が
+GASのlocal state（cursor）を失った場合や、runが期限切れした後でも進捗を
+確認できるよう、新規`GET /api/bridge/reparse-progress`（`X-Reparse-Run-Token`
+header必須。GET/POSTと同じ認可方式）が追加された。GAS側の呼び出し手順自体に
+変更はないが、運用者が手動でこのendpointを叩いて進捗確認・reconcileに使える。
 
 ## 対象repository・実装担当
 

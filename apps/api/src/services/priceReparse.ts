@@ -6,6 +6,7 @@ import { resolveCandidatePriceForItem, resolvePurchaseQty, getRecentUnitPriceMed
 
 const MAX_PLAUSIBLE_UNIT_PRICE = 1_000_000;
 const REPARSE_LOOKUP_LIMIT = 50;
+const CREATE_RUN_MAX_ATTEMPTS = 3;
 
 function isPlausiblePrice(price: number): boolean {
   return Number.isFinite(price) && price > 0 && Number.isInteger(price) && price <= MAX_PLAUSIBLE_UNIT_PRICE;
@@ -15,7 +16,22 @@ function isUniqueConstraintViolation(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002';
 }
 
+// SERIALIZABLE transactionでPostgresが書き込みskewを検出したときのエラーコード。
+// Prisma Clientはこれを P2034 として表す（第5回レビューR5-03対応）
+function isSerializationFailure(e: unknown): boolean {
+  return e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2034';
+}
+
 export class ReparseRunInvalidError extends Error {}
+
+interface RunRecord {
+  id: string;
+  householdId: string;
+  importedByEmail: string;
+  cutoffAt: Date;
+  expiresAt: Date;
+  revokedAt: Date | null;
+}
 
 interface ActiveRun {
   id: string;
@@ -24,9 +40,22 @@ interface ActiveRun {
   cutoffAt: Date;
 }
 
-async function findActiveRun(runToken: string): Promise<ActiveRun> {
+// runTokenが指すrunをそのまま返す（期限切れ・失効の判定はしない）。
+// getReparseRunProgressのように、期限切れ後も進捗確認したい呼び出し元が使う
+// （第5回レビューR5-02対応）
+async function findRunByToken(runToken: string): Promise<RunRecord> {
   const run = await prisma.priceReparseRun.findUnique({ where: { runToken } });
-  if (!run || run.revokedAt || run.expiresAt.getTime() <= Date.now()) {
+  if (!run) {
+    throw new ReparseRunInvalidError('run token not found');
+  }
+  return run;
+}
+
+// 有効な（未失効・未期限切れ）runだけを返す。新規に対象を取得・書き込みを行う
+// エンドポイントはこちらを使う
+async function findActiveRun(runToken: string): Promise<ActiveRun> {
+  const run = await findRunByToken(runToken);
+  if (run.revokedAt || run.expiresAt.getTime() <= Date.now()) {
     throw new ReparseRunInvalidError('invalid or expired run token');
   }
   return { id: run.id, householdId: run.householdId, importedByEmail: run.importedByEmail, cutoffAt: run.cutoffAt };
@@ -34,9 +63,10 @@ async function findActiveRun(runToken: string): Promise<ActiveRun> {
 
 // 品目の参照単価snapshotを取得する。無ければ計算して保存し、以後同じrunでは
 // dry_run/write・chunk・処理順序を問わず同じ値を使い回す（第3回レビューB02/B06）。
-// 同時に複数chunkが同じ品目を初めて処理しようとした場合はunique制約で競合するため、
-// その場合は既存行を再取得する。tx経由ではなく独立したprismaで書くことで、
-// 呼び出し元のtransactionがdry_runでrollbackされても、snapshot自体は消えない
+// 同時に複数chunkが同じ品目を初めて処理しようとした場合はunique制約(P2002)で競合するため、
+// その場合だけ既存行を再取得する。それ以外の例外（DB接続断等）は再throwし、呼び出し元の
+// transaction全体を失敗させる（第5回レビューR5-04対応。以前は全例外を競合とみなし、
+// 再取得できなければ計算値をそのまま返してしまっていた）
 async function getOrCreateItemSnapshot(runId: string, itemId: string): Promise<number | null> {
   const existing = await prisma.priceReparseItemSnapshot.findUnique({
     where: { runId_itemId: { runId, itemId } },
@@ -49,11 +79,15 @@ async function getOrCreateItemSnapshot(runId: string, itemId: string): Promise<n
       data: { runId, itemId, referencePrice },
     });
     return created.referencePrice;
-  } catch {
+  } catch (e) {
+    if (!isUniqueConstraintViolation(e)) throw e;
     const raced = await prisma.priceReparseItemSnapshot.findUnique({
       where: { runId_itemId: { runId, itemId } },
     });
-    return raced?.referencePrice ?? referencePrice;
+    if (!raced) {
+      throw new Error(`reparse item snapshot race detected without a winning row (run=${runId}, item=${itemId})`);
+    }
+    return raced.referencePrice;
   }
 }
 
@@ -106,7 +140,11 @@ function auditRowToApplyResult(row: AuditRow): ApplyResult {
 // （commitするか rollback するかは呼び出し元 applyOne が決める）。
 // 早期returnも含め、ここでは監査を書かない（呼び出し元が必ず1回だけ書く。B05）。
 // household・owner・cutoffの境界チェックは、skip/invalid判定を含む「どのoutcomeを
-// 返す場合でも」必ず最初に行う（第4回R4-02: 境界チェックより前にreturnする経路を作らない）
+// 返す場合でも」必ず最初に行う（第4回R4-02）。matched itemを使う候補では、
+// candidateへの価格書き込み（updateMany）より前にmatched itemのhouseholdを確認し、
+// 不一致ならcandidate・purchaseとも一切変更せずconflictにする
+// （第5回レビューR5-01対応。以前はcandidate更新後に確認していたため、不一致でも
+// candidate更新が確定してしまっていた）
 async function computeOutcome(tx: Prisma.TransactionClient, run: ActiveRun, item: ReparseResultItem): Promise<ApplyResult> {
   const candidate = await tx.importOrderCandidate.findUnique({ where: { id: item.candidateId } });
   if (!candidate) {
@@ -128,6 +166,19 @@ async function computeOutcome(tx: Prisma.TransactionClient, run: ActiveRun, item
   if (candidate.priceSource != null || candidate.detectedPrice != null) {
     return { outcome: 'conflict', skipReason: 'already_has_price', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
   }
+
+  const usesMatchedItem =
+    ['confirmed', 'auto_confirmed'].includes(candidate.candidateStatus) && candidate.matchedItemId != null;
+  let matchedItem: { id: string; householdId: string; defaultPurchaseQty: number } | null = null;
+  if (usesMatchedItem) {
+    matchedItem = await tx.item.findUnique({ where: { id: candidate.matchedItemId as string } });
+    if (!matchedItem || matchedItem.householdId !== run.householdId) {
+      // candidate更新（updateMany）より前に検知するため、ここではcandidate・purchaseの
+      // どちらも一切変更していない（第5回レビューR5-01対応）
+      return { outcome: 'conflict', skipReason: 'matched_item_missing', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
+    }
+  }
+
   const before: BeforeAfter = {
     detectedPrice: candidate.detectedPrice,
     priceSource: candidate.priceSource,
@@ -150,15 +201,8 @@ async function computeOutcome(tx: Prisma.TransactionClient, run: ActiveRun, item
   if (item.detectedPrice == null) {
     return { outcome: 'unchanged', skipReason: 'no_price_found', purchaseId: null, before, applied };
   }
-  if (!['confirmed', 'auto_confirmed'].includes(candidate.candidateStatus) || !candidate.matchedItemId) {
+  if (!usesMatchedItem || !matchedItem) {
     return { outcome: 'updated', skipReason: null, purchaseId: null, before, applied };
-  }
-
-  // matched itemのhouseholdをrunと照合する。purchaseの有無によらず必ずここで検証する
-  // （第4回R4-02: 以前はpurchaseが0件だとmatched itemを取得せずreturnしていた）
-  const matchedItem = await tx.item.findUnique({ where: { id: candidate.matchedItemId } });
-  if (!matchedItem || matchedItem.householdId !== run.householdId) {
-    return { outcome: 'updated', skipReason: 'matched_item_missing', purchaseId: null, before, applied };
   }
 
   const linkIds = [candidate.id, candidate.legacyId].filter((v): v is string => v != null);
@@ -211,13 +255,6 @@ async function computeOutcome(tx: Prisma.TransactionClient, run: ActiveRun, item
 
 const ROLLBACK = Symbol('reparse_rollback');
 
-// write: 冪等（同一(run,candidate,mode='write')の再送は保存済み結果をそのまま返し、
-// 再判定・再更新しない）。同時実行で監査insertが「一意制約違反(P2002)」に触れた場合のみ
-// 真の競合として扱い、自分の更新を破棄して先に確定した側の結果を返す。それ以外の例外
-// （DB接続断等の真のinfrastructure障害）は監査を書かずに呼び出し元へそのまま伝播させ、
-// chunk全体を再送可能な失敗として扱う（row単位の業務判定とは区別する。第4回R4-01対応）。
-// dry_run: 常に再計算し、同じ(run,candidate,mode='dry_run')行へupsertする
-// （再実行のたびに監査が増えないようにする。第3回B02/B04）
 async function applyOne(run: ActiveRun, item: ReparseResultItem, mode: 'dry_run' | 'write'): Promise<ApplyResult> {
   if (mode === 'write') {
     const existingAudit = await prisma.priceReparseAudit.findUnique({
@@ -256,8 +293,6 @@ async function applyOne(run: ActiveRun, item: ReparseResultItem, mode: 'dry_run'
         });
       } catch (e) {
         if (!isUniqueConstraintViolation(e)) throw e;
-        // 同じ(run, candidate, write)へ同時に別プロセスが先に監査を作った（真の競合のみ）。
-        // 自分の更新は破棄し、勝った側の結果を後で取得する
         auditRaceLost = true;
         throw ROLLBACK;
       }
@@ -348,9 +383,6 @@ export async function processReparseResults(
   };
   for (const item of results) {
     counts.total++;
-    // applyOneが投げる例外は、chunk全体を再送すべきinfrastructure障害として
-    // そのまま呼び出し元（route）へ伝播させる。業務判断としての失敗（invalid_price_rejected等）は
-    // 例外ではなく通常の戻り値として扱われるため、ここでは意図的にcatchしない（第4回R4-01対応）
     const r = await applyOne(run, item, mode);
     if (r.outcome === 'updated') {
       counts.updatedCandidate++;
@@ -364,7 +396,6 @@ export async function processReparseResults(
   return counts;
 }
 
-// 再解析対象の一覧取得。runの owner・household・cutoff に一致する候補だけを返す（B03/B02）
 export async function getReparseTargets(runToken: string, cursor: string | undefined, limit: number) {
   const run = await findActiveRun(runToken);
   return prisma.importOrderCandidate.findMany({
@@ -389,74 +420,99 @@ export interface ReparseRunProgress {
   complete: boolean;
 }
 
-// runの進捗をDBだけから復元する（第4回R4-03対応。GAS側のcursor等local stateが
-// 失われても、この関数だけでrunの完了・未処理数を判定できるようにする）。
-// 「対象」は、run作成時点のcutoff・household・owner に一致する候補のうち、
-// (a) 現在もprice_source/detected_priceがNULLのまま残っている候補、
-// (b) このrunで既にmode='write'の監査が付いた候補（priceが確定して条件(a)から
-// 外れたものを含む）のunion。「処理済み」は(b)。「残り」は(a)から(b)を除いたもの
+// runの進捗を、createReparseRun時点で固定したprice_reparse_targets manifestと
+// mode='write'監査の存在だけから算出する（第5回レビューR5-02対応）。
+// - totalTargets: manifestの件数（run作成後に他経路で価格が確定した候補も含めて
+//   不変。動的なNULL条件を使わないため、母数が外部要因で変化しない）
+// - processedCount: manifestに含まれる候補のうち、このrunのmode='write'監査が
+//   付いているものの数（別経路で価格が確定しただけではprocessedにならない）
+// - findActiveRunではなくfindRunByTokenを使うため、期限切れ・失効後のrunでも
+//   進捗を取得できる
 export async function getReparseRunProgress(runToken: string): Promise<ReparseRunProgress> {
-  const run = await findActiveRun(runToken);
+  const run = await findRunByToken(runToken);
 
-  const [stillUnpriced, processedAudits] = await Promise.all([
-    prisma.importOrderCandidate.findMany({
-      where: {
-        householdId: run.householdId,
-        importedByEmail: run.importedByEmail,
-        priceSource: null,
-        detectedPrice: null,
-        createdAt: { lte: run.cutoffAt },
-      },
-      select: { id: true },
-    }),
+  const [targets, processedAudits] = await Promise.all([
+    prisma.priceReparseTarget.findMany({ where: { runId: run.id }, select: { candidateId: true } }),
     prisma.priceReparseAudit.findMany({
       where: { runId: run.id, mode: 'write' },
       select: { candidateId: true },
     }),
   ]);
 
-  const processedIds = new Set(processedAudits.map((a) => a.candidateId));
-  const remainingIds = stillUnpriced.map((c) => c.id).filter((id) => !processedIds.has(id));
-  const totalTargets = new Set([...stillUnpriced.map((c) => c.id), ...processedIds]).size;
-  const remainingCount = remainingIds.length;
+  const targetIds = new Set(targets.map((t) => t.candidateId));
+  const processedIds = new Set(processedAudits.map((a) => a.candidateId).filter((id) => targetIds.has(id)));
+  const totalTargets = targetIds.size;
+  const processedCount = processedIds.size;
 
   return {
     totalTargets,
-    processedCount: totalTargets - remainingCount,
-    remainingCount,
-    complete: remainingCount === 0,
+    processedCount,
+    remainingCount: totalTargets - processedCount,
+    complete: totalTargets === 0 || processedCount === totalTargets,
   };
 }
 
-// production承認後、運用者が事前に1件だけ発行する（HTTP非公開）。同一household向けの
-// 有効なrun（未失効・未期限切れ）が既に存在する場合はエラーとする（第4回R4-03:
-// single active runの制約。二重発行による混乱を防ぐ）。既存runを差し替える場合は
-// 呼び出し側が先にPriceReparseRun.revokedAtを設定してから本関数を呼ぶ
+// production承認後、運用者が事前に1件だけ発行する（HTTP非公開）。SERIALIZABLE
+// transactionで「同一householdの有効run有無チェック」「run作成」「対象manifestの
+// 書き込み」を直列化し、同時発行を防ぐ（第5回レビューR5-03対応。findFirst→createの
+// 2queryだけではTOCTOUで両方が成功し得た）。P2034（serialization failure）は
+// Postgresが書き込みskewを検出した合図であり、再試行すれば安全に解決できるため
+// 最大3回まで再試行する。run作成と同時に対象候補IDをprice_reparse_targetsへ
+// 書き込み、対象集合をrun開始時点で固定する（第5回レビューR5-02対応）
 export async function createReparseRun(
   importedByEmail: string,
   householdId: string,
   expiresInHours = 72
 ): Promise<{ id: string; runToken: string; cutoffAt: Date; expiresAt: Date }> {
-  const now = new Date();
-  const activeRun = await prisma.priceReparseRun.findFirst({
-    where: { householdId, revokedAt: null, expiresAt: { gt: now } },
-  });
-  if (activeRun) {
-    throw new Error(
-      `an active price reparse run already exists for this household (id=${activeRun.id}). revoke it (set revokedAt) before creating a new one.`
-    );
-  }
+  for (let attempt = 1; attempt <= CREATE_RUN_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          const now = new Date();
+          const activeRun = await tx.priceReparseRun.findFirst({
+            where: { householdId, revokedAt: null, expiresAt: { gt: now } },
+          });
+          if (activeRun) {
+            throw new Error(
+              `an active price reparse run already exists for this household (id=${activeRun.id}). revoke it (set revokedAt) before creating a new one.`
+            );
+          }
 
-  const runToken = `rrun_${randomBytes(32).toString('hex')}`;
-  const cutoffAt = now;
-  const run = await prisma.priceReparseRun.create({
-    data: {
-      runToken,
-      importedByEmail,
-      householdId,
-      cutoffAt,
-      expiresAt: new Date(now.getTime() + expiresInHours * 60 * 60 * 1000),
-    },
-  });
-  return { id: run.id, runToken: run.runToken, cutoffAt: run.cutoffAt, expiresAt: run.expiresAt };
+          const runToken = `rrun_${randomBytes(32).toString('hex')}`;
+          const run = await tx.priceReparseRun.create({
+            data: {
+              runToken,
+              importedByEmail,
+              householdId,
+              cutoffAt: now,
+              expiresAt: new Date(now.getTime() + expiresInHours * 60 * 60 * 1000),
+            },
+          });
+
+          const eligible = await tx.importOrderCandidate.findMany({
+            where: {
+              householdId,
+              importedByEmail,
+              priceSource: null,
+              detectedPrice: null,
+              createdAt: { lte: now },
+            },
+            select: { id: true },
+          });
+          if (eligible.length > 0) {
+            await tx.priceReparseTarget.createMany({
+              data: eligible.map((c) => ({ runId: run.id, candidateId: c.id })),
+            });
+          }
+
+          return { id: run.id, runToken: run.runToken, cutoffAt: run.cutoffAt, expiresAt: run.expiresAt };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      );
+    } catch (e) {
+      if (isSerializationFailure(e) && attempt < CREATE_RUN_MAX_ATTEMPTS) continue;
+      throw e;
+    }
+  }
+  throw new Error('unreachable: createReparseRun exhausted retries without returning or throwing');
 }

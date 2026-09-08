@@ -5,7 +5,12 @@ import { appLogger, ERROR_KINDS, LOG_EVENTS, safeErr } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { parseBody } from '../utils/validate';
 import { processBridgeCandidates } from '../services/candidateIntake';
-import { getReparseTargets, processReparseResults, ReparseRunInvalidError } from '../services/priceReparse';
+import {
+  getReparseRunProgress,
+  getReparseTargets,
+  processReparseResults,
+  ReparseRunInvalidError,
+} from '../services/priceReparse';
 
 // GAS ブリッジ用ルート（JWT ではなく共有トークンで認証）
 // GAS の Gmail 取込（各ユーザーの個人トリガー）が解析済み候補を POST してくる
@@ -81,6 +86,28 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
       ...counts,
     });
     return { mode: data.mode, summary: counts };
+  });
+
+  // 過去候補の単価再解析: runの進捗確認（notice 20260907-STOCKHOME-006、
+  // 第5回レビューR5-02対応）。期限切れ・失効後のrunでも進捗を確認できる
+  // （getReparseRunProgressはfindActiveRunを使わない）
+  app.get('/reparse-progress', async (req, reply) => {
+    if (process.env.HISTORICAL_REPARSE_ENABLED !== 'true') {
+      return reply.code(404).send({ message: 'not found' });
+    }
+    const runToken = req.headers[REPARSE_TOKEN_HEADER] as string | undefined;
+    if (!runToken) {
+      return reply.code(404).send({ message: 'not found' });
+    }
+    try {
+      const progress = await getReparseRunProgress(runToken);
+      return progress;
+    } catch (e) {
+      if (e instanceof ReparseRunInvalidError) {
+        return reply.code(404).send({ message: 'not found' });
+      }
+      throw e;
+    }
   });
 
   // 解析済み候補のバッチ投入

@@ -84,6 +84,22 @@ Claudeの直接対応（R4-04）で修正し、回帰test8件・HTTPレベルtes
 全migration適用・本機能3 migration全体のrollback rehearsal（round-trip含む）も実施した。
 詳細は下記「第4回レビュー対応状況」参照。
 
+**2026-09-08 第5回レビュー（`blocked`）への対応完了**: VPS管理側は実装改善を認めつつ、
+6件のblockerを継続指摘した。**最重要**: matched itemのhousehold不一致でもcandidate
+更新がcommitされる実装漏れが残っており、round-4で追加した回帰testがこの不具合を
+「防ぐ」のではなく「固定」してしまっていた（S006-R5-01）。加えて、run対象集合・進捗が
+run作成後の外部要因や期限切れで復元できない（S006-R5-02）、single active runの
+真の同時実行防止が無い（S006-R5-03）、item snapshot作成での例外握りつぶし
+（S006-R5-04）、runToken非混入testがproduction相当のログ経路を検証していない
+（S006-R5-05）、notice文書のremote状態不一致（S006-R5-06）が内容。
+task `20260907-007`（R5-01・R5-02・R5-03・R5-04・R5-05）とClaudeの直接対応
+（migration・schema）で修正し、新設`price_reparse_targets`（run対象manifest）テーブル、
+`createReparseRun`のSERIALIZABLE transaction化、production相当loggerを使う
+HTTPレベルtestを追加した回帰test6件・HTTPレベルtest2件を含む全63件のローカルDB
+testが成功したことをCodex・Claudeの双方で確認した。fresh隔離DBでの全migration適用・
+本機能4 migration全体のrollback rehearsal（round-trip含む）も実施した。
+詳細は下記「第5回レビュー対応状況」参照。
+
 ## 変更理由
 
 - 過去分の単価が空欄のままでは、購入履歴の価格推移（既存機能）や将来の家計把握に使えない。
@@ -107,11 +123,12 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 |---|---|---|
 | 過去候補の`price_source`（`price_source`/`detected_price`とも NULL の行） | NULL/空 | 再解析で価格が判明した候補のみ値が入る（対象外は変化なし） |
 | 対応する`purchase_logs.price`（NULLの行のみ） | NULL | 層1〜3判定で確定できたものだけ値が入る |
-| API | 該当エンドポイントなし | `GET /api/bridge/reparse-candidates`・`POST /api/bridge/reparse-candidates`を新設（`HISTORICAL_REPARSE_ENABLED=true`のときのみ有効。未設定時は404）。認可は事前発行済み`runToken`（第2回レビューB03対応、下記参照）で行い、自己申告emailは受け付けない。`runToken`はquery string/bodyではなく専用header（`X-Reparse-Run-Token`）で受け渡す（第3回レビューB03対応） |
+| API | 該当エンドポイントなし | `GET /api/bridge/reparse-candidates`・`POST /api/bridge/reparse-candidates`・`GET /api/bridge/reparse-progress`（第5回レビューR5-02対応で追加）を新設（`HISTORICAL_REPARSE_ENABLED=true`のときのみ有効。未設定時は404）。認可は事前発行済み`runToken`（第2回レビューB03対応、下記参照）で行い、自己申告emailは受け付けない。`runToken`はquery string/bodyではなく専用header（`X-Reparse-Run-Token`）で受け渡す（第3回レビューB03対応） |
 | GAS | 該当機能なし | **未実装**（B08参照。設計メモのみ`ops/investigations/20260907-historical-price-reparse-gas-design.md`に作成済み） |
 | `price_reparse_audit`テーブル | 存在しない | 新設（production row変更前後値の監査ログ。Git管理外）。`mode`列と`(run_id, candidate_id, mode)`の一意制約を追加し、write再送の冪等・dry-run再実行の重複防止に使う（第3回レビューB02/B04対応） |
 | `price_reparse_runs`テーブル | 存在しない | 新設（第2回レビューB03対応。runToken・対象owner・有効期限を保持する認可テーブル。HTTP経由では作成せず、production承認後に運用者が直接1件だけ発行する）。`cutoff_at`列を追加し、run作成後に新規追加された候補を対象から除外する（第3回レビューB02/B04対応） |
 | `price_reparse_item_snapshots`テーブル | 存在しない | 新設（第3回レビューB02/B06対応。run内で品目ごとに参照単価を1回だけ計算・固定し、dry-run/write・chunk分割・処理順序によらず同じ判定になるようにする） |
+| `price_reparse_targets`テーブル | 存在しない | 新設（第5回レビューR5-02対応。`createReparseRun`実行時点の対象候補IDを固定するmanifest。run作成後に対象集合が動的に変化しないようにし、`getReparseRunProgress`の分母として使う） |
 
 ## 影響対象
 
@@ -171,27 +188,30 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 
 - schema/format変更: `price_reparse_audit`・`price_reparse_runs`（第2回レビューB03対応で
   追加。認可用のrunToken・対象owner・有効期限を保持する）・`price_reparse_item_snapshots`
-  （第3回レビューB02/B06対応で追加。run内固定の参照単価）の3テーブルを新規追加。
+  （第3回レビューB02/B06対応で追加。run内固定の参照単価）・`price_reparse_targets`
+  （第5回レビューR5-02対応で追加。run作成時点の対象候補manifest）の4テーブルを新規追加。
   既存テーブルへの列追加は無いが、`price_reparse_runs`へ`cutoff_at`列、
   `price_reparse_audit`へ`mode`列と`(run_id, candidate_id, mode)`一意制約を追加した
   （第3回レビューB02/B04対応）
 - migration: `20260906223126_add_price_reparse_audit`・`20260907021325_add_price_reparse_run`・
-  `20260907050000_reparse_run_cutoff_and_idempotent_audit`（いずれもローカル生成・適用済み、
+  `20260907050000_reparse_run_cutoff_and_idempotent_audit`・
+  `20260908000000_add_price_reparse_target`（いずれもローカル生成・適用済み、
   productionへは未適用）
-- **明示的transaction境界（第4回レビューR4-04対応）**: この機能の3 migrationすべてへ
-  `BEGIN;`/`COMMIT;`を追加した（`push_devices`/`push_tickets`と同じ方針。理由も同じ:
-  Prismaのこのバージョン・実行経路ではmigration.sqlが既定でtransactionに包まれる保証がなく、
-  途中の文が失敗した場合にtableと関連index/一意制約が中途半端な状態で残らないようにする）。
-- **fresh隔離DBでのapply/rollback rehearsal（第3回レビューB05/B08、第4回レビューR4-04対応、
-  実施済み）**: 使い捨てのPostgreSQL 16コンテナ（本notice対象の開発DB・productionとは
-  別インスタンス）に対し、`npx prisma migrate deploy`で初期化から全9 migrationを適用し、
-  想定どおりのtable/column/indexが作成されることを確認した。
-  **第4回レビュー指摘（最新1件分のrollbackしか確認していなかった）を受け、
-  本機能の3 migrationすべてをbaseline相当まで一度に取り消す以下のrollback SQLを
+- **明示的transaction境界（第4回レビューR4-04対応、第5回追加分にも同様に適用）**:
+  この機能の4 migrationすべてへ`BEGIN;`/`COMMIT;`を追加した（`push_devices`/
+  `push_tickets`と同じ方針。理由も同じ: Prismaのこのバージョン・実行経路では
+  migration.sqlが既定でtransactionに包まれる保証がなく、途中の文が失敗した場合に
+  tableと関連index/一意制約が中途半端な状態で残らないようにする）。
+- **fresh隔離DBでのapply/rollback rehearsal（第3回レビューB05/B08、第4回レビューR4-04、
+  第5回レビューR5-02対応、実施済み）**: 使い捨てのPostgreSQL 16コンテナ（本notice対象の
+  開発DB・productionとは別インスタンス）に対し、`npx prisma migrate deploy`で初期化から
+  全10 migrationを適用し、想定どおりのtable/column/indexが作成されることを確認した。
+  本機能の4 migrationすべてをbaseline相当まで一度に取り消す以下のrollback SQLを
   同一DB上でtransaction内実行し、`20260906062943_add_price_source_to_import_candidates`
-  適用直後（production baseline相当）のschemaへ正確に戻ることを確認した**:
+  適用直後（production baseline相当）のschemaへ正確に戻ることを確認した:
   ```sql
   BEGIN;
+  DROP TABLE "price_reparse_targets";
   DROP TABLE "price_reparse_item_snapshots";
   DROP INDEX "price_reparse_audit_run_id_candidate_id_mode_key";
   ALTER TABLE "price_reparse_audit" DROP COLUMN "mode";
@@ -201,14 +221,15 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
   DELETE FROM "_prisma_migrations" WHERE migration_name IN (
     '20260906223126_add_price_reparse_audit',
     '20260907021325_add_price_reparse_run',
-    '20260907050000_reparse_run_cutoff_and_idempotent_audit'
+    '20260907050000_reparse_run_cutoff_and_idempotent_audit',
+    '20260908000000_add_price_reparse_target'
   );
   COMMIT;
   ```
   rollback後、`import_order_candidates.price_source`列（本機能より前のmigrationが
-  追加した列）が変わらず残っていること、`price_reparse_*`の3テーブルがすべて
-  消えていること、Prisma自身の`migrate status`が3 migrationを「未適用」として
-  正しく認識することを確認した。続けて`prisma migrate deploy`で3 migrationを
+  追加した列）が変わらず残っていること、`price_reparse_*`の4テーブルがすべて
+  消えていること、Prisma自身の`migrate status`が4 migrationを「未適用」として
+  正しく認識することを確認した。続けて`prisma migrate deploy`で4 migrationを
   再適用し、round-trip（apply→全rollback→再apply）が問題なく行えることも確認した。
   すべての文は列削除・テーブル削除・索引削除・bookkeeping行削除のみで、既存rowの
   値によって結果が変わる条件分岐を持たないため、rowが0件でも大量にあっても同一の
@@ -292,24 +313,39 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
   無効tokenでの404応答時に実際のtoken文字列がHTTPレスポンス・stdoutのどちらにも
   出現しないことを確認する3件を追加した（後者は別processを起動し、そのprocessの
   実stdoutをpipeで捕捉して検証する。詳細は下記「第4回レビュー対応状況」参照）
-- 結果: `npm run test --workspace=@stockhome/api`で**全57件が成功**（失敗0件、
-  `priceReparse.test.ts`38件＋`bridge.reparse.test.ts`3件＋
-  `stockCalc.accumulation.test.ts`16件）。Codexが自環境（ローカルDB接続あり）で
-  実行し全件成功を報告し、Claudeが対話セッションでローカル開発用Postgres
-  （`localhost:5434`）に対して独立に再実行し同じ結果（57件成功）を確認した
-- **runToken非混入testの範囲についての正直な補足（第4回レビューR4-05）**: 上記3件の
-  testは、header必須・query/body非受理、および「無効tokenで404を返す経路」での
-  非混入を実際に検証している。一方、write成功時に`appLogger.info`が出す
-  `batch_step`ログ（`event`/`job`/`step`/集計値のみを渡す設計）自体がrunTokenを
-  一切参照しないこと、production環境の共通エラーハンドラ（`safeErr()`、
-  name/文字列型codeのみをログへ渡す）がrunTokenを含む例外に対しても同様に動作する
-  ことは、**自動testではなくコードレビュー（静的確認）で確認した**。将来この2箇所の
-  ログ出力を自動test化することが望ましいが、本notice時点では未実施であることを
-  明記する
+- **第5回レビュー対応（task `20260907-007`）で追加したtest**: matched itemの
+  household不一致がcandidate更新前に検知されcandidate・purchaseとも不変のまま
+  `conflict`になること（round-4の回帰testが誤って`updatedCandidate === 1`を
+  期待していたのを修正）、run作成後に作成された候補が対象manifestに含まれない
+  こと、run対象外の経路で価格が確定しても進捗の母数・残数が変わらないこと、
+  期限切れrunでも進捗取得ができること、同一household・同時`createReparseRun`呼出しで
+  1件だけが成功すること、item snapshot作成の非P2002例外がtransaction全体を
+  rollbackさせcandidate/purchaseとも不変にすることの計5件を新設した。
+  併せて、DB書き込みを避けるmockに依存していた旧`createReparseRun`のtest
+  （`createReparseRun`がSERIALIZABLE transaction化されmock方式が使えなくなったため）を
+  削除した。`priceReparse.test.ts`は既存38件から42件になった（1件削除・1件書き換え・
+  5件追加）。加えて`bridge.reparse.test.ts`へ、production同一の`loggerInstance: appLogger`と
+  `registerHttpErrorHandling`を使う実HTTPレベルtestを2件追加し、write成功時の
+  `batch_step`ログとinfrastructure例外時の`request_failed`ログのどちらでも
+  実際にそのeventが出力されること（testが空振りしていないことを確認するため）、
+  かつrunTokenの値がどちらの場合も出力に含まれないことを確認した
+  （詳細は下記「第5回レビュー対応状況」参照）
+- 結果: `npm run test --workspace=@stockhome/api`で**全63件が成功**（失敗0件、
+  `priceReparse.test.ts`42件＋`bridge.reparse.test.ts`5件＋
+  `stockCalc.accumulation.test.ts`16件）。Codexが自環境
+  （ローカルDB接続あり）で実行し全件成功を報告し、Claudeが対話セッションで
+  ローカル開発用Postgres（`localhost:5434`）に対して独立に再実行し同じ結果
+  （63件成功）を確認した
+- **runToken非混入testの範囲についての補足（第4回レビューR4-05で指摘した限界を
+  第5回レビューR5-05対応で解消）**: 第4回時点では、write成功時の`batch_step`ログと
+  production共通エラーハンドラの非混入は自動testではなく静的確認に留まっていた。
+  第5回対応で、production実装と同一の`registerHttpErrorHandling`・
+  `loggerInstance: appLogger`を使う実HTTPレベルtestへ置き換え、上記2経路とも
+  自動testで非混入を確認できるようになった
 - **fresh隔離DBでのmigration apply/rollback rehearsal**（第3回レビューB05/B08、
-  第4回レビューR4-04対応）: 上記「Data・migration・backup」節参照。使い捨てDBで
-  「baseline→全9 migration適用」「本機能3 migrationの全rollback（baseline相当への
-  正確な復元を確認）」「rollback後の再適用（round-trip）」を確認した
+  第4回レビューR4-04、第5回レビューR5-02対応）: 上記「Data・migration・backup」節参照。
+  使い捨てDBで「baseline→全10 migration適用」「本機能4 migrationの全rollback
+  （baseline相当への正確な復元を確認）」「rollback後の再適用（round-trip）」を確認した
 - 未実施テストと理由: 実Gmail接続を伴う結合test、production環境でのcanaryは、
   本notice`accepted`後、app owner立ち会いのdry-run実行時に初めて実施する
   （dry-run自体もproduction承認が必要。上記参照）
@@ -332,11 +368,12 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
 - [x] production baselineとrelease全commit・build入力差分を確認した（B01反映、baseline訂正済み）
-- [ ] source commitとnoticeをremoteの対象branchへpushした（第3回対応`1c1b2ba`・`fb12ce1`は
-      origin/mainへpush済み。第4回対応`9b84b1f`はlocal commit済み、push未実施）
-- [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回・第3回・第4回
-      レビューがmock再現・実DBへのprobeで確認した計19件の問題を含むregression test 38件を
-      含む全57件をローカルDBで実行し全件成功を確認済み）
+- [ ] source commitとnoticeをremoteの対象branchへpushした（第3回対応`1c1b2ba`・`fb12ce1`、
+      第4回対応`9b84b1f`・`60bb6cc`はorigin/mainへpush済み。第5回対応は本notice末尾の
+      commit記録欄参照、push未実施）
+- [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回〜第5回
+      レビューがmock再現・実DBへのprobeで確認した計25件の問題を含むregression test 42件を
+      含む全63件をローカルDBで実行し全件成功を確認済み）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（上記Deploy・rollback参照）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した
       （ログをchunk単位の`BATCH_STEP`へ変更し、row内容を含まないことを確認済み。
@@ -424,10 +461,31 @@ HTTPレベルtest3件（`bridge.reparse.test.ts`）を新設し、既存分と�
 `npm run test --workspace=@stockhome/api`で全57件が成功したことをCodexとClaudeの
 双方で独立に確認した。
 
+## 第5回レビュー対応状況（2026-09-08、task `20260907-007`で対応完了）
+
+VPS管理レビュー正本§12.3〜§12.4が確認した6件の問題と対応。
+
+| # | レビュー指摘 | 対応方針 |
+|---|---|---|
+| 1 | S006-R5-01（最重要）: matched itemのhousehold確認がcandidate更新後に行われており、不一致でも`outcome: 'updated'`が返りcandidate更新が確定していた。round-4の回帰testが`updatedCandidate === 1`を期待しておりこの不具合を固定していた | matched itemのhousehold確認を`candidateUpdate`より前へ移動し、不一致は`conflict`・`matched_item_missing`としてcandidate・purchaseとも一切変更しない設計へ変更。該当回帰testを正しい挙動を検証する内容へ書き換えた |
+| 2 | S006-R5-02: `getReparseRunProgress`が動的な「price NULL」条件を分母にしており、run作成後に他経路で価格確定された候補が母数から消えて未処理でも`complete: true`になり得た。`findActiveRun`経由のため期限切れ後は進捗取得不可。HTTP routeも無く実際に呼ぶ手順が無かった | 新規`price_reparse_targets`テーブルへ`createReparseRun`実行時点の対象候補IDを固定し、これを分母に進捗を算出するよう全面書き換え。`findActiveRun`ではなく`findRunByToken`（失効判定をしない）を使うことで期限切れ後も進捗を取得可能にした。新規`GET /api/bridge/reparse-progress`routeを追加し、実際に呼べるようにした |
+| 3 | S006-R5-03: `createReparseRun`が`findFirst`後に別queryで`create`するだけで、DB unique制約・advisory lock・serializable transactionのいずれも無く、同時呼出しで2件のactive runが作成され得た | 「有効run確認」「run作成」「対象manifest書き込み」をSERIALIZABLE isolationのtransactionへ統合。Postgresの書き込みskew検出（P2034）時は最大3回まで再試行する設計にし、同時発行testで1件だけが成功することを確認した |
+| 4 | S006-R5-04: `getOrCreateItemSnapshot`が`priceReparseItemSnapshot.create`の全例外をcatchし、再取得結果が無ければ計算値をそのまま返していた | 監査insertと同じく、`P2002`（真の一意制約競合）以外は再throwするよう修正。re-fetchでも見つからない場合はエラーとし、静かに計算値へフォールバックしない |
+| 5 | S006-R5-05: runToken非混入testがloggerを有効化していない素のFastifyインスタンスを使っており、production相当のログ経路（`batch_step`・global error/request logger）を検証していなかった | `server.ts`のHTTPエラーハンドリングを`apps/api/src/lib/httpErrorHandling.ts`へロジック無変更で抽出し、production・testの両方から同じ実装を使えるようにした。testでは実際に`loggerInstance: appLogger`・`registerHttpErrorHandling`を使うFastifyアプリを子processで起動し、成功時`batch_step`・infrastructure例外時`request_failed`の両ログが実際に出力されること（テストが空振りしていないこと）とrunToken非混入の両方を確認した |
+| 6 | S006-R5-06: noticeのremote・review状態が現在値と一致しなかった | 本改訂で、本notice末尾のcommit記録欄を含め、実際の`git rev-parse HEAD`の値へ更新した（下記参照） |
+
+上記6件のうち5件（R5-01・R5-02・R5-03・R5-04・R5-05はtask `20260907-007`、R5-02の
+schema/migration部分はClaudeが直接）対応済み。R5-01の修正回帰test・R5-02〜R5-04の
+新規test5件（`priceReparse.test.ts`）とHTTPレベルtest2件（`bridge.reparse.test.ts`）を
+追加し、既存分と合わせて`npm run test --workspace=@stockhome/api`で全63件が成功した
+ことをCodexとClaudeの双方で独立に確認した。加えて、fresh隔離DBでの全10 migration適用・
+本機能4 migration全体のrollback rehearsal（round-trip含む）も実施した。
+
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: task `20260907-006`完了・commit `9b84b1f`（push未実施。push後に案内可能）
+- ユーザーへの案内: task `20260907-007`完了・commit（push未実施。本notice末尾の
+  commit記録欄参照。push後に案内可能）
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md`
 
@@ -436,7 +494,7 @@ HTTPレベルtest3件（`bridge.reparse.test.ts`）を新設し、既存分と�
 
 次に、VPS管理チャットへ以下を送ってください。
 「stockhomeの変更通知書 C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md を確認し、
-第4回レビュー§11.3〜§11.4への対応状況を確認のうえ、再レビューをしてください。
+第5回レビュー§12.3〜§12.4への対応状況を確認のうえ、再レビューをしてください。
 production反映は別承認として扱ってください。」
 ```
 
@@ -524,12 +582,44 @@ production反映は別承認として扱ってください。」
 - `apps/api/prisma/`・`ops/`はtask対象外として変更なし（Claudeが別途対応。
   3 migrationへの明示的transaction追加とfresh隔離DBでの全rollback rehearsalは
   Claudeが本task実行前に完了済み）
-- commit: `9b84b1f`（origin/mainへpush前）
+- commit: `9b84b1f`・`60bb6cc`（origin/mainへpush済み。第5回レビューで問題6件検出）
+
+## Codex実装結果（task 20260907-007、第5回対応）
+
+- 実装ファイル: `apps/api/src/lib/httpErrorHandling.ts`（新規。`server.ts`から
+  HTTPエラーハンドリングをロジック無変更で抽出）、`apps/api/src/server.ts`
+  （抽出したimportと呼び出しへの置き換えのみ。cron・起動処理・route登録順序は無変更）、
+  `apps/api/src/services/priceReparse.ts`（全面書き換え。matched item household照合を
+  candidate更新前へ移動、`findRunByToken`新設と`getReparseRunProgress`の
+  manifest化、`createReparseRun`のSERIALIZABLE transaction化とP2034リトライ、
+  `getOrCreateItemSnapshot`のP2002以外再throw）、`apps/api/src/routes/bridge.ts`
+  （`GET /reparse-progress`を追加）、`apps/api/src/services/priceReparse.test.ts`
+  （1件削除・1件書き換え・5件追加で42件）、`apps/api/src/routes/bridge.reparse.test.ts`
+  （production相当ログ経路のtest2件を追加し5件）
+- 第5回レビューが確認した6件の問題のうち5件（上記「第5回レビュー対応状況」表の
+  R5-01・R5-02・R5-03・R5-04・R5-05、R5-06はClaudeが別途対応）はすべて修正済み。
+  対応するregression testを追加し、全件成功を確認した
+- Codex自環境（ローカルDB接続あり）で`npm run test --workspace=@stockhome/api`を実行し
+  63件成功（失敗0件）を報告。Claudeが対話セッションでローカル開発用Postgres
+  （Docker、`localhost:5434`）に対し独立に再実行し、同じ63件成功を確認した
+- ビルド3コマンド（shared / api / mobile tsc）もCodex・Claude双方の実行で成功
+- コードレビュー: matched item照合が`candidateUpdate`より前にあり不一致時は
+  candidate・purchaseとも不変であること、`getReparseRunProgress`が
+  `findRunByToken`と`price_reparse_targets`を使うこと、`createReparseRun`が
+  `Serializable` isolationとP2034最大3回リトライを使うこと、
+  `getOrCreateItemSnapshot`が`P2002`以外を再throwすること、
+  `bridge.reparse.test.ts`の新規testが実際に`loggerInstance: appLogger`と
+  `registerHttpErrorHandling`を使ってHTTPを処理していること、`server.ts`が
+  指定箇所以外変更されていないことを確認した
+- `apps/api/prisma/`・`ops/`はtask対象外として変更なし（Claudeが別途対応。
+  4番目のmigration追加とfresh隔離DBでの全rollback rehearsalはClaudeが
+  本task実行前に完了済み）
+- commit: 本notice末尾のcommit記録欄を参照（このセクション記入時点で未commit）
 
 ## Approval
 
 - app owner: 未実施（B08の実装経路選択のみ2026-09-07に決定済み。dry-run結果への承認は未実施）
-- VPS management review: 未実施（第4回`blocked`。本notice改訂・commit push後に
+- VPS management review: 未実施（第5回`blocked`。本notice改訂・commit push後に
   再レビュー依頼可能な状態）
 - production approval: 未実施
 - related task_id: 20260907-002（第1回API実装、`success`・commit `02816ee`。
@@ -539,5 +629,9 @@ production反映は別承認として扱ってください。」
   20260907-005（第3回レビュー対応、`success`・commit `1c1b2ba`。
   ローカルDB test 46件全成功、fresh隔離DB migration/rollback rehearsal実施済み。
   第4回レビューで問題6件検出）、
-  20260907-006（第4回レビュー対応、`success`・commit `9b84b1f`。ローカルDB test 57件全成功、
-  fresh隔離DBでの全migration・全rollback rehearsal実施済み）
+  20260907-006（第4回レビュー対応、`success`・commit `9b84b1f`・`60bb6cc`。
+  ローカルDB test 57件全成功、fresh隔離DBでの全migration・全rollback rehearsal実施済み。
+  第5回レビューで問題6件検出）、
+  20260907-007（第5回レビュー対応、`success`。ローカルDB test 63件全成功、
+  fresh隔離DBでの全10 migration・4 migration全rollback rehearsal実施済み。
+  commitは本notice末尾を参照）

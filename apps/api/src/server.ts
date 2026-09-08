@@ -1,10 +1,8 @@
 import 'dotenv/config';
 import Fastify from 'fastify';
-import type { FastifyError, FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import sensible from '@fastify/sensible';
 import cron, { type ScheduledTask } from 'node-cron';
-import { STATUS_CODES } from 'node:http';
 import authPlugin from './plugins/auth';
 import authRoutes from './routes/auth';
 import userRoutes from './routes/users';
@@ -19,30 +17,10 @@ import dashboardRoutes from './routes/dashboard';
 import appConfigRoutes from './routes/appConfig';
 import bridgeRoutes from './routes/bridge';
 import pushDeviceRoutes from './routes/pushDevices';
-import {
-  appLogger,
-  ERROR_KINDS,
-  LOG_EVENTS,
-  safeErr,
-  type AppLogger,
-} from './lib/logger';
+import { registerHttpErrorHandling } from './lib/httpErrorHandling';
+import { appLogger, LOG_EVENTS, type AppLogger } from './lib/logger';
 import { runDailyBatch } from './services/batch';
 import { runPushReceiptMaintenance } from './services/pushNotify';
-
-function routePattern(request: FastifyRequest): string {
-  return request.routeOptions.url || 'unmatched';
-}
-
-function isDatabaseError(error: FastifyError): boolean {
-  return typeof error.name === 'string' && error.name.startsWith('PrismaClient');
-}
-
-function errorKind(error: FastifyError, statusCode: number) {
-  if (isDatabaseError(error)) return ERROR_KINDS.DB;
-  if (statusCode === 401 || statusCode === 403) return ERROR_KINDS.AUTH;
-  if (statusCode >= 400 && statusCode < 500) return ERROR_KINDS.VALIDATION;
-  return ERROR_KINDS.INTERNAL;
-}
 
 async function buildServer(logger: AppLogger) {
   const app = Fastify({
@@ -50,46 +28,7 @@ async function buildServer(logger: AppLogger) {
     disableRequestLogging: true,
   });
 
-  app.addHook('onResponse', async (request, reply) => {
-    const line = {
-      event: LOG_EVENTS.HTTP_REQUEST,
-      method: request.method,
-      route: routePattern(request),
-      status: reply.statusCode,
-      duration_ms: Math.round(reply.elapsedTime),
-    };
-    if (reply.statusCode >= 500) {
-      request.log.error(line);
-    } else {
-      request.log.info(line);
-    }
-  });
-
-  app.setErrorHandler((error: FastifyError, request, reply) => {
-    const candidateStatus = error.statusCode;
-    const statusCode =
-      candidateStatus && candidateStatus >= 400 && candidateStatus < 600
-        ? candidateStatus
-        : 500;
-
-    request.log.error({
-      event: LOG_EVENTS.REQUEST_FAILED,
-      method: request.method,
-      route: routePattern(request),
-      status: statusCode,
-      error_kind: errorKind(error, statusCode),
-      err: safeErr(error),
-    });
-
-    const clientMessage =
-      statusCode >= 500 ? (STATUS_CODES[statusCode] ?? 'Internal Server Error') : error.message;
-
-    return reply.status(statusCode).send({
-      statusCode,
-      error: STATUS_CODES[statusCode] ?? 'Internal Server Error',
-      message: clientMessage,
-    });
-  });
+  registerHttpErrorHandling(app);
 
   // fastify@5 の既定JSONパーサは空ボディを拒否するので、空文字を{}として扱う
   app.removeContentTypeParser('application/json');
