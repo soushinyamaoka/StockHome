@@ -102,7 +102,7 @@ async function captureFailingRequestStdout(runToken: string): Promise<string> {
 async function captureProductionPathStdout(
   scenario: 'success' | 'infrastructure_failure',
   runToken: string
-): Promise<string> {
+): Promise<{ stdout: string; stderr: string }> {
   const script = `
     import 'dotenv/config';
     import Fastify from 'fastify';
@@ -232,7 +232,7 @@ async function captureProductionPathStdout(
     });
     child.once('error', reject);
     child.once('close', (code) => {
-      if (code === 0) resolve(stdout);
+      if (code === 0) resolve({ stdout, stderr });
       else reject(new Error(`production log probe child failed with exit code ${code}: ${stderr}`));
     });
   });
@@ -290,16 +290,18 @@ test('the reparse run token never appears in stdout log output for a failing req
 
 test('production batch_step and request logs omit the run token after a successful dry run', async () => {
   const runToken = `rrun_${'b'.repeat(64)}`;
-  const output = await captureProductionPathStdout('success', runToken);
-  assert.match(output, /"event":"batch_step"/);
-  assert.match(output, /"event":"http_request"/);
-  assert.ok(!output.includes(runToken), 'stdout leaked the reparse run token');
+  const { stdout, stderr } = await captureProductionPathStdout('success', runToken);
+  assert.match(stdout, /"event":"batch_step"/);
+  assert.match(stdout, /"event":"http_request"/);
+  assert.ok(!stdout.includes(runToken), 'stdout leaked the reparse run token');
+  assert.ok(!stderr.includes(runToken), 'stderr leaked the reparse run token');
 });
 
 test('production error and request logs omit the run token after an infrastructure failure', async () => {
   const runToken = `rrun_${'a'.repeat(64)}`;
-  const output = await captureProductionPathStdout('infrastructure_failure', runToken);
-  assert.match(output, /"event":"request_failed"/);
-  assert.match(output, /"event":"http_request"/);
-  assert.ok(!output.includes(runToken), 'stdout leaked the reparse run token');
+  const { stdout, stderr } = await captureProductionPathStdout('infrastructure_failure', runToken);
+  assert.match(stdout, /"event":"request_failed"/);
+  assert.match(stdout, /"event":"http_request"/);
+  assert.ok(!stdout.includes(runToken), 'stdout leaked the reparse run token');
+  assert.ok(!stderr.includes(runToken), 'stderr leaked the reparse run token');
 });

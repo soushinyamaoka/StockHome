@@ -157,6 +157,15 @@ async function computeOutcome(tx: Prisma.TransactionClient, run: ActiveRun, item
     return { outcome: 'conflict', skipReason: 'candidate_after_cutoff', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
   }
 
+  const manifestMember = await tx.priceReparseTarget.findUnique({
+    where: { runId_candidateId: { runId: run.id, candidateId: item.candidateId } },
+  });
+  if (!manifestMember) {
+    // run作成時点で対象外だった候補は、household・owner・cutoffが一致していても
+    // 固定manifestに所属しない限り処理対象として認可しない（第6回レビューR6-01対応）
+    return { outcome: 'conflict', skipReason: 'candidate_not_in_manifest', purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
+  }
+
   if (item.skipReason) {
     return { outcome: 'skipped', skipReason: item.skipReason, purchaseId: null, before: EMPTY_BA, applied: EMPTY_BA };
   }
@@ -396,21 +405,34 @@ export async function processReparseResults(
   return counts;
 }
 
+// 再解析対象の一覧取得。固定manifestのうち、mode='write'監査がまだ付いていない
+// candidateだけをID昇順で返す（第6回レビューR6-01対応）
 export async function getReparseTargets(runToken: string, cursor: string | undefined, limit: number) {
   const run = await findActiveRun(runToken);
-  return prisma.importOrderCandidate.findMany({
-    where: {
-      householdId: run.householdId,
-      importedByEmail: run.importedByEmail,
-      priceSource: null,
-      detectedPrice: null,
-      createdAt: { lte: run.cutoffAt },
-      ...(cursor ? { id: { gt: cursor } } : {}),
-    },
-    orderBy: { id: 'asc' },
-    take: Math.min(limit, REPARSE_LOOKUP_LIMIT),
+
+  const [targets, processedAudits] = await Promise.all([
+    prisma.priceReparseTarget.findMany({ where: { runId: run.id }, select: { candidateId: true } }),
+    prisma.priceReparseAudit.findMany({ where: { runId: run.id, mode: 'write' }, select: { candidateId: true } }),
+  ]);
+  const processedIds = new Set(processedAudits.map((audit) => audit.candidateId));
+  const remainingIds = targets
+    .map((target) => target.candidateId)
+    .filter((id) => !processedIds.has(id))
+    .sort();
+  const pageIds = remainingIds
+    .filter((id) => (cursor ? id > cursor : true))
+    .slice(0, Math.min(limit, REPARSE_LOOKUP_LIMIT));
+
+  if (pageIds.length === 0) return [];
+
+  const candidates = await prisma.importOrderCandidate.findMany({
+    where: { id: { in: pageIds } },
     select: { id: true, mailMessageId: true, itemNameRaw: true, vendor: true, mailPhase: true },
   });
+  const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  return pageIds
+    .map((id) => byId.get(id))
+    .filter((candidate): candidate is NonNullable<typeof candidate> => candidate != null);
 }
 
 export interface ReparseRunProgress {
@@ -515,4 +537,52 @@ export async function createReparseRun(
     }
   }
   throw new Error('unreachable: createReparseRun exhausted retries without returning or throwing');
+}
+
+// 期限切れ・失効したrunを、同じmanifestと監査履歴を維持したまま再開する。
+// このrun以外の有効runが同じhouseholdにある場合はsingle-active-run制約を守るため拒否する。
+// createReparseRunと同様にHTTP非公開の運用者向け関数とする（第6回レビューR6-02対応）
+export async function extendReparseRun(
+  runToken: string,
+  additionalHours = 72
+): Promise<{ id: string; expiresAt: Date }> {
+  for (let attempt = 1; attempt <= CREATE_RUN_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          const run = await tx.priceReparseRun.findUnique({ where: { runToken } });
+          if (!run) {
+            throw new ReparseRunInvalidError('run token not found');
+          }
+          const now = new Date();
+          const otherActiveRun = await tx.priceReparseRun.findFirst({
+            where: {
+              householdId: run.householdId,
+              id: { not: run.id },
+              revokedAt: null,
+              expiresAt: { gt: now },
+            },
+          });
+          if (otherActiveRun) {
+            throw new Error(
+              `another active price reparse run already exists for this household (id=${otherActiveRun.id}). resolve it before extending this run.`
+            );
+          }
+          const updated = await tx.priceReparseRun.update({
+            where: { id: run.id },
+            data: {
+              expiresAt: new Date(now.getTime() + additionalHours * 60 * 60 * 1000),
+              revokedAt: null,
+            },
+          });
+          return { id: updated.id, expiresAt: updated.expiresAt };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      );
+    } catch (e) {
+      if (isSerializationFailure(e) && attempt < CREATE_RUN_MAX_ATTEMPTS) continue;
+      throw e;
+    }
+  }
+  throw new Error('unreachable: extendReparseRun exhausted retries without returning or throwing');
 }

@@ -101,6 +101,23 @@ testが成功したことをCodex・Claudeの双方で確認した。fresh隔離
 本機能4 migration全体のrollback rehearsal（round-trip含む）も実施した。
 詳細は下記「第5回レビュー対応状況」参照。
 
+**2026-09-08 第6回レビュー（`blocked`）への対応完了**: VPS管理側は第5回の改善
+（matched item境界・single active run・snapshot例外伝播）を確認しつつ、
+4件のblockerを継続指摘した。**最重要**: 第5回で追加した固定manifest
+（`price_reparse_targets`）が進捗計算にしか使われておらず、対象取得（GET）・
+書き込み認可（POST）の正本になっていなかった（S006-R6-01）。このため
+run開始後に外部要因で価格確定した対象がGETから消えて完了させられない一方、
+manifestに属さない候補がhousehold/owner/cutoff一致だけでGET/POST対象になり
+得た。加えて、期限切れ・失効後は進捗を見られるだけで作業を再開する経路が無い
+（S006-R6-02）、runToken非混入testがstderrを検査していない（S006-R6-03）、
+notice文書のremote状態不一致（S006-R6-04）が内容。task `20260907-008`
+（R6-01〜R6-03）で修正し、`getReparseTargets`を固定manifest正本の実装へ
+全面書き換え、`computeOutcome`へmanifestメンバーシップ確認を追加、新規
+`extendReparseRun`関数で期限切れ後もmanifest・監査履歴を維持したまま再開
+できるようにした。回帰test5件を新設し、既存2件を更新した全68件のローカルDB
+testが成功したことをCodex・Claudeの双方で確認した。詳細は下記
+「第6回レビュー対応状況」参照。
+
 ## 変更理由
 
 - 過去分の単価が空欄のままでは、購入履歴の価格推移（既存機能）や将来の家計把握に使えない。
@@ -127,7 +144,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 | API | 該当エンドポイントなし | `GET /api/bridge/reparse-candidates`・`POST /api/bridge/reparse-candidates`・`GET /api/bridge/reparse-progress`（第5回レビューR5-02対応で追加）を新設（`HISTORICAL_REPARSE_ENABLED=true`のときのみ有効。未設定時は404）。認可は事前発行済み`runToken`（第2回レビューB03対応、下記参照）で行い、自己申告emailは受け付けない。`runToken`はquery string/bodyではなく専用header（`X-Reparse-Run-Token`）で受け渡す（第3回レビューB03対応） |
 | GAS | 該当機能なし | **未実装**（B08参照。設計メモのみ`ops/investigations/20260907-historical-price-reparse-gas-design.md`に作成済み） |
 | `price_reparse_audit`テーブル | 存在しない | 新設（production row変更前後値の監査ログ。Git管理外）。`mode`列と`(run_id, candidate_id, mode)`の一意制約を追加し、write再送の冪等・dry-run再実行の重複防止に使う（第3回レビューB02/B04対応） |
-| `price_reparse_runs`テーブル | 存在しない | 新設（第2回レビューB03対応。runToken・対象owner・有効期限を保持する認可テーブル。HTTP経由では作成せず、production承認後に運用者が直接1件だけ発行する）。`cutoff_at`列を追加し、run作成後に新規追加された候補を対象から除外する（第3回レビューB02/B04対応） |
+| `price_reparse_runs`テーブル | 存在しない | 新設（第2回レビューB03対応。runToken・対象owner・有効期限を保持する認可テーブル。HTTP経由では作成せず、production承認後に運用者が直接1件だけ発行する）。`cutoff_at`列を追加し、run作成後に新規追加された候補を対象から除外する（第3回レビューB02/B04対応）。期限切れ・失効したrunを同じmanifest・監査履歴を維持したまま再開する`extendReparseRun`関数を追加（第6回レビューR6-02対応。`createReparseRun`と同じくHTTP非公開） |
 | `price_reparse_item_snapshots`テーブル | 存在しない | 新設（第3回レビューB02/B06対応。run内で品目ごとに参照単価を1回だけ計算・固定し、dry-run/write・chunk分割・処理順序によらず同じ判定になるようにする） |
 | `price_reparse_targets`テーブル | 存在しない | 新設（第5回レビューR5-02対応。`createReparseRun`実行時点の対象候補IDを固定するmanifest。run作成後に対象集合が動的に変化しないようにし、`getReparseRunProgress`の分母として使う） |
 
@@ -343,10 +360,44 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
   第5回対応で、production実装と同一の`registerHttpErrorHandling`・
   `loggerInstance: appLogger`を使う実HTTPレベルtestへ置き換え、上記2経路とも
   自動testで非混入を確認できるようになった
+- **第6回レビュー対応（task `20260907-008`）で追加・更新したtest**: manifestに
+  属さない候補（household/owner/cutoffは一致するが対象外だった、または後から
+  価格をNULLに戻された候補）へのwriteが`conflict`・`candidate_not_in_manifest`
+  として拒否されcandidateが不変のままであること、run開始後に外部経路で価格確定
+  した対象が`getReparseTargets`から消えずに残り続けること、その対象へwriteを
+  送ると`conflict`・`already_has_price`として監査が付き進捗が`complete: true`へ
+  到達すること、期限切れrunは`getReparseTargets`/`processReparseResults`を拒否する
+  一方`getReparseRunProgress`は引き続き参照できること、`extendReparseRun`で
+  期限切れrunを延長すると同じmanifest・既存監査（延長前のdry_run結果を含む）を
+  維持したまま処理を再開して完了へ到達できること、同一householdに他の有効runが
+  ある場合`extendReparseRun`が拒否されることの計5件を新設した。既存の
+  `getReparseTargets`testは固定manifestを作る`createReparseRun`を使うよう更新し、
+  `getReparseRunProgress`の期限切れtestは対象取得・書き込みが実際に拒否される
+  ことも確認するよう拡張した。`priceReparse.test.ts`は42件から47件になった。
+  加えて`bridge.reparse.test.ts`の既存2件（production相当ログtest）を、stdoutに
+  加えてstderrにもrunTokenが含まれないことを検査するよう更新した
+  （詳細は下記「第6回レビュー対応状況」参照）
+- 結果: `npm run test --workspace=@stockhome/api`で**全68件が成功**（失敗0件、
+  `priceReparse.test.ts`47件＋`bridge.reparse.test.ts`5件＋
+  `stockCalc.accumulation.test.ts`16件）。Codexが自環境（ローカルDB接続あり）で
+  実行し全件成功を報告し、Claudeが対話セッションでローカル開発用Postgres
+  （`localhost:5434`）に対して独立に再実行し同じ結果（68件成功）を確認した
+- **proxy（Nginx）log formatについての補足（第6回レビューR6-03）**: StockHomeの
+  Nginx設定はこのrepository外（VPS側の別管理）にあり、本notice作成時点で
+  Claudeから実際の設定ファイルを直接確認する手段が無い。一般的な事実として、
+  Nginxの既定`combined`log formatは`$request`（method・path・protocol）・
+  `$status`・`$body_bytes_sent`・`$http_referer`・`$http_user_agent`のみを
+  記録し、`X-Reparse-Run-Token`のような任意のrequest headerを含めるには
+  明示的な`log_format`変更が必要である。したがって、StockHomeのproxy設定が
+  既定から意図的に変更されていない限り、header化されたrunTokenがaccess logへ
+  残ることは無いと考えられる。**この一般的事実の記載に留まり、VPS上の実際の
+  Nginx設定を直接確認したものではない。** 実際の設定確認はVPS管理側のレビューで
+  行っていただく必要がある
 - **fresh隔離DBでのmigration apply/rollback rehearsal**（第3回レビューB05/B08、
   第4回レビューR4-04、第5回レビューR5-02対応）: 上記「Data・migration・backup」節参照。
   使い捨てDBで「baseline→全10 migration適用」「本機能4 migrationの全rollback
   （baseline相当への正確な復元を確認）」「rollback後の再適用（round-trip）」を確認した
+  （第6回はmigration変更が無いため追加rehearsalは実施していない）
 - 未実施テストと理由: 実Gmail接続を伴う結合test、production環境でのcanaryは、
   本notice`accepted`後、app owner立ち会いのdry-run実行時に初めて実施する
   （dry-run自体もproduction承認が必要。上記参照）
@@ -370,11 +421,11 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 
 - [x] production baselineとrelease全commit・build入力差分を確認した（B01反映、baseline訂正済み）
 - [ ] source commitとnoticeをremoteの対象branchへpushした（第3回対応`1c1b2ba`・`fb12ce1`、
-      第4回対応`9b84b1f`・`60bb6cc`はorigin/mainへpush済み。第5回対応`21676c3`は
-      local commit済み、push未実施）
-- [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回〜第5回
-      レビューがmock再現・実DBへのprobeで確認した計25件の問題を含むregression test 42件を
-      含む全63件をローカルDBで実行し全件成功を確認済み）
+      第4回対応`9b84b1f`・`60bb6cc`、第5回対応`21676c3`・`2c32da9`はorigin/mainへpush済み。
+      第6回対応は本notice末尾のcommit記録欄参照、push未実施）
+- [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回〜第6回
+      レビューがmock再現・実DBへのprobeで確認した計29件の問題を含むregression test 47件を
+      含む全68件をローカルDBで実行し全件成功を確認済み）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（上記Deploy・rollback参照）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した
       （ログをchunk単位の`BATCH_STEP`へ変更し、row内容を含まないことを確認済み。
@@ -482,10 +533,29 @@ schema/migration部分はClaudeが直接）対応済み。R5-01の修正回帰te
 ことをCodexとClaudeの双方で独立に確認した。加えて、fresh隔離DBでの全10 migration適用・
 本機能4 migration全体のrollback rehearsal（round-trip含む）も実施した。
 
+## 第6回レビュー対応状況（2026-09-08、task `20260907-008`で対応完了）
+
+VPS管理レビュー正本§13.3〜§13.4が確認した4件の問題と対応。
+
+| # | レビュー指摘 | 対応方針 |
+|---|---|---|
+| 1 | S006-R6-01（最重要）: 固定manifest（`price_reparse_targets`）が進捗計算にしか使われておらず、`getReparseTargets`は引き続き動的な`priceSource`/`detectedPrice`のNULL条件を直接検索していた。`processReparseResults`にもmanifestメンバーシップの確認が無かった。run開始後に外部要因で価格確定した対象がGETから消えて完了させられない一方、manifestに属さない候補がhousehold/owner/cutoff一致だけでGET/POST対象になり得た | `getReparseTargets`を、固定manifestのうちmode='write'監査がまだ無いものだけを返す実装へ全面書き換え。`computeOutcome`へmanifestメンバーシップ確認を追加し、非メンバーは`conflict`・`candidate_not_in_manifest`として拒否。外部経路で価格確定したmanifest対象は引き続きGETで取得でき、writeすると既存の`already_has_price`判定で監査付きの`conflict`として確定し、進捗が`complete: true`へ到達することを回帰testで確認した |
+| 2 | S006-R6-02: `GET /reparse-progress`は期限切れ後も参照できるが、対象取得・POSTは期限切れ後に404になるだけで、同じmanifest・監査履歴を維持したまま再開する運用経路が無かった | 新規`extendReparseRun`関数を追加。同一householdに他の有効runが無いことをSERIALIZABLE transaction内で確認してから期限を延長し、`revokedAt`もクリアする。期限切れ→進捗確認→延長→再開→完了までを1つの結合testで確認した |
+| 3 | S006-R6-03: runToken非混入testが子processのstdoutしか検査しておらず、stderrへの非混入を確認していなかった。proxy（Nginx）のlog format確認記録もnoticeに無かった | 既存2件のproduction相当ログtestを、stdoutに加えてstderrにもrunTokenが含まれないことを検査するよう更新した。proxy log formatについては、Nginxの既定`combined`形式がrequest headerを記録しないという一般的事実を記載した（詳細・限界は上記「Health・テスト」節参照。VPS上の実際の設定確認はVPS管理側に委ねる） |
+| 4 | S006-R6-04: noticeのremote・review状態が実際と一致しなかった | 本改訂で、本notice末尾のcommit記録欄を含め、実際の`git rev-parse HEAD`の値へ更新した（下記参照） |
+
+上記4件のうち3件（R6-01・R6-02・R6-03はtask `20260907-008`、R6-04はClaudeが直接）
+対応済み。manifest非所属拒否・外部価格確定後のGET継続と完了確定・期限切れ時の
+参照/操作境界・期限延長後の再開の新規test5件（`priceReparse.test.ts`）を追加し、
+既存2件を更新した。既存分と合わせて`npm run test --workspace=@stockhome/api`で
+全68件が成功したことをCodexとClaudeの双方で独立に確認した。今回はmigration変更が
+無いため、追加のfresh隔離DB rehearsalは実施していない。
+
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: task `20260907-007`完了・commit `21676c3`（push未実施。push後に案内可能）
+- ユーザーへの案内: task `20260907-008`完了・commit（push未実施。本notice末尾の
+  commit記録欄参照。push後に案内可能）
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md`
 
@@ -494,7 +564,7 @@ schema/migration部分はClaudeが直接）対応済み。R5-01の修正回帰te
 
 次に、VPS管理チャットへ以下を送ってください。
 「stockhomeの変更通知書 C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md を確認し、
-第5回レビュー§12.3〜§12.4への対応状況を確認のうえ、再レビューをしてください。
+第6回レビュー§13.3〜§13.4への対応状況を確認のうえ、再レビューをしてください。
 production反映は別承認として扱ってください。」
 ```
 
@@ -614,12 +684,38 @@ production反映は別承認として扱ってください。」
 - `apps/api/prisma/`・`ops/`はtask対象外として変更なし（Claudeが別途対応。
   4番目のmigration追加とfresh隔離DBでの全rollback rehearsalはClaudeが
   本task実行前に完了済み）
-- commit: `21676c3`（origin/mainへpush前）
+- commit: `21676c3`・`2c32da9`（origin/mainへpush済み。第6回レビューで問題4件検出）
+
+## Codex実装結果（task 20260907-008、第6回対応）
+
+- 実装ファイル: `apps/api/src/services/priceReparse.ts`（`computeOutcome`へ
+  manifestメンバーシップ確認を追加、`getReparseTargets`を固定manifest正本の
+  実装へ全面書き換え、新規`extendReparseRun`関数を追加）、
+  `apps/api/src/services/priceReparse.test.ts`（新規5件を追加し47件。既存2件も
+  manifest対応・拒否確認を追加する形で更新）、`apps/api/src/routes/bridge.reparse.test.ts`
+  （既存2件のproduction相当ログtestをstdout・stderr双方検査へ更新）
+- 第6回レビューが確認した4件の問題のうち3件（上記「第6回レビュー対応状況」表の
+  R6-01・R6-02・R6-03、R6-04はClaudeが別途対応）はすべて修正済み。対応する
+  regression testを追加し、全件成功を確認した
+- Codex自環境（ローカルDB接続あり）で`npm run test --workspace=@stockhome/api`を実行し
+  68件成功（失敗0件）を報告。中間実行でcutoff対象外fixtureのmanifest登録・DB時刻精度に
+  依存するfixture不安定性を自己検出し修正した上での最終実行結果。Claudeが対話セッションで
+  ローカル開発用Postgres（Docker、`localhost:5434`）に対し独立に再実行し、
+  同じ68件成功を確認した
+- ビルド3コマンド（shared / api / mobile tsc）もCodex・Claude双方の実行で成功
+- コードレビュー: `computeOutcome`がmanifest非メンバーを`candidate_not_in_manifest`で
+  拒否すること、`getReparseTargets`が`import_order_candidates`の動的なNULL条件を
+  使わず固定manifestを正本にしていること、`extendReparseRun`が対象run以外の
+  有効runを確認してから延長すること、`apps/api/src/routes/bridge.ts`に変更が
+  無いこと（新規HTTP routeを追加しない指示どおり）を確認した
+- `apps/api/prisma/`・`ops/`はtask対象外として変更なし（今回はmigration変更が
+  無いため、Claude側の追加対応も無し）
+- commit: 本notice末尾のcommit記録欄を参照（このセクション記入時点で未commit）
 
 ## Approval
 
 - app owner: 未実施（B08の実装経路選択のみ2026-09-07に決定済み。dry-run結果への承認は未実施）
-- VPS management review: 未実施（第5回`blocked`。本notice改訂・commit push後に
+- VPS management review: 未実施（第6回`blocked`。本notice改訂・commit push後に
   再レビュー依頼可能な状態）
 - production approval: 未実施
 - related task_id: 20260907-002（第1回API実装、`success`・commit `02816ee`。
@@ -632,6 +728,8 @@ production反映は別承認として扱ってください。」
   20260907-006（第4回レビュー対応、`success`・commit `9b84b1f`・`60bb6cc`。
   ローカルDB test 57件全成功、fresh隔離DBでの全migration・全rollback rehearsal実施済み。
   第5回レビューで問題6件検出）、
-  20260907-007（第5回レビュー対応、`success`・commit `21676c3`。
+  20260907-007（第5回レビュー対応、`success`・commit `21676c3`・`2c32da9`。
   ローカルDB test 63件全成功、fresh隔離DBでの全10 migration・4 migration全rollback
-  rehearsal実施済み）
+  rehearsal実施済み。第6回レビューで問題4件検出）、
+  20260907-008（第6回レビュー対応、`success`。ローカルDB test 68件全成功。
+  commitは本notice末尾を参照）

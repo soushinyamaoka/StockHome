@@ -1,11 +1,12 @@
-# GAS側: 過去候補の単価再解析バッチ 設計メモ（第5回VPS管理レビュー反映版）
+# GAS側: 過去候補の単価再解析バッチ 設計メモ（第6回VPS管理レビュー反映版）
 
 notice: `20260907-STOCKHOME-006`のB08対応。GAS側の実装は今回のセッションでは行わず、
 app ownerが別途手動でCodexセッションを`C:\work\PRG\ZZ_Other\GAS\StockHome`にて起動し、
 本メモを指示書として実装する想定。API側（対応するGET/POST）はtask `20260907-002`
 （第1回実装）・`20260907-004`（第2回レビュー対応）・`20260907-005`（第3回レビュー対応）・
-`20260907-006`（第4回レビュー対応）・`20260907-007`（第5回レビュー対応）として通常の
-StockHome-ClaudeToCodexパイプラインで実装済み（別ファイル参照）。
+`20260907-006`（第4回レビュー対応）・`20260907-007`（第5回レビュー対応）・
+`20260907-008`（第6回レビュー対応）として通常のStockHome-ClaudeToCodexパイプラインで
+実装済み（別ファイル参照）。
 
 **2026-09-07 第2回VPS管理レビューを受けて全面改訂**: API側の認可方式が
 自己申告emailから事前発行済み`runToken`へ変更されたため、本メモの該当箇所を
@@ -39,6 +40,24 @@ GASのlocal state（cursor）を失った場合や、runが期限切れした後
 確認できるよう、新規`GET /api/bridge/reparse-progress`（`X-Reparse-Run-Token`
 header必須。GET/POSTと同じ認可方式）が追加された。GAS側の呼び出し手順自体に
 変更はないが、運用者が手動でこのendpointを叩いて進捗確認・reconcileに使える。
+
+**2026-09-08 第6回VPS管理レビューを受けて再改訂**: `price_reparse_targets`
+manifestが、進捗計算だけでなくGET/POST双方の正本になった。GAS側の呼び出し方
+（GETでcursor/limitを渡す、POSTでcandidateId・結果を渡す）自体は変わらないが、
+以下の点を運用者向けに明記する。
+- GETは、run作成時点で対象だった候補のうち、まだ処理が完了していないものだけを
+  返す。run作成後に候補が別経路（通常のGmail確定フロー等）で価格確定した場合も、
+  そのGET結果には引き続き含まれる（以前は動的条件で除外されGASから見えなく
+  なっていたが、これも修正された）。GAS側がその候補を再取得できず`skipReason`を
+  返せない場合でも、価格を検出できなかった扱いとしてそのままPOSTすれば、API側が
+  `already_has_price`として監査付きで処理済みに確定してくれる
+- run作成後に新規追加された候補（cutoff以降の取込）はmanifestに含まれないため、
+  GETに出てこない。誤って別経路でcandidateIdを送っても`candidate_not_in_manifest`
+  として拒否され、data・監査とも変更されない
+- 運用者は、期限切れ・失効したrunを`extendReparseRun`関数（HTTP非公開、直接実行）で
+  延長できる。延長すると同じmanifest・既存の監査履歴を維持したまま、同じrunTokenで
+  GET/POSTを再開できる（新しいrunを発行する必要はなく、対象集合の取り直しも
+  発生しない）。ただし同一household向けに他の有効runが既にある場合は延長できない
 
 ## 対象repository・実装担当
 
@@ -145,11 +164,14 @@ Session情報（`Session.getActiveUser().getEmail()`）は使わない。
 
 ## 安全設計のポイント（B04対応、第3回レビューでhousehold/cutoff/価格判定の一貫性を追加強化）
 
-- **cursorは最適化であって正しさの前提ではない**: APIの対象抽出条件は常に
-  `price_source IS NULL AND detected_price IS NULL`であり、GAS側のcursorがずれていても、
-  既に埋まった候補はAPI側で自然にスキップされる（`updateMany`のWHERE句が
-  両方のNULL条件を再確認する）。つまり「cursorを失っても実害はない、単に一部を
-  重複チェックするだけ」という設計にする。
+- **cursorは最適化であって正しさの前提ではない**: APIのGET対象抽出条件は、
+  run作成時点で固定したmanifest（`price_reparse_targets`）のうち、まだ
+  mode='write'監査が付いていない候補である（第6回レビューR6-01対応。以前は
+  動的な`price_source IS NULL AND detected_price IS NULL`条件だけに依存していた）。
+  GAS側のcursorがずれていても、既に監査済みの候補はGETに出てこないため
+  自然にスキップされ、POST側もWHERE句でcandidateの現在値を再確認する。
+  つまり「cursorを失っても実害はない、単に一部を重複チェックするだけ」という
+  設計は変わらない。
 - **household・cutoff境界はAPI側が強制する**: GAS側が誤ったrunTokenを使った場合でも、
   API側がcandidate/purchase/matched itemのhouseholdをrunと照合し、不一致は
   conflictとして拒否する。cutoff（run発行時刻）より後に作成された候補も同様に

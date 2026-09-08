@@ -85,6 +85,16 @@
 #     server.tsからHTTPエラーハンドリングをhttpErrorHandling.tsへ抽出しproduction相当の
 #     logger/error handlerを使うHTTPレベルtestを追加して対応した。production未反映
 #     （HISTORICAL_REPARSE_ENABLEDは引き続き未設定のためdeployされても機能上は無効のまま）。
+#   2026-09-08 (task_id: 20260907-008): 第6回レビューが、第5回で追加したprice_reparse_targets
+#     manifestが進捗計算にしか使われておらず対象取得(GET)・書き込み認可(POST)の正本になって
+#     いない・期限切れ後にmanifest/監査を維持したまま再開する経路が無い・runToken非混入testが
+#     stderrを検証していない、の3件（+notice文書不整合1件）を検出。getReparseTargetsを
+#     manifest正本（mode='write'監査が無い候補のみ返す）へ全面書き換え、computeOutcomeへ
+#     manifestメンバーシップ確認を追加（非メンバーはcandidate_not_in_manifestとしてdata不変の
+#     conflict）、新設extendReparseRunで期限切れ・失効runを同一manifest・監査履歴のまま
+#     再開可能にし、production相当ログtestをstdout・stderr両方の検査へ拡張して対応した。
+#     production未反映（HISTORICAL_REPARSE_ENABLEDは引き続き未設定のためdeployされても
+#     機能上は無効のまま）。
 
 schema_version: 1
 app: stockhome
@@ -232,9 +242,16 @@ data:
         失効判定をしないfindRunByTokenを使うため、GAS側のcursor等local stateが
         失われた場合や、runが期限切れ・失効した後でも、この関数（および
         `GET /api/bridge/reparse-progress`route）だけで進捗をDBから復元できる。
+        期限切れ・失効したrunは、extendReparseRun関数（第6回レビューR6-02対応）で
+        同一household向けの他の有効runが無いことを確認したうえでexpires_atを延長し
+        revoked_atをクリアすることで、同じmanifest・監査履歴を維持したまま再開できる
+        （HTTP非公開、createReparseRunと同じくSERIALIZABLE transaction・P2034
+        リトライを使う）。
       update_paths: >-
-        手動発行のみ（HTTP経由の作成route無し）。revoked_atの設定も手動想定。
-        cutoff_atはcreateReparseRun実行時に自動設定され、以後変更しない。
+        手動発行のみ（HTTP経由の作成route無し）。revoked_atの設定も手動想定
+        （extendReparseRunによるクリアを除く）。cutoff_atはcreateReparseRun実行時に
+        自動設定され、以後変更しない。expires_atはcreateReparseRun実行時に自動設定され、
+        extendReparseRunでのみ更新される。
       failure_consistency: >-
         該当なし（認可専用、業務データではない）。ただしcreateReparseRunの
         SERIALIZABLE transactionはrun作成とprice_reparse_targetsへの書き込みを
@@ -246,10 +263,18 @@ data:
         production未反映）。createReparseRun実行時点で対象となる候補ID一覧を
         固定するmanifest（第5回レビューR5-02対応）。run作成後に他経路
         （通常のGmail確定フロー等）で候補の価格が確定しても、このmanifestの
-        内容は不変であり、getReparseRunProgressの分母（totalTargets）として使う。
-        動的な「price_source IS NULL」等の条件だけに依存すると、run作成後の
-        外部要因で対象集合が変化し、未処理でも進捗が「完了」と誤判定され得る
-        問題（実DBへのprobeで確認済み）を防ぐ。
+        内容は不変である。**第6回レビューR6-02対応（task 20260907-008）で、
+        本テーブルはgetReparseRunProgressの分母（totalTargets）だけでなく、
+        GET /reparse-candidates（getReparseTargets）とPOST /reparse-candidates
+        （computeOutcome）双方の正本になった。** GETはこのmanifestのうち
+        mode='write'監査がまだ無い候補だけを返し、POSTは受信candidateIdが
+        このmanifestのメンバーでなければ（household/owner/cutoffが一致していても）
+        candidate_not_in_manifestとして拒否しdata・auditとも不変のconflictにする。
+        以前（第5回まで）はGETが動的な「price_source IS NULL」等の条件だけに依存し、
+        POSTにはメンバーシップ確認が無かったため、(a) run開始後に外部要因で価格確定
+        した対象がGETから消えて完了させられない、(b) manifestに属さない候補が
+        household/owner/cutoff一致だけでGET/POST対象になり得る、という2つの問題が
+        実DBへのprobeで確認された。
       update_paths: >-
         createReparseRunのSERIALIZABLE transaction内でのみ作成する（run作成と
         同一transaction。対象候補が0件の場合は何も作成しない）。以後の更新・削除は
@@ -452,17 +477,19 @@ known_gaps:
     notice 20260907-STOCKHOME-006（過去候補の単価再解析）はproduction未反映。
     HISTORICAL_REPARSE_ENABLED未設定のため、新設したGET/POST /api/bridge/reparse-candidates・
     GET /api/bridge/reparse-progressはdeployされても404を返すのみで機能上は無効。
-    VPS管理側の第2回レビュー（mock再現、7件）・第3回〜第5回レビュー（実DBへのprobe、
-    各6件）で検出された問題はいずれもtask 20260907-004〜007とClaudeの直接対応
+    VPS管理側の第2回レビュー（mock再現、7件）・第3回〜第6回レビュー（実DBへのprobe、
+    各6〜4件）で検出された問題はいずれもtask 20260907-004〜008とClaudeの直接対応
     （migration・schema）で修正済み（household/cutoff境界を全outcome経路で強制、
     matched itemのhousehold不一致検知をcandidate更新前へ移動、run/item単位の価格判定
     snapshot、監査の冪等化とinfrastructure障害/業務判断の区別、runTokenのheader化、
-    price_reparse_targets manifestによるrun対象固定と期限切れ後も動作するDBだけの
-    進捗復元、createReparseRunのSERIALIZABLE transaction化によるsingle active run制約、
-    item snapshot作成のP2002以外再throw、httpErrorHandling.ts抽出によるproduction相当
-    ログ経路のtest化、本機能4 migration全体の明示的transaction化とfresh隔離DBでの
-    全rollback rehearsal）。第5回レビューへの再提出・再レビュー待ち。GAS側バッチは
-    未実装（設計メモのみ ops/investigations/20260907-historical-price-reparse-gas-design.md）。
+    price_reparse_targets manifestをGET/POST双方の正本にする全面書き換えと
+    期限切れ後も動作するDBだけの進捗復元、createReparseRunのSERIALIZABLE
+    transaction化によるsingle active run制約、item snapshot作成のP2002以外再throw、
+    httpErrorHandling.ts抽出によるproduction相当ログ経路のtest化（stdout/stderr両方）、
+    期限切れ・失効run向けのextendReparseRunによる同一manifest/監査履歴での再開、
+    本機能4 migration全体の明示的transaction化とfresh隔離DBでの全rollback rehearsal）。
+    第6回レビューへの再提出・再レビュー待ち。GAS側バッチは未実装
+    （設計メモのみ ops/investigations/20260907-historical-price-reparse-gas-design.md）。
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
