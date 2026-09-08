@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 21676c31d4da9b7f342b82dedd098c563d6a39a1
+source_commit: e2a38574fa4f3d27a30e5b3480d408ebcb1fa73b
 
 production_baseline_commit: 9f5fa864327e5d16b263250ce9e0348966b37f4f
 
@@ -21,7 +21,9 @@ release_commits: `9f5fa86`（baseline）→ `02816ee`（task `20260907-002`、�
 GAS側実装は含まない）→ `1c1b2ba`（task `20260907-005`、第3回レビュー対応。
 GAS側実装は含まない）→ `fb12ce1`（notice更新）→ `9b84b1f`（task `20260907-006`、
 第4回レビュー対応。GAS側実装は含まない）→ `60bb6cc`（notice更新）→
-`21676c3`（task `20260907-007`、第5回レビュー対応。GAS側実装は含まない）
+`21676c3`（task `20260907-007`、第5回レビュー対応。GAS側実装は含まない）→
+`2c32da9`（notice更新）→ `e2a3857`（task `20260907-008`、第6回レビュー対応。
+GAS側実装は含まない）
 
 impact_level: L3
 
@@ -422,7 +424,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 - [x] production baselineとrelease全commit・build入力差分を確認した（B01反映、baseline訂正済み）
 - [ ] source commitとnoticeをremoteの対象branchへpushした（第3回対応`1c1b2ba`・`fb12ce1`、
       第4回対応`9b84b1f`・`60bb6cc`、第5回対応`21676c3`・`2c32da9`はorigin/mainへpush済み。
-      第6回対応は本notice末尾のcommit記録欄参照、push未実施）
+      第6回対応`e2a3857`はlocal commit済み、push未実施）
 - [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回〜第6回
       レビューがmock再現・実DBへのprobeで確認した計29件の問題を含むregression test 47件を
       含む全68件をローカルDBで実行し全件成功を確認済み）
@@ -554,8 +556,7 @@ VPS管理レビュー正本§13.3〜§13.4が確認した4件の問題と対応�
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: task `20260907-008`完了・commit（push未実施。本notice末尾の
-  commit記録欄参照。push後に案内可能）
+- ユーザーへの案内: task `20260907-008`完了・commit `e2a3857`（push未実施。push後に案内可能）
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md`
 
@@ -710,7 +711,7 @@ production反映は別承認として扱ってください。」
   無いこと（新規HTTP routeを追加しない指示どおり）を確認した
 - `apps/api/prisma/`・`ops/`はtask対象外として変更なし（今回はmigration変更が
   無いため、Claude側の追加対応も無し）
-- commit: 本notice末尾のcommit記録欄を参照（このセクション記入時点で未commit）
+- commit: `e2a3857`（origin/mainへpush前）
 
 ## Approval
 
@@ -731,5 +732,5 @@ production反映は別承認として扱ってください。」
   20260907-007（第5回レビュー対応、`success`・commit `21676c3`・`2c32da9`。
   ローカルDB test 63件全成功、fresh隔離DBでの全10 migration・4 migration全rollback
   rehearsal実施済み。第6回レビューで問題4件検出）、
-  20260907-008（第6回レビュー対応、`success`。ローカルDB test 68件全成功。
-  commitは本notice末尾を参照）
+  20260907-008（第6回レビュー対応、`success`・commit `e2a3857`。
+  ローカルDB test 68件全成功）
