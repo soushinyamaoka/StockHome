@@ -120,6 +120,25 @@ notice文書のremote状態不一致（S006-R6-04）が内容。task `20260907-0
 testが成功したことをCodex・Claudeの双方で確認した。詳細は下記
 「第6回レビュー対応状況」参照。
 
+**2026-09-08 第7回レビュー（`blocked`）への対応完了**: VPS管理側は第6回の改善
+（manifest正本化・外部価格確定後のreconcile・期限切れ後の再開・stdout/stderr
+非混入）を確認し、VPS1のNginx設定もread-onlyで直接確認したうえで、
+StockHomeが共通access logの既定形式を使いrunToken用headerを記録する独自設定が
+ないことを確認した。一方、**最重要**として、`extendReparseRun`が期限切れと
+失効（revoke）を区別せず、失効済みrunを同じrunTokenのまま再有効化できる欠陥
+（S006-R7-01）を継続指摘した。token漏えい・誤配布・緊急停止時の無効化を、
+延長操作自体で覆せてしまうというセキュリティ上の欠陥である。加えて、
+manifest非所属candidateの拒否時に監査行を作成してしまい、第6回レビュー§13.3が
+指定した「data/audit不変で拒否する」設計と一致していなかった（S006-R7-02。
+これは第6回の設計段階でClaudeがレビュー原文の指定を見落としたことが原因）。
+notice文書のremote状態不一致（S006-R7-03）も指摘された。task `20260907-009`
+（R7-01・R7-02）で修正し、`extendReparseRun`は失効済みrunを拒否するよう変更、
+新規`rotateReparseRunToken`関数で失効済みrunだけを新しいtokenへ安全に移行
+できるようにした（旧tokenは以後永久に無効）。`applyOne`もmanifest非所属
+candidateの経路で監査を一切書かないよう修正した。回帰test5件を新設し、
+既存3件を更新した全73件のローカルDB testが成功したことをCodex・Claudeの
+双方で確認した。詳細は下記「第7回レビュー対応状況」参照。
+
 ## 変更理由
 
 - 過去分の単価が空欄のままでは、購入履歴の価格推移（既存機能）や将来の家計把握に使えない。
@@ -146,7 +165,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 | API | 該当エンドポイントなし | `GET /api/bridge/reparse-candidates`・`POST /api/bridge/reparse-candidates`・`GET /api/bridge/reparse-progress`（第5回レビューR5-02対応で追加）を新設（`HISTORICAL_REPARSE_ENABLED=true`のときのみ有効。未設定時は404）。認可は事前発行済み`runToken`（第2回レビューB03対応、下記参照）で行い、自己申告emailは受け付けない。`runToken`はquery string/bodyではなく専用header（`X-Reparse-Run-Token`）で受け渡す（第3回レビューB03対応） |
 | GAS | 該当機能なし | **未実装**（B08参照。設計メモのみ`ops/investigations/20260907-historical-price-reparse-gas-design.md`に作成済み） |
 | `price_reparse_audit`テーブル | 存在しない | 新設（production row変更前後値の監査ログ。Git管理外）。`mode`列と`(run_id, candidate_id, mode)`の一意制約を追加し、write再送の冪等・dry-run再実行の重複防止に使う（第3回レビューB02/B04対応） |
-| `price_reparse_runs`テーブル | 存在しない | 新設（第2回レビューB03対応。runToken・対象owner・有効期限を保持する認可テーブル。HTTP経由では作成せず、production承認後に運用者が直接1件だけ発行する）。`cutoff_at`列を追加し、run作成後に新規追加された候補を対象から除外する（第3回レビューB02/B04対応）。期限切れ・失効したrunを同じmanifest・監査履歴を維持したまま再開する`extendReparseRun`関数を追加（第6回レビューR6-02対応。`createReparseRun`と同じくHTTP非公開） |
+| `price_reparse_runs`テーブル | 存在しない | 新設（第2回レビューB03対応。runToken・対象owner・有効期限を保持する認可テーブル。HTTP経由では作成せず、production承認後に運用者が直接1件だけ発行する）。`cutoff_at`列を追加し、run作成後に新規追加された候補を対象から除外する（第3回レビューB02/B04対応）。期限切れ（未失効）のrunだけを同じrunToken・manifest・監査履歴を維持したまま再開する`extendReparseRun`関数（第6回レビューR6-02対応。第7回レビューR7-01対応で`revokedAt`設定済みrunは拒否するよう修正）と、失効済みrunだけを新しいrunTokenへ安全に移行する`rotateReparseRunToken`関数（第7回レビューR7-01対応。旧tokenは以後永久に無効）を追加（いずれも`createReparseRun`と同じくHTTP非公開） |
 | `price_reparse_item_snapshots`テーブル | 存在しない | 新設（第3回レビューB02/B06対応。run内で品目ごとに参照単価を1回だけ計算・固定し、dry-run/write・chunk分割・処理順序によらず同じ判定になるようにする） |
 | `price_reparse_targets`テーブル | 存在しない | 新設（第5回レビューR5-02対応。`createReparseRun`実行時点の対象候補IDを固定するmanifest。run作成後に対象集合が動的に変化しないようにし、`getReparseRunProgress`の分母として使う） |
 
@@ -392,9 +411,33 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
   記録し、`X-Reparse-Run-Token`のような任意のrequest headerを含めるには
   明示的な`log_format`変更が必要である。したがって、StockHomeのproxy設定が
   既定から意図的に変更されていない限り、header化されたrunTokenがaccess logへ
-  残ることは無いと考えられる。**この一般的事実の記載に留まり、VPS上の実際の
-  Nginx設定を直接確認したものではない。** 実際の設定確認はVPS管理側のレビューで
-  行っていただく必要がある
+  残ることは無いと考えられる。**この一般的事実の記載はClaudeによるものだが、
+  第7回レビューでVPS管理側がVPS上の実際のNginx設定をread-onlyで直接確認し、
+  StockHomeが共通access logの既定形式を使い、runToken用headerを記録する独自の
+  `log_format`・`access_log`上書きが無いことを確認した。** production設定の
+  変更は行われていない
+- **第7回レビュー対応（task `20260907-009`）で追加・更新したtest**:
+  `extendReparseRun`が失効済み（`revokedAt`設定済み）runを、期限切れ・未期限切れの
+  どちらでも拒否すること、新規`rotateReparseRunToken`が失効済みrunだけに新しい
+  runTokenを発行し同じrun ID・manifest・既存監査（延長前のdry-run結果を含む）を
+  維持したまま処理を再開して完了できること、rotate後は旧runTokenが
+  `getReparseTargets`・`processReparseResults`・`getReparseRunProgress`の
+  いずれからも永久に`ReparseRunInvalidError`となること、失効していないrunや
+  他に有効runが存在する場合に`rotateReparseRunToken`が拒否されることの計5件を
+  新設した。既存の`extendReparseRun`関連test3件も、失効境界の検証と混同しないよう
+  `revokedAt`を設定しない形へ修正した。`priceReparse.test.ts`は47件から52件になった
+- **manifest外candidateの監査仕様を訂正（第7回レビューR7-02対応）**: 第6回時点の
+  実装は`candidate_not_in_manifest`のwrite監査を作成していたが、これは第6回
+  レビュー§13.3が指定した「POSTはmanifest非所属candidateをdata/audit不変で
+  拒否する」という設計と一致していなかった（Claudeが第6回の設計時に見落とした）。
+  `applyOne`を修正し、`candidate_not_in_manifest`の経路ではdry_run/write
+  どちらのmodeでも監査を一切書かないようにした。該当testのアサーションも、
+  監査1件作成の確認から監査0件のままであることの確認へ修正した
+- 結果: `npm run test --workspace=@stockhome/api`で**全73件が成功**（失敗0件、
+  `priceReparse.test.ts`52件＋`bridge.reparse.test.ts`5件＋
+  `stockCalc.accumulation.test.ts`16件）。Codexが自環境（ローカルDB接続あり）で
+  実行し全件成功を報告し、Claudeが対話セッションでローカル開発用Postgres
+  （`localhost:5434`）に対して独立に再実行し同じ結果（73件成功）を確認した
 - **fresh隔離DBでのmigration apply/rollback rehearsal**（第3回レビューB05/B08、
   第4回レビューR4-04、第5回レビューR5-02対応）: 上記「Data・migration・backup」節参照。
   使い捨てDBで「baseline→全10 migration適用」「本機能4 migrationの全rollback
@@ -423,11 +466,12 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 
 - [x] production baselineとrelease全commit・build入力差分を確認した（B01反映、baseline訂正済み）
 - [ ] source commitとnoticeをremoteの対象branchへpushした（第3回対応`1c1b2ba`・`fb12ce1`、
-      第4回対応`9b84b1f`・`60bb6cc`、第5回対応`21676c3`・`2c32da9`はorigin/mainへpush済み。
-      第6回対応`e2a3857`はlocal commit済み、push未実施）
-- [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回〜第6回
-      レビューがmock再現・実DBへのprobeで確認した計29件の問題を含むregression test 47件を
-      含む全68件をローカルDBで実行し全件成功を確認済み）
+      第4回対応`9b84b1f`・`60bb6cc`、第5回対応`21676c3`・`2c32da9`、第6回対応`e2a3857`・
+      `bf7ee66`はorigin/mainへpush済み。第7回対応は本notice末尾のcommit記録欄参照、
+      push未実施）
+- [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回〜第7回
+      レビューがmock再現・実DBへのprobeで確認した計32件の問題を含むregression test 52件を
+      含む全73件をローカルDBで実行し全件成功を確認済み）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（上記Deploy・rollback参照）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した
       （ログをchunk単位の`BATCH_STEP`へ変更し、row内容を含まないことを確認済み。
@@ -553,10 +597,28 @@ VPS管理レビュー正本§13.3〜§13.4が確認した4件の問題と対応�
 全68件が成功したことをCodexとClaudeの双方で独立に確認した。今回はmigration変更が
 無いため、追加のfresh隔離DB rehearsalは実施していない。
 
+## 第7回レビュー対応状況（2026-09-08、task `20260907-009`で対応完了）
+
+VPS管理レビュー正本§14.3〜§14.4が確認した3件の問題と対応。
+
+| # | レビュー指摘 | 対応方針 |
+|---|---|---|
+| 1 | S006-R7-01（最重要）: `extendReparseRun`が期限切れと失効（revoke）を区別せず、失効済みrunを同じrunTokenのまま再有効化できていた。token漏えい・誤配布・緊急停止時の無効化を、延長操作自体で覆せてしまうセキュリティ上の欠陥 | `extendReparseRun`は`revokedAt`設定済みのrunを拒否するよう修正。失効済みrunを再開する専用の新規`rotateReparseRunToken`関数を追加し、暗号学的乱数で生成した新しいrunTokenへDB行を更新する（旧tokenは以後DB上に存在しなくなり永久に無効）。同一householdに他の有効runが存在する場合や、失効していないrunに対して呼ばれた場合はどちらも拒否する |
+| 2 | S006-R7-02: manifest外candidateの拒否時に`candidate_not_in_manifest`のwrite監査を作成しており、第6回レビュー§13.3が指定した「data/audit不変で拒否する」設計と一致していなかった | `applyOne`を修正し、`candidate_not_in_manifest`の経路ではdry_run/writeどちらのmodeでも監査を一切書かないようにした（candidate・purchase・監査のすべてが完全に不変のまま拒否される） |
+| 3 | S006-R7-03: noticeのremote・review状態が実際と一致しなかった | 本改訂で、本notice末尾のcommit記録欄を含め、実際の`git rev-parse HEAD`の値へ更新した（下記参照）。VPS管理側がVPS上の実際のNginx設定を確認済みであることも上記「Health・テスト」節へ追記した |
+
+上記3件のうち2件（R7-01・R7-02はtask `20260907-009`、R7-03はClaudeが直接）
+対応済み。失効境界・token rotation・旧token永久無効化・未失効run拒否・他active
+run存在時拒否の新規test5件（`priceReparse.test.ts`）を追加し、既存3件を更新した。
+既存分と合わせて`npm run test --workspace=@stockhome/api`で全73件が成功した
+ことをCodexとClaudeの双方で独立に確認した。今回はmigration変更が無いため、
+追加のfresh隔離DB rehearsalは実施していない。
+
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: task `20260907-008`完了・commit `e2a3857`（push未実施。push後に案内可能）
+- ユーザーへの案内: task `20260907-009`完了・commit（push未実施。本notice末尾の
+  commit記録欄参照。push後に案内可能）
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md`
 
@@ -565,7 +627,7 @@ VPS管理レビュー正本§13.3〜§13.4が確認した4件の問題と対応�
 
 次に、VPS管理チャットへ以下を送ってください。
 「stockhomeの変更通知書 C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md を確認し、
-第6回レビュー§13.3〜§13.4への対応状況を確認のうえ、再レビューをしてください。
+第7回レビュー§14.3〜§14.4への対応状況を確認のうえ、再レビューをしてください。
 production反映は別承認として扱ってください。」
 ```
 
@@ -711,12 +773,37 @@ production反映は別承認として扱ってください。」
   無いこと（新規HTTP routeを追加しない指示どおり）を確認した
 - `apps/api/prisma/`・`ops/`はtask対象外として変更なし（今回はmigration変更が
   無いため、Claude側の追加対応も無し）
-- commit: `e2a3857`（origin/mainへpush前）
+- commit: `e2a3857`・`bf7ee66`（origin/mainへpush済み。第7回レビューで問題3件検出）
+
+## Codex実装結果（task 20260907-009、第7回対応）
+
+- 実装ファイル: `apps/api/src/services/priceReparse.ts`（`extendReparseRun`へ
+  `revokedAt`確認を追加、新規`rotateReparseRunToken`関数を追加、
+  `assertNoOtherActiveRun`ヘルパーで重複ロジックを共通化、`applyOne`を
+  `candidate_not_in_manifest`経路で監査を書かないよう修正）、
+  `apps/api/src/services/priceReparse.test.ts`（既存3件を修正、新規5件を追加し
+  47件から52件）
+- 第7回レビューが確認した3件の問題のうち2件（上記「第7回レビュー対応状況」表の
+  R7-01・R7-02、R7-03はClaudeが別途対応）はすべて修正済み。対応するregression
+  testを追加し、全件成功を確認した
+- Codex自環境（ローカルDB接続あり）で`npm run test --workspace=@stockhome/api`を実行し
+  73件成功（失敗0件）を報告。Claudeが対話セッションでローカル開発用Postgres
+  （Docker、`localhost:5434`）に対し独立に再実行し、同じ73件成功を確認した
+- ビルド3コマンド（shared / api / mobile tsc）もCodex・Claude双方の実行で成功
+- コードレビュー: `extendReparseRun`が`run.revokedAt`を確認し設定済みなら拒否する
+  こと、`rotateReparseRunToken`が失効済みrunにのみ適用され新しいrunTokenへ
+  DB行を更新すること（旧tokenが以後`findUnique`で一致しなくなること）、
+  `candidate_not_in_manifest`の経路で監査insert/upsertのどちらも呼ばれないこと、
+  `apps/api/src/routes/bridge.ts`・`bridge.reparse.test.ts`に変更が無いこと
+  （新規HTTP routeを追加しない指示どおり）を確認した
+- `apps/api/prisma/`・`ops/`はtask対象外として変更なし（今回はmigration変更が
+  無いため、Claude側の追加対応も無し）
+- commit: 本notice末尾のcommit記録欄を参照（このセクション記入時点で未commit）
 
 ## Approval
 
 - app owner: 未実施（B08の実装経路選択のみ2026-09-07に決定済み。dry-run結果への承認は未実施）
-- VPS management review: 未実施（第6回`blocked`。本notice改訂・commit push後に
+- VPS management review: 未実施（第7回`blocked`。本notice改訂・commit push後に
   再レビュー依頼可能な状態）
 - production approval: 未実施
 - related task_id: 20260907-002（第1回API実装、`success`・commit `02816ee`。
@@ -732,5 +819,7 @@ production反映は別承認として扱ってください。」
   20260907-007（第5回レビュー対応、`success`・commit `21676c3`・`2c32da9`。
   ローカルDB test 63件全成功、fresh隔離DBでの全10 migration・4 migration全rollback
   rehearsal実施済み。第6回レビューで問題4件検出）、
-  20260907-008（第6回レビュー対応、`success`・commit `e2a3857`。
-  ローカルDB test 68件全成功）
+  20260907-008（第6回レビュー対応、`success`・commit `e2a3857`・`bf7ee66`。
+  ローカルDB test 68件全成功。第7回レビューで問題3件検出）、
+  20260907-009（第7回レビュー対応、`success`。ローカルDB test 73件全成功。
+  commitは本notice末尾を参照）

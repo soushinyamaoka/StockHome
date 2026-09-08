@@ -1,12 +1,12 @@
-# GAS側: 過去候補の単価再解析バッチ 設計メモ（第6回VPS管理レビュー反映版）
+# GAS側: 過去候補の単価再解析バッチ 設計メモ（第7回VPS管理レビュー反映版）
 
 notice: `20260907-STOCKHOME-006`のB08対応。GAS側の実装は今回のセッションでは行わず、
 app ownerが別途手動でCodexセッションを`C:\work\PRG\ZZ_Other\GAS\StockHome`にて起動し、
 本メモを指示書として実装する想定。API側（対応するGET/POST）はtask `20260907-002`
 （第1回実装）・`20260907-004`（第2回レビュー対応）・`20260907-005`（第3回レビュー対応）・
 `20260907-006`（第4回レビュー対応）・`20260907-007`（第5回レビュー対応）・
-`20260907-008`（第6回レビュー対応）として通常のStockHome-ClaudeToCodexパイプラインで
-実装済み（別ファイル参照）。
+`20260907-008`（第6回レビュー対応）・`20260907-009`（第7回レビュー対応）として通常の
+StockHome-ClaudeToCodexパイプラインで実装済み（別ファイル参照）。
 
 **2026-09-07 第2回VPS管理レビューを受けて全面改訂**: API側の認可方式が
 自己申告emailから事前発行済み`runToken`へ変更されたため、本メモの該当箇所を
@@ -54,10 +54,29 @@ manifestが、進捗計算だけでなくGET/POST双方の正本になった。G
 - run作成後に新規追加された候補（cutoff以降の取込）はmanifestに含まれないため、
   GETに出てこない。誤って別経路でcandidateIdを送っても`candidate_not_in_manifest`
   として拒否され、data・監査とも変更されない
-- 運用者は、期限切れ・失効したrunを`extendReparseRun`関数（HTTP非公開、直接実行）で
-  延長できる。延長すると同じmanifest・既存の監査履歴を維持したまま、同じrunTokenで
-  GET/POSTを再開できる（新しいrunを発行する必要はなく、対象集合の取り直しも
-  発生しない）。ただし同一household向けに他の有効runが既にある場合は延長できない
+- 運用者は、**期限切れ（失効はしていない）**runを`extendReparseRun`関数
+  （HTTP非公開、直接実行）で延長できる。延長すると同じmanifest・既存の監査履歴を
+  維持したまま、**同じrunTokenで**GET/POSTを再開できる（新しいrunを発行する
+  必要はなく、対象集合の取り直しも発生しない）。ただし同一household向けに他の
+  有効runが既にある場合は延長できない。**第7回VPS管理レビューを受けた変更**として、
+  この関数は失効済み（`revokedAt`設定済み）のrunには一切適用できないよう修正された
+  （下記参照）。
+
+**2026-09-08 第7回VPS管理レビューを受けて再改訂**: `extendReparseRun`が期限切れと
+失効（revoke）を区別しておらず、失効済みrunを同じrunTokenのまま再有効化できて
+しまう欠陥が指摘・修正された。運用者向けの手順を明確に分ける。
+- **期限切れ（`revokedAt`は未設定のまま`expiresAt`だけが過去）**の場合のみ、
+  `extendReparseRun(runToken, additionalHours)`で**同じrunToken**のまま延長する。
+- **失効済み（token漏えい・誤配布に気付いた、緊急停止した等の理由で運用者が
+  意図的に`revokedAt`を設定したrun）**を再開する場合は、`extendReparseRun`ではなく
+  **`rotateReparseRunToken(oldRunToken, expiresInHours)`**を使う。この関数は
+  失効済みのrunにのみ適用でき、暗号学的乱数で生成した**新しいrunToken**を発行し、
+  同じrun ID・manifest・既存の監査履歴を維持したまま`revokedAt`をクリアする。
+  **旧runTokenはこの時点でDB上に存在しなくなり、以後永久に無効になる**
+  （token漏えいが失効理由だった場合、漏えいした旧tokenが復活することは無い）。
+  rotate後は、運用者がGASのScript Properties（`REPARSE_RUN_TOKEN`）を**新しい
+  token値へ手動で更新する**必要がある（旧token値のままでは以後すべて404になる）。
+- どちらの関数も、同一household向けに他の有効runが既にある場合は拒否される。
 
 ## 対象repository・実装担当
 

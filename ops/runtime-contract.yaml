@@ -91,10 +91,23 @@
 #     stderrを検証していない、の3件（+notice文書不整合1件）を検出。getReparseTargetsを
 #     manifest正本（mode='write'監査が無い候補のみ返す）へ全面書き換え、computeOutcomeへ
 #     manifestメンバーシップ確認を追加（非メンバーはcandidate_not_in_manifestとしてdata不変の
-#     conflict）、新設extendReparseRunで期限切れ・失効runを同一manifest・監査履歴のまま
-#     再開可能にし、production相当ログtestをstdout・stderr両方の検査へ拡張して対応した。
-#     production未反映（HISTORICAL_REPARSE_ENABLEDは引き続き未設定のためdeployされても
-#     機能上は無効のまま）。
+#     conflict）、新設extendReparseRunで期限切れrunを同一manifest・監査履歴のまま
+#     再開可能にし（この時点ではrevokedAtの確認が無く、失効runも同じ関数で再開できて
+#     しまう欠陥が残っていた。第7回レビューR7-01で指摘・修正）、production相当ログtestを
+#     stdout・stderr両方の検査へ拡張して対応した。production未反映
+#     （HISTORICAL_REPARSE_ENABLEDは引き続き未設定のためdeployされても機能上は無効のまま）。
+#   2026-09-08 (task_id: 20260907-009): 第7回レビューが、extendReparseRunが期限切れと
+#     失効(revoke)を区別せず失効済みrunを同じrunTokenのまま再有効化できる欠陥
+#     （token漏えい・誤配布・緊急停止時の無効化を延長操作自体で覆せてしまう）と、
+#     manifest外candidate拒否時に監査行を作成しており第6回レビュー§13.3の
+#     「data/audit不変で拒否する」指定と不一致だった問題を検出（+notice文書不整合1件）。
+#     extendReparseRunはrevokedAt設定済みrunを拒否するよう修正し、失効済みrun専用の
+#     新設rotateReparseRunTokenで新しいrunTokenへ安全に移行できるようにした（旧tokenは
+#     以後永久に無効）。applyOneもcandidate_not_in_manifest経路で監査を一切書かないよう
+#     修正した。production未反映（HISTORICAL_REPARSE_ENABLEDは引き続き未設定のため
+#     deployされても機能上は無効のまま）。VPS管理側がVPS上の実際のNginx設定を
+#     read-onlyで確認し、StockHomeが既定access log形式でrunToken用headerを記録する
+#     独自設定が無いことも確認済み。
 
 schema_version: 1
 app: stockhome
@@ -242,16 +255,26 @@ data:
         失効判定をしないfindRunByTokenを使うため、GAS側のcursor等local stateが
         失われた場合や、runが期限切れ・失効した後でも、この関数（および
         `GET /api/bridge/reparse-progress`route）だけで進捗をDBから復元できる。
-        期限切れ・失効したrunは、extendReparseRun関数（第6回レビューR6-02対応）で
-        同一household向けの他の有効runが無いことを確認したうえでexpires_atを延長し
-        revoked_atをクリアすることで、同じmanifest・監査履歴を維持したまま再開できる
-        （HTTP非公開、createReparseRunと同じくSERIALIZABLE transaction・P2034
-        リトライを使う）。
+        **期限切れ（revoked_atが未設定のままexpires_atだけが過去）のrunだけを、
+        extendReparseRun関数で同一household向けの他の有効runが無いことを確認した
+        うえでexpires_atを延長し、同じrunToken・manifest・監査履歴を維持したまま
+        再開できる。失効済み（revoked_atが設定済み）のrunはextendReparseRunでは
+        絶対に扱わない（第7回レビューR7-01対応。以前はrevoked_atの状態を確認せず
+        失効runも同じ関数で再有効化できてしまい、token漏えい・誤配布・緊急停止時の
+        無効化を延長操作自体で覆せてしまう欠陥があった）。**
+        失効済みのrunを再開したい場合はrotateReparseRunToken関数を使う。こちらは
+        revoked_atが設定済みのrunにのみ適用でき、暗号学的乱数で生成した新しい
+        runTokenへrun_token列自体をUPDATEで書き換え、revoked_atをクリアして
+        expires_atを再設定する。旧runTokenはDB上に一致する行が無くなるため、
+        以後`ReparseRunInvalidError`で永久に拒否される（同一household向けの他の
+        有効runが無いことの確認、SERIALIZABLE transaction・P2034リトライは
+        extendReparseRunと共通のヘルパーを使う）。いずれもHTTP非公開の運用者向け関数。
       update_paths: >-
         手動発行のみ（HTTP経由の作成route無し）。revoked_atの設定も手動想定
-        （extendReparseRunによるクリアを除く）。cutoff_atはcreateReparseRun実行時に
+        （rotateReparseRunTokenによるクリアを除く）。cutoff_atはcreateReparseRun実行時に
         自動設定され、以後変更しない。expires_atはcreateReparseRun実行時に自動設定され、
-        extendReparseRunでのみ更新される。
+        以後extendReparseRunまたはrotateReparseRunTokenでのみ更新される。run_tokenは
+        rotateReparseRunTokenでのみ変更される。
       failure_consistency: >-
         該当なし（認可専用、業務データではない）。ただしcreateReparseRunの
         SERIALIZABLE transactionはrun作成とprice_reparse_targetsへの書き込みを
@@ -325,6 +348,14 @@ data:
         失敗として返す。これは「業務判断としての行失敗」とは意図的に区別しており、
         GAS側はchunk全体を再送すればよい（同じrunToken・mode='write'で既に監査済みの
         候補は再判定されず、未処理の候補だけが再試行される）。
+        **もう一つの例外（第7回レビューR7-02対応、task 20260907-009で明確化）**:
+        受信candidateIdがrun作成時点で固定したmanifest（price_reparse_targets）の
+        メンバーでない場合（`candidate_not_in_manifest`）も、意図的に監査行を
+        一切作らない。これは「そもそもこのrunの業務対象外」の入力として扱うためで、
+        candidate・purchase・監査のすべてが完全に不変のまま拒否される
+        （第6回レビュー§13.3が指定した「manifest非所属candidateをdata/audit不変で
+        拒否する」設計に合わせた。当初はこの経路でも監査行を作っていたが、
+        指定と不一致だったため修正した）。
         保持期限: 自動削除する仕組みは無い（push_ticketsと異なり定期cleanup jobを設けない）。
         一度限りの過去分backfillの監査証跡であり、production反映が完了し結果がreconcile済みと
         app owner・VPS管理側が確認するまでは削除しない。
@@ -477,8 +508,8 @@ known_gaps:
     notice 20260907-STOCKHOME-006（過去候補の単価再解析）はproduction未反映。
     HISTORICAL_REPARSE_ENABLED未設定のため、新設したGET/POST /api/bridge/reparse-candidates・
     GET /api/bridge/reparse-progressはdeployされても404を返すのみで機能上は無効。
-    VPS管理側の第2回レビュー（mock再現、7件）・第3回〜第6回レビュー（実DBへのprobe、
-    各6〜4件）で検出された問題はいずれもtask 20260907-004〜008とClaudeの直接対応
+    VPS管理側の第2回レビュー（mock再現、7件）・第3回〜第7回レビュー（実DBへのprobe、
+    各6〜3件）で検出された問題はいずれもtask 20260907-004〜009とClaudeの直接対応
     （migration・schema）で修正済み（household/cutoff境界を全outcome経路で強制、
     matched itemのhousehold不一致検知をcandidate更新前へ移動、run/item単位の価格判定
     snapshot、監査の冪等化とinfrastructure障害/業務判断の区別、runTokenのheader化、
@@ -486,9 +517,11 @@ known_gaps:
     期限切れ後も動作するDBだけの進捗復元、createReparseRunのSERIALIZABLE
     transaction化によるsingle active run制約、item snapshot作成のP2002以外再throw、
     httpErrorHandling.ts抽出によるproduction相当ログ経路のtest化（stdout/stderr両方）、
-    期限切れ・失効run向けのextendReparseRunによる同一manifest/監査履歴での再開、
-    本機能4 migration全体の明示的transaction化とfresh隔離DBでの全rollback rehearsal）。
-    第6回レビューへの再提出・再レビュー待ち。GAS側バッチは未実装
+    期限切れ（未失効）run向けのextendReparseRunによる同一manifest/監査履歴での再開、
+    失効済みrun向けのrotateReparseRunTokenによる新token安全移行（旧tokenは永久無効）、
+    manifest外candidate拒否時の監査不作成、本機能4 migration全体の明示的transaction化と
+    fresh隔離DBでの全rollback rehearsal）。第7回レビューへの再提出・再レビュー待ち。
+    GAS側バッチは未実装
     （設計メモのみ ops/investigations/20260907-historical-price-reparse-gas-design.md）。
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、

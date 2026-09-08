@@ -13,6 +13,7 @@ import {
   getReparseTargets,
   processReparseResults,
   ReparseRunInvalidError,
+  rotateReparseRunToken,
 } from './priceReparse';
 
 let scopeCounter = 0;
@@ -459,7 +460,7 @@ test('write rejects a candidate outside the fixed manifest without changing it',
     const reloaded = await prisma.importOrderCandidate.findUniqueOrThrow({ where: { id: candidate.id } });
     assert.equal(reloaded.detectedPrice, null);
     assert.equal(reloaded.priceSource, null);
-    assert.equal((await getOnlyAudit(run.id)).skipReason, 'candidate_not_in_manifest');
+    assert.equal((await prisma.priceReparseAudit.findMany({ where: { runId: run.id } })).length, 0);
   } finally {
     await scope.cleanup();
   }
@@ -1217,7 +1218,7 @@ test('extendReparseRun resumes an expired run with its manifest and audits intac
     ]);
     await prisma.priceReparseRun.update({
       where: { id: run.id },
-      data: { expiresAt: new Date(Date.now() - 1000), revokedAt: new Date() },
+      data: { expiresAt: new Date(Date.now() - 1000) },
     });
 
     assert.deepEqual(await getReparseRunProgress(run.runToken), {
@@ -1261,7 +1262,7 @@ test('extendReparseRun resumes an expired run with its manifest and audits intac
 test('extendReparseRun rejects when another active run exists for the household', async () => {
   const scope = await createTestScope();
   try {
-    const expired = await createRun(scope, { expiresAt: new Date(Date.now() - 1000), revokedAt: new Date() });
+    const expired = await createRun(scope, { expiresAt: new Date(Date.now() - 1000) });
     await createRun(scope);
 
     await assert.rejects(
@@ -1270,6 +1271,129 @@ test('extendReparseRun rejects when another active run exists for the household'
     );
     const reloaded = await prisma.priceReparseRun.findUniqueOrThrow({ where: { id: expired.id } });
     assert.ok(reloaded.expiresAt.getTime() <= Date.now());
+    assert.equal(reloaded.revokedAt, null);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('extendReparseRun rejects revoked runs regardless of expiry', async () => {
+  const scope = await createTestScope();
+  try {
+    const revokedExpired = await createRun(scope, {
+      expiresAt: new Date(Date.now() - 1000),
+      revokedAt: new Date(),
+    });
+    const revokedUnexpired = await createRun(scope, {
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      revokedAt: new Date(),
+    });
+
+    for (const run of [revokedExpired, revokedUnexpired]) {
+      await assert.rejects(() => extendReparseRun(run.runToken), /has been revoked and cannot be extended/);
+      const reloaded = await prisma.priceReparseRun.findUniqueOrThrow({ where: { id: run.id } });
+      assert.notEqual(reloaded.revokedAt, null);
+      assert.equal(reloaded.expiresAt.getTime(), run.expiresAt.getTime());
+    }
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('rotateReparseRunToken resumes a revoked run with a new token and preserves its state', async () => {
+  const scope = await createTestScope();
+  try {
+    const candidate = await createCandidate(scope);
+    const run = await createReparseRun(OWNER_EMAIL, scope.householdId);
+    await processReparseResults(run.runToken, 'dry_run', [
+      { candidateId: candidate.id, detectedPrice: 715, priceSource: CERTAIN_PRICE_SOURCE },
+    ]);
+    await prisma.priceReparseRun.update({
+      where: { id: run.id },
+      data: { revokedAt: new Date() },
+    });
+
+    const rotated = await rotateReparseRunToken(run.runToken, 1);
+    assert.equal(rotated.id, run.id);
+    assert.notEqual(rotated.runToken, run.runToken);
+    assert.ok(rotated.expiresAt.getTime() > Date.now());
+    const reloadedRun = await prisma.priceReparseRun.findUniqueOrThrow({ where: { id: run.id } });
+    assert.equal(reloadedRun.revokedAt, null);
+    assert.equal(reloadedRun.runToken, rotated.runToken);
+    assert.deepEqual(
+      (await getReparseTargets(rotated.runToken, undefined, 20)).map((target) => target.id),
+      [candidate.id]
+    );
+    assert.equal(
+      await prisma.priceReparseAudit.count({ where: { runId: run.id, candidateId: candidate.id, mode: 'dry_run' } }),
+      1
+    );
+
+    const counts = await processReparseResults(rotated.runToken, 'write', [
+      { candidateId: candidate.id, detectedPrice: 715, priceSource: CERTAIN_PRICE_SOURCE },
+    ]);
+    assert.equal(counts.updatedCandidate, 1);
+    assert.deepEqual(await getReparseRunProgress(rotated.runToken), {
+      totalTargets: 1,
+      processedCount: 1,
+      remainingCount: 0,
+      complete: true,
+    });
+    assert.equal(await prisma.priceReparseAudit.count({ where: { runId: run.id } }), 2);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('rotateReparseRunToken permanently invalidates the old token', async () => {
+  const scope = await createTestScope();
+  try {
+    const candidate = await createCandidate(scope);
+    const run = await createReparseRun(OWNER_EMAIL, scope.householdId);
+    await prisma.priceReparseRun.update({ where: { id: run.id }, data: { revokedAt: new Date() } });
+
+    const rotated = await rotateReparseRunToken(run.runToken);
+    assert.notEqual(rotated.runToken, run.runToken);
+    await assert.rejects(() => getReparseTargets(run.runToken, undefined, 20), ReparseRunInvalidError);
+    await assert.rejects(
+      () => processReparseResults(run.runToken, 'write', [{ candidateId: candidate.id, detectedPrice: 700 }]),
+      ReparseRunInvalidError
+    );
+    await assert.rejects(() => getReparseRunProgress(run.runToken), ReparseRunInvalidError);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('rotateReparseRunToken rejects a run that is not revoked', async () => {
+  const scope = await createTestScope();
+  try {
+    const run = await createRun(scope, { expiresAt: new Date(Date.now() - 1000) });
+
+    await assert.rejects(() => rotateReparseRunToken(run.runToken), /is not revoked/);
+    const reloaded = await prisma.priceReparseRun.findUniqueOrThrow({ where: { id: run.id } });
+    assert.equal(reloaded.runToken, run.runToken);
+    assert.equal(reloaded.revokedAt, null);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('rotateReparseRunToken rejects when another active run exists for the household', async () => {
+  const scope = await createTestScope();
+  try {
+    const revoked = await createRun(scope, {
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      revokedAt: new Date(),
+    });
+    await createRun(scope);
+
+    await assert.rejects(
+      () => rotateReparseRunToken(revoked.runToken),
+      /another active price reparse run already exists/
+    );
+    const reloaded = await prisma.priceReparseRun.findUniqueOrThrow({ where: { id: revoked.id } });
+    assert.equal(reloaded.runToken, revoked.runToken);
     assert.notEqual(reloaded.revokedAt, null);
   } finally {
     await scope.cleanup();

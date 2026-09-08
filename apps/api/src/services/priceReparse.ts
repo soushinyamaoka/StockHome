@@ -264,6 +264,12 @@ async function computeOutcome(tx: Prisma.TransactionClient, run: ActiveRun, item
 
 const ROLLBACK = Symbol('reparse_rollback');
 
+// write: 冪等（同一(run,candidate,mode='write')の再送は保存済み結果をそのまま返す）。
+// ただしcandidate_not_in_manifestは「業務対象外」として扱い、data・監査とも
+// 一切変更せずに拒否する（第7回レビューR7-02対応。第6回レビュー§13.3が指定した
+// 「manifest非所属candidateをdata/audit不変で拒否する」設計に合わせる。dry_run/write
+// どちらのmodeでも同じ扱いにする。このため、manifest外candidateIdへの再送は
+// 毎回同じ判定を再実行するが、判定自体は読み取りだけで安価であり問題ない）
 async function applyOne(run: ActiveRun, item: ReparseResultItem, mode: 'dry_run' | 'write'): Promise<ApplyResult> {
   if (mode === 'write') {
     const existingAudit = await prisma.priceReparseAudit.findUnique({
@@ -279,6 +285,9 @@ async function applyOne(run: ActiveRun, item: ReparseResultItem, mode: 'dry_run'
   try {
     await prisma.$transaction(async (tx) => {
       captured = await computeOutcome(tx, run, item);
+      if (captured.skipReason === 'candidate_not_in_manifest') {
+        throw ROLLBACK;
+      }
       if (mode === 'dry_run') {
         throw ROLLBACK;
       }
@@ -318,6 +327,10 @@ async function applyOne(run: ActiveRun, item: ReparseResultItem, mode: 'dry_run'
       throw new Error(`reparse audit race detected without a winning row (run=${run.id}, candidate=${item.candidateId})`);
     }
     return auditRowToApplyResult(winning);
+  }
+
+  if (captured && captured.skipReason === 'candidate_not_in_manifest') {
+    return captured;
   }
 
   if (mode === 'dry_run') {
@@ -539,9 +552,28 @@ export async function createReparseRun(
   throw new Error('unreachable: createReparseRun exhausted retries without returning or throwing');
 }
 
-// 期限切れ・失効したrunを、同じmanifestと監査履歴を維持したまま再開する。
-// このrun以外の有効runが同じhouseholdにある場合はsingle-active-run制約を守るため拒否する。
-// createReparseRunと同様にHTTP非公開の運用者向け関数とする（第6回レビューR6-02対応）
+async function assertNoOtherActiveRun(
+  tx: Prisma.TransactionClient,
+  householdId: string,
+  excludeRunId: string,
+  now: Date
+): Promise<void> {
+  const otherActiveRun = await tx.priceReparseRun.findFirst({
+    where: { householdId, id: { not: excludeRunId }, revokedAt: null, expiresAt: { gt: now } },
+  });
+  if (otherActiveRun) {
+    throw new Error(
+      `another active price reparse run already exists for this household (id=${otherActiveRun.id}). resolve it first.`
+    );
+  }
+}
+
+// 期限切れ（revokedAtは未設定のまま単にexpiresAtが過去）になったrunだけを、同じ
+// manifest・監査履歴・runTokenのまま再開できるようにする（第6回レビューR6-02対応）。
+// **失効済み（revokedAtが設定済み）のrunはこの関数では絶対に扱わない
+// （第7回レビューR7-01対応）。** token漏えい・誤配布・緊急停止時の無効化を、
+// 期限延長操作自体で覆せてしまうことを防ぐ。失効済みrunを再開したい場合は
+// rotateReparseRunTokenを使う
 export async function extendReparseRun(
   runToken: string,
   additionalHours = 72
@@ -554,26 +586,16 @@ export async function extendReparseRun(
           if (!run) {
             throw new ReparseRunInvalidError('run token not found');
           }
-          const now = new Date();
-          const otherActiveRun = await tx.priceReparseRun.findFirst({
-            where: {
-              householdId: run.householdId,
-              id: { not: run.id },
-              revokedAt: null,
-              expiresAt: { gt: now },
-            },
-          });
-          if (otherActiveRun) {
+          if (run.revokedAt) {
             throw new Error(
-              `another active price reparse run already exists for this household (id=${otherActiveRun.id}). resolve it before extending this run.`
+              `run ${run.id} has been revoked and cannot be extended with the same token. use rotateReparseRunToken to reissue a new token for a revoked run.`
             );
           }
+          const now = new Date();
+          await assertNoOtherActiveRun(tx, run.householdId, run.id, now);
           const updated = await tx.priceReparseRun.update({
             where: { id: run.id },
-            data: {
-              expiresAt: new Date(now.getTime() + additionalHours * 60 * 60 * 1000),
-              revokedAt: null,
-            },
+            data: { expiresAt: new Date(now.getTime() + additionalHours * 60 * 60 * 1000) },
           });
           return { id: updated.id, expiresAt: updated.expiresAt };
         },
@@ -585,4 +607,50 @@ export async function extendReparseRun(
     }
   }
   throw new Error('unreachable: extendReparseRun exhausted retries without returning or throwing');
+}
+
+// 失効済み（revokedAt設定済み）のrunを、同じrun ID・manifest・監査履歴を維持したまま
+// 新しいrunTokenで再開する（第7回レビューR7-01対応。extendReparseRunとは明確に分離し、
+// 失効理由を問わず「同じtokenを復活させる」ことは一切行わない）。runTokenをUPDATEで
+// 新しい値へ書き換えるため、旧tokenはDB上に存在しなくなり、以後
+// ReparseRunInvalidErrorで永久に拒否される。失効済みでないrunに対して呼ばれた場合は
+// エラーとする（期限切れだけのrunはextendReparseRunを使う）
+export async function rotateReparseRunToken(
+  oldRunToken: string,
+  expiresInHours = 72
+): Promise<{ id: string; runToken: string; expiresAt: Date }> {
+  for (let attempt = 1; attempt <= CREATE_RUN_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          const run = await tx.priceReparseRun.findUnique({ where: { runToken: oldRunToken } });
+          if (!run) {
+            throw new ReparseRunInvalidError('run token not found');
+          }
+          if (!run.revokedAt) {
+            throw new Error(
+              `run ${run.id} is not revoked. use extendReparseRun to extend an expired-but-not-revoked run instead of rotating its token.`
+            );
+          }
+          const now = new Date();
+          await assertNoOtherActiveRun(tx, run.householdId, run.id, now);
+          const newRunToken = `rrun_${randomBytes(32).toString('hex')}`;
+          const updated = await tx.priceReparseRun.update({
+            where: { id: run.id },
+            data: {
+              runToken: newRunToken,
+              revokedAt: null,
+              expiresAt: new Date(now.getTime() + expiresInHours * 60 * 60 * 1000),
+            },
+          });
+          return { id: updated.id, runToken: updated.runToken, expiresAt: updated.expiresAt };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      );
+    } catch (e) {
+      if (isSerializationFailure(e) && attempt < CREATE_RUN_MAX_ATTEMPTS) continue;
+      throw e;
+    }
+  }
+  throw new Error('unreachable: rotateReparseRunToken exhausted retries without returning or throwing');
 }
