@@ -28,7 +28,7 @@ GAS側実装は含まない）→ `bf7ee66`（notice更新）→ `5e209e0`（tas
 
 impact_level: L3
 
-status: ready_for_review
+status: accepted
 
 created_by: Claude
 
@@ -466,9 +466,10 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
 - [x] production baselineとrelease全commit・build入力差分を確認した（B01反映、baseline訂正済み）
-- [ ] source commitとnoticeをremoteの対象branchへpushした（第3回対応`1c1b2ba`・`fb12ce1`、
+- [x] source commitとnoticeをremoteの対象branchへpushした（第3回対応`1c1b2ba`・`fb12ce1`、
       第4回対応`9b84b1f`・`60bb6cc`、第5回対応`21676c3`・`2c32da9`、第6回対応`e2a3857`・
-      `bf7ee66`はorigin/mainへpush済み。第7回対応`5e209e0`はlocal commit済み、push未実施）
+      `bf7ee66`、第7回対応`5e209e0`・`8c042bc`はいずれもorigin/mainへpush済み。
+      第8回レビューがGit上でsource `5e209e0`・notice `8c042bc`のpush済み一致を確認済み）
 - [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回〜第7回
       レビューがmock再現・実DBへのprobeで確認した計32件の問題を含むregression test 52件を
       含む全73件をローカルDBで実行し全件成功を確認済み）
@@ -477,12 +478,15 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
       （ログをchunk単位の`BATCH_STEP`へ変更し、row内容を含まないことを確認済み。
       client配信は不要と確定）
 - [ ] app owner、VPS review、production承認、client配信承認を分離した（API単独stageと
-      GAS+実行stageへ分離済み。**実際の承認取得はこれから**）
+      GAS+実行stageへ分離済み。**VPS management reviewは第8回で`accepted`取得済み。
+      app owner承認①〜④・production承認・client配信承認は引き続き未実施**）
 - [x] secret非混入とtracked working tree cleanを確認した
 
-未確認・該当なしの理由: 4段階の承認取得（app owner承認①〜production承認④）は、
-本notice改訂によるVPS管理再レビュー後に行う。GAS側バッチ実装（B08）は
-app owner判断により今回は対象外（別途手動Codexセッションで実装予定）。
+未確認・該当なしの理由: VPS management reviewは第8回（2026-09-08）で`accepted`と
+なった（下記「第8回レビュー結果」参照）。これはproduction反映の承認ではない。
+4段階の承認取得（app owner承認①〜production承認④）・client配信承認は、
+production計画の提示後に行う。GAS側バッチ実装（B08）はapp owner判断により
+今回は対象外（別途手動Codexセッションで実装予定）。
 
 ## 未解決事項
 
@@ -614,21 +618,33 @@ run存在時拒否の新規test5件（`priceReparse.test.ts`）を追加し、�
 ことをCodexとClaudeの双方で独立に確認した。今回はmigration変更が無いため、
 追加のfresh隔離DB rehearsalは実施していない。
 
+## 第8回レビュー結果（2026-09-08、`accepted`）
+
+VPS管理レビュー正本§15が、第7回の指摘2件（S006-R7-01・S006-R7-02）への対応を
+確認し、本noticeを**`accepted`**と判定した。**これはproduction反映の承認ではない。**
+
+| 第7回指摘 | 第8回確認結果 |
+|---|---|
+| S006-R7-01 revoked tokenの再有効化 | `extendReparseRun`はrevoked runを拒否し、期限切れかつ未失効のrunだけを延長する。失効後は`rotateReparseRunToken`が同一run ID・manifest・auditを維持したまま暗号学的乱数の新tokenへ置換する。旧tokenがGET・POST・progressの全経路で継続して拒否される実DB testを確認した |
+| S006-R7-02 manifest外candidateのaudit | manifest非所属を検出した時点で処理を返し、candidate・purchase・auditのいずれも変更しない実装と回帰testを確認した。固定manifest外IDが監査正本へ混入しないため、追加の保持契約は不要となった |
+| S006-R7-03 notice同期 | source `5e209e0`とnotice `8c042bc`のpush済み状態をGitで確認した。notice本文の未push・未review表記は軽微な文書同期漏れとして、accepted判定後（本改訂）に更新することとされた |
+
+**acceptedの範囲と残るgate**（§15.3）:
+- 本受理は、変更通知書と実装をproduction計画へ進められる状態と判断したものである。
+- app owner承認、利用者への事前通知・不使用確認、production計画の提示、個別の
+  最終承認は引き続き必要である。
+- `production_baseline_commit`は`9f5fa864327e5d16b263250ce9e0348966b37f4f`、
+  `deployment_status`は`not_started`のまま変更しない。
+- API deploy、migration、feature flag有効化、過去単価のdry-run/write、GAS配信・
+  実行はそれぞれproduction計画の明示範囲に含め、承認前には行わない。
+
 ## VPS管理チャットへの引き継ぎ
 
-- 引き継ぎ要否: 必要
-- ユーザーへの案内: task `20260907-009`完了・commit `5e209e0`（push未実施。push後に案内可能）
-- VPS管理チャットへ渡すローカル絶対path:
-  `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md`
-
-```text
-アプリ側作業は完了しました。VPSへの反映は実施していません。
-
-次に、VPS管理チャットへ以下を送ってください。
-「stockhomeの変更通知書 C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260907-STOCKHOME-006-summary.md を確認し、
-第7回レビュー§14.3〜§14.4への対応状況を確認のうえ、再レビューをしてください。
-production反映は別承認として扱ってください。」
-```
+- 引き継ぎ要否: 不要（第8回レビューで`accepted`済み。次はapp owner・production承認の
+  取得段階であり、VPS管理チャットへの追加の依頼事項は無い）
+- 直近のVPS管理側とのやり取り: notice文書のpush・review状態を現在値
+  （source `5e209e0`・notice `8c042bc`のpush済み、第8回`accepted`、
+  production未承認・`deployment_status: not_started`）へ同期する本改訂を実施した
 
 ## Codex実装結果（task 20260907-002、第1回対応。第2回レビューで問題7件を検出）
 
@@ -802,9 +818,9 @@ production反映は別承認として扱ってください。」
 ## Approval
 
 - app owner: 未実施（B08の実装経路選択のみ2026-09-07に決定済み。dry-run結果への承認は未実施）
-- VPS management review: 未実施（第7回`blocked`。本notice改訂・commit push後に
-  再レビュー依頼可能な状態）
-- production approval: 未実施
+- VPS management review: **`accepted`（第8回、2026-09-08。production反映の承認ではない）**
+- production approval: 未実施（app owner承認①〜④、利用者への事前通知・不使用確認、
+  production計画の提示を経てから行う。§15.3参照）
 - related task_id: 20260907-002（第1回API実装、`success`・commit `02816ee`。
   第2回レビューで問題7件検出）、20260907-003（Codex CLI異常終了のため未完了）、
   20260907-004（20260907-003の再発行。第2回レビュー対応、`success`・commit `5b2f68a`・
