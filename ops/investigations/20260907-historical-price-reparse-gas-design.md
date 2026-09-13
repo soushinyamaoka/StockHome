@@ -1,12 +1,21 @@
 # GAS側: 過去候補の単価再解析バッチ 設計メモ（第7回VPS管理レビュー反映版）
 
-notice: `20260907-STOCKHOME-006`のB08対応。GAS側の実装は今回のセッションでは行わず、
-app ownerが別途手動でCodexセッションを`C:\work\PRG\ZZ_Other\GAS\StockHome`にて起動し、
-本メモを指示書として実装する想定。API側（対応するGET/POST）はtask `20260907-002`
-（第1回実装）・`20260907-004`（第2回レビュー対応）・`20260907-005`（第3回レビュー対応）・
-`20260907-006`（第4回レビュー対応）・`20260907-007`（第5回レビュー対応）・
-`20260907-008`（第6回レビュー対応）・`20260907-009`（第7回レビュー対応）として通常の
-StockHome-ClaudeToCodexパイプラインで実装済み（別ファイル参照）。
+notice: `20260907-STOCKHOME-006`のB08対応。API側（対応するGET/POST）はtask
+`20260907-002`（第1回実装）・`20260907-004`（第2回レビュー対応）・`20260907-005`
+（第3回レビュー対応）・`20260907-006`（第4回レビュー対応）・`20260907-007`
+（第5回レビュー対応）・`20260907-008`（第6回レビュー対応）・`20260907-009`
+（第7回レビュー対応）として通常のStockHome-ClaudeToCodexパイプラインで実装済み
+（別ファイル参照）。
+
+**2026-09-13追記（実装完了）**: 当初はGAS版StockHomeが別リポジトリ
+（`C:\work\PRG\ZZ_Other\GAS\StockHome`）だったため、app owner判断により
+「今回は実装せず、別途手動Codexセッションで実装する」方針だった。同日、
+GAS版がこのモノレポの`apps/gas/`へ統合され、ai-watchのClaude→Codexパイプラインが
+`apps/gas/`を対象に含めるようになったため、本メモに基づきtask `20260913-001`として
+同パイプライン経由で実装した（commit `3de1557`）。本メモ下記の設計方針と実装内容に
+齟齬はない。**残っているのは`clasp push`/`clasp deploy`によるApps Scriptプロジェクトへの
+反映のみ**（production承認③の対象。「対象repository・実装担当」節の`push.bat`・
+`deploy.bat`に関する記載は現在も有効）。
 
 **2026-09-07 第2回VPS管理レビューを受けて全面改訂**: API側の認可方式が
 自己申告emailから事前発行済み`runToken`へ変更されたため、本メモの該当箇所を
@@ -80,13 +89,17 @@ manifestが、進捗計算だけでなくGET/POST双方の正本になった。G
 
 ## 対象repository・実装担当
 
-- repository: `C:\work\PRG\ZZ_Other\GAS\StockHome`
-- 実装担当: 未定（app ownerが選ぶ。手動起動Codexセッション、またはClaudeへの一時例外）
-- レビュー: 実装後、Claudeが差分レビュー＋ローカルでの動作再現確認（実Gmailへは接続しない
-  範囲で。実データ確認はGmail接続を伴うため、dry-run実行時にapp owner立ち会いのもと
-  Claudeが対話セッションで確認する）
-- test: GASにテストランナーが無いため、Node.jsからパーサー関数を直接importして
-  実サンプルメールに対する検証を行う（`20260906-001`で実施した方法と同じ）
+- repository: `apps/gas/`（2026-09-13にモノレポへ統合。旧`C:\work\PRG\ZZ_Other\GAS\StockHome`は
+  読み取り専用の控えとして残置、実体はapps/gas/へ移行済み）
+- 実装担当: **実装完了（2026-09-13、ai-watchのStockHome-ClaudeToCodexパイプライン経由、
+  task `20260913-001`、commit `3de1557`）**。当初検討していた「手動起動Codexセッション」
+  「Claudeへの一時例外」はどちらも不要になった
+- レビュー: Claudeが差分レビュー・独立ビルド確認済み（上記「2026-09-13追記」参照）。
+  実Gmailへ接続した動作確認（実データでのdry-run）は、production承認③後にapp owner
+  立ち会いのもとClaudeが対話セッションで確認する（未実施）
+- test: GASにテストランナーが無いため、Node.jsからGAS組み込みオブジェクトをモックして
+  対象関数を直接呼び出す方法で検証済み（`20260906-001`で確立した方法と同じ。
+  task `20260913-001`で15シナリオ全件pass）
 - **commit/push: `push.bat`・`deploy.bat`のどちらも production承認が必要
   （2026-09-07訂正）。** `push.bat`は`clasp push -f`でApps Scriptのcloud sourceを
   直接書き換える実質的なdeploy操作であり、ローカルのgit commit/pushとは別物。

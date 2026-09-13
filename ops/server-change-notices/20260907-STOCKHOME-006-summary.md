@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 5e209e04a517fa2daf785013cffb1bd26fd7835b
+source_commit: 3de1557b8868c5b9126d5ed050408172febc553e
 
 production_baseline_commit: 5e209e04a517fa2daf785013cffb1bd26fd7835b
 
@@ -24,7 +24,15 @@ GAS側実装は含まない）→ `fb12ce1`（notice更新）→ `9b84b1f`（tas
 `21676c3`（task `20260907-007`、第5回レビュー対応。GAS側実装は含まない）→
 `2c32da9`（notice更新）→ `e2a3857`（task `20260907-008`、第6回レビュー対応。
 GAS側実装は含まない）→ `bf7ee66`（notice更新）→ `5e209e0`（task `20260907-009`、
-第7回レビュー対応。GAS側実装は含まない）
+第7回レビュー対応。GAS側実装は含まない）→ `8c042bc`（notice更新）→
+`50af291`（notice更新、第8回レビューaccepted同期）→ `a627859`（notice更新、
+API先行stage production反映同期）→ `70cccc6`（GAS版StockHomeを`apps/gas/`へ統合。
+本notice対象機能のコード変更ではないリポジトリ構成変更）→ `3de1557`（task
+`20260913-001`、GAS側実装。`reparseHistoricalCandidates`等を`apps/gas/`へ追加。
+**ローカルのソースコード変更のみ。`clasp push`/`clasp deploy`は未実施のため
+Apps Script側には未反映、production baselineには影響しない**）。API側の
+production baselineは引き続き`5e209e0`のまま変わらない（GAS側はAPI containerの
+デプロイ対象ではないため）
 
 impact_level: L3
 
@@ -164,7 +172,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 | 過去候補の`price_source`（`price_source`/`detected_price`とも NULL の行） | NULL/空 | 再解析で価格が判明した候補のみ値が入る（対象外は変化なし） |
 | 対応する`purchase_logs.price`（NULLの行のみ） | NULL | 層1〜3判定で確定できたものだけ値が入る |
 | API | 該当エンドポイントなし | `GET /api/bridge/reparse-candidates`・`POST /api/bridge/reparse-candidates`・`GET /api/bridge/reparse-progress`（第5回レビューR5-02対応で追加）を新設（`HISTORICAL_REPARSE_ENABLED=true`のときのみ有効。未設定時は404）。認可は事前発行済み`runToken`（第2回レビューB03対応、下記参照）で行い、自己申告emailは受け付けない。`runToken`はquery string/bodyではなく専用header（`X-Reparse-Run-Token`）で受け渡す（第3回レビューB03対応） |
-| GAS | 該当機能なし | **未実装**（B08参照。設計メモのみ`ops/investigations/20260907-historical-price-reparse-gas-design.md`に作成済み） |
+| GAS | 該当機能なし | **ローカルのソースコード実装は完了（2026-09-13、task `20260913-001`）。`apps/gas/src/GmailImportService.js`へ`reparseHistoricalCandidates(mode)`、`apps/gas/src/ApiBridge.js`へ再解析専用API呼び出し（リトライ付き）を追加した。ただし`clasp push`/`clasp deploy`は未実施のため、実際のApps Scriptプロジェクトには未反映（実運用では動作しない）。runTokenの発行・登録、実Gmailへの接続、feature flag有効化もいずれも未実施。**詳細は下記「Codex実装結果（task 20260913-001）」参照 |
 | `price_reparse_audit`テーブル | 存在しない | 新設（production row変更前後値の監査ログ。Git管理外）。`mode`列と`(run_id, candidate_id, mode)`の一意制約を追加し、write再送の冪等・dry-run再実行の重複防止に使う（第3回レビューB02/B04対応） |
 | `price_reparse_runs`テーブル | 存在しない | 新設（第2回レビューB03対応。runToken・対象owner・有効期限を保持する認可テーブル。HTTP経由では作成せず、production承認後に運用者が直接1件だけ発行する）。`cutoff_at`列を追加し、run作成後に新規追加された候補を対象から除外する（第3回レビューB02/B04対応）。期限切れ（未失効）のrunだけを同じrunToken・manifest・監査履歴を維持したまま再開する`extendReparseRun`関数（第6回レビューR6-02対応。第7回レビューR7-01対応で`revokedAt`設定済みrunは拒否するよう修正）と、失効済みrunだけを新しいrunTokenへ安全に移行する`rotateReparseRunToken`関数（第7回レビューR7-01対応。旧tokenは以後永久に無効）を追加（いずれも`createReparseRun`と同じくHTTP非公開） |
 | `price_reparse_item_snapshots`テーブル | 存在しない | 新設（第3回レビューB02/B06対応。run内で品目ごとに参照単価を1回だけ計算・固定し、dry-run/write・chunk分割・処理順序によらず同じ判定になるようにする） |
@@ -471,8 +479,11 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 - [x] production baselineとrelease全commit・build入力差分を確認した（B01反映、baseline訂正済み）
 - [x] source commitとnoticeをremoteの対象branchへpushした（第3回対応`1c1b2ba`・`fb12ce1`、
       第4回対応`9b84b1f`・`60bb6cc`、第5回対応`21676c3`・`2c32da9`、第6回対応`e2a3857`・
-      `bf7ee66`、第7回対応`5e209e0`・`8c042bc`はいずれもorigin/mainへpush済み。
-      第8回レビューがGit上でsource `5e209e0`・notice `8c042bc`のpush済み一致を確認済み）
+      `bf7ee66`、第7回対応`5e209e0`・`8c042bc`、第8回accepted同期`50af291`、
+      API先行stage production反映同期`a627859`、GASリポジトリ統合`70cccc6`、
+      GAS側実装task `20260913-001`の`3de1557`はいずれもorigin/mainへpush済み。
+      第8回レビューがGit上でsource `5e209e0`・notice `8c042bc`のpush済み一致を確認済み。
+      本改訂（GAS実装反映）も本commit後にorigin/mainへpushする）
 - [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回〜第7回
       レビューがmock再現・実DBへのprobeで確認した計32件の問題を含むregression test 52件を
       含む全73件をローカルDBで実行し全件成功を確認済み）
@@ -488,21 +499,30 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 未確認・該当なしの理由: VPS management reviewは第8回（2026-09-08）で`accepted`と
 なった（下記「第8回レビュー結果」参照）。これはproduction反映の承認ではない。
 4段階の承認取得（app owner承認①〜production承認④）・client配信承認は、
-production計画の提示後に行う。GAS側バッチ実装（B08）はapp owner判断により
-今回は対象外（別途手動Codexセッションで実装予定）。
+production計画の提示後に行う。GAS側バッチのローカル実装は2026-09-13に
+task `20260913-001`で完了した（下記「Codex実装結果（task 20260913-001）」参照）。
+`clasp push`/`clasp deploy`によるApps Scriptへの反映はproduction承認③の対象として
+未実施のまま。
 
 ## 未解決事項
 
-1. **B08（実装経路）**: GAS側バッチの実装は、app owner判断により**今回は実装せず、
-   別途手動Codexセッションで実装する**方針に決定した（2026-09-07）。設計メモは
-   `ops/investigations/20260907-historical-price-reparse-gas-design.md`に作成済み
-   （第2回レビュー指摘を受けて修正予定、下記参照）。
+1. **B08（実装経路→実装完了、deploy未実施）**: GAS側バッチの実装は、当初
+   app owner判断により「今回は実装せず、別途手動Codexセッションで実装する」
+   方針だった（2026-09-07）が、2026-09-13にGAS版StockHomeがこのモノレポの
+   `apps/gas/`へ統合され、ai-watchのClaude→Codexパイプラインが`apps/gas/`を
+   対象に含めるようになったため、同パイプライン経由でtask `20260913-001`として
+   実装した。設計メモ（`ops/investigations/20260907-historical-price-reparse-gas-design.md`、
+   第7回VPS管理レビュー反映版）どおりの実装であることをCodex・Claude双方で確認済み。
+   **残っているのは`clasp push`/`clasp deploy`によるApps Scriptプロジェクトへの反映
+   （production承認③の対象）のみ**であり、実装そのものはこれ以上のCodex作業を要しない。
 2. `runToken`の発行（`createReparseRun`）は関数として用意するのみで、実際の発行・
    GASへの受け渡し方法（Script Propertiesへ手動設定する想定）はproduction承認後に確定する
 3. `HISTORICAL_REPARSE_ENABLED`の実際の設定・解除手順（VPS管理側の`.env`変更）は
    production承認後に確定する
-4. dry-run実行時のGmail API呼び出し順序・retry方針（GAS設計メモに暫定案あり、
-   GAS実装時に確定）
+4. dry-run実行時のGmail API呼び出し順序・retry方針は、task `20260913-001`で
+   3回・指数backoff（`Utilities.sleep(1000)`→`Utilities.sleep(2000)`）、
+   404・その他4xxは即座に諦める方針として確定・実装済み（設計メモの「未確定・
+   実装時に決める事項」を解消）。
 
 ## 希望時期
 
@@ -687,13 +707,20 @@ VPS管理レビュー正本§15が、第7回の指摘2件（S006-R7-01・S006-R7
 
 ## VPS管理チャットへの引き継ぎ
 
-- 引き継ぎ要否: 不要（API先行stageは2026-09-12に`verified`済み。次はGAS実装・
-  feature flag有効化・dry-runへ向けた別review・別承認の段階であり、現時点で
-  VPS管理チャットへの追加の依頼事項は無い）
+- 引き継ぎ要否: 不要（API先行stageは2026-09-12に`verified`済み。GAS側の
+  ローカル実装も2026-09-13にtask `20260913-001`で完了したが、`clasp push`/
+  `clasp deploy`によるApps Scriptへの反映・runToken発行・feature flag有効化・
+  dry-runはいずれも別途production承認③を要するため未実施であり、現時点で
+  VPS管理チャットへの追加の依頼事項は無い。production_baseline_commit
+  （`5e209e0`）・deployment_status（`applied`）はどちらも変わらない）
 - 直近のVPS管理側とのやり取り: task `20260912-001`（API先行stage production反映）の
   実施結果を受け、notice・runtime contractのproduction状態記述を現在値
   （source `5e209e0`が実際にproduction反映済み、`deployment_status: applied`、
-  feature flag無効・過去単価再解析機能全体は未完了）へ同期する本改訂を実施した
+  feature flag無効・過去単価再解析機能全体は未完了）へ同期した。続けて
+  2026-09-13、GAS版StockHomeを`apps/gas/`へ統合した上でtask `20260913-001`
+  （GAS側ローカル実装）を完了したため、本改訂で反映する。どちらもGAS側の
+  ローカルコード・リポジトリ構成の変更のみで、production・VPS側の状態には
+  影響しない
 
 ## Codex実装結果（task 20260907-002、第1回対応。第2回レビューで問題7件を検出）
 
@@ -864,6 +891,55 @@ VPS管理レビュー正本§15が、第7回の指摘2件（S006-R7-01・S006-R7
   無いため、Claude側の追加対応も無し）
 - commit: `5e209e0`（origin/mainへpush前）
 
+## GASリポジトリ統合（2026-09-13）
+
+GAS版StockHome（従来はGit管理外の独立フォルダ`C:\work\PRG\ZZ_Other\GAS\StockHome`）を、
+このモノレポの`apps/gas/`へ統合した（commit `70cccc6`）。同じアプリの機能が
+リポジトリ分割によりCodexパイプラインで扱えなかったことを解消する目的で、
+本notice対象機能とは独立にapp ownerが判断した構成変更である。秘密情報
+（`.clasp.json`のscriptId、`deploy.bat`のDEPLOY_ID）は`.gitignore`で除外し、
+個人データを含む`data/`フォルダはコピーしていない。旧フォルダは読み取り専用の
+控えとして当面残置。ai-watchの`StockHome-ClaudeToCodex`プロジェクト設定
+（Git管理外、別ツール）も`apps/gas/`を通常の読み書き対象に含めるよう更新した
+（`push.bat`/`deploy.bat`の実行禁止は維持）。この統合により、B08（GAS側実装）を
+以下のCodexパイプライン経由で実施できるようになった。
+
+## Codex実装結果（task 20260913-001、GAS側実装。B08対応）
+
+- 実装ファイル: `apps/gas/src/ApiBridge.js`（追加のみ。再解析API専用の
+  `callReparseApiWithRetry_`・`fetchReparseCandidates`・`postReparseResults`を追加。
+  5xx・fetch例外は最大3回まで指数backoffで再試行し、404・その他4xxは即座に
+  諦める）、`apps/gas/src/GmailImportService.js`（追加のみ。本体
+  `reparseHistoricalCandidates(mode)`、候補ごとの再解析結果構築
+  `buildReparseResult_`、IIFE外側の引数なしラッパー
+  `reparseHistoricalCandidatesDryRun`/`reparseHistoricalCandidatesWrite`を追加）
+- 設計メモ（`ops/investigations/20260907-historical-price-reparse-gas-design.md`、
+  第7回VPS管理レビュー反映版）どおりの実装であることを、Claudeが差分を直接
+  確認した（設計方針との齟齬なし）。cursor（`REPARSE_CURSOR`、Script Properties）は
+  POSTが成功応答を確認できた後にのみ前進、`REPARSE_RUN_TOKEN`未設定・
+  `LockService.tryLock(0)`失敗時は外部API呼び出しなしで終了、skipReason
+  （`message_not_found`/`item_not_found_in_reparse`/`ambiguous_item_match`の
+  固定3値のみ）・価格なし時のキー省略（`null`を送らない）を実装済み
+- GASにはテストランナーが無いため、リポジトリ外の一時Node.jsスクリプトで
+  GAS組み込みオブジェクト（`PropertiesService`/`UrlFetchApp`/`GmailApp`/
+  `LockService`/`Utilities`/`Logger`）をモックした15シナリオ（正常系複数ページ、
+  完了、404、5xxリトライ成功/使い切り、POST失敗時cursor不変、runToken未設定、
+  ロック取得失敗、skipReason3種、価格検出成功/失敗、既存Matsukiyo parserによる
+  実データ確認、`Logger.log`へのsecret・個人情報非混入）がすべてpassしたことを
+  Codexが報告し、検証スクリプトは作業完了後にリポジトリ外から削除された
+- Claudeが独立に確認した内容: commit `3de1557`が実際に存在しHEAD・origin/main
+  一致（force push無し）、差分が指示書のコード例と完全一致し既存関数
+  （`runMyGmailImport`・`isConfigured`等）に変更が無いこと、`apps/api`・
+  `apps/mobile`・`packages/shared`・`ops/`・`apps/gas/appsscript.json`・
+  `apps/gas/.clasp.json`・`apps/gas/deploy.bat`に変更が無いこと、
+  `node --check`によるGAS 2ファイルの構文確認、`npm run build --workspace=@stockhome/shared`・
+  `npm run build --workspace=@stockhome/api`の再実行成功
+- **production変更なし**（`production_operation: none`で実施。`clasp push`/
+  `clasp deploy`、実運用`REPARSE_RUN_TOKEN`発行、実Gmail接続、
+  `HISTORICAL_REPARSE_ENABLED`設定変更はいずれも未実施。実際のApps Scriptには
+  未反映のため実運用では動作しない）
+- commit: `3de1557`（origin/mainへpush済み）
+
 ## Approval
 
 - app owner: 承認①のみ**実施済み（2026-09-12、過去候補の再解析・確定可能な購入単価のみを
@@ -891,4 +967,7 @@ VPS管理レビュー正本§15が、第7回の指摘2件（S006-R7-01・S006-R7
   20260907-009（第7回レビュー対応、`success`・commit `5e209e0`。
   ローカルDB test 73件全成功）、20260912-001（VPS管理側task。API先行stageの
   production反映、`verified`。source `5e209e0`、4 migration適用、feature flag無効。
-  計画・結果は`stockhome_historical_price_reparse_api_deployment_plan_20260912.md`参照）
+  計画・結果は`stockhome_historical_price_reparse_api_deployment_plan_20260912.md`参照）、
+  20260913-001（B08対応、GAS側ローカル実装、`success`・commit `3de1557`。
+  検証シナリオ15件全成功。`clasp push`/`clasp deploy`未実施のためApps Scriptには
+  未反映、production baseline・deployment_statusに影響なし）
