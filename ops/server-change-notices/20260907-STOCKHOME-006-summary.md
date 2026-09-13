@@ -14,7 +14,7 @@ source_branch: main
 
 source_commit: 5e209e04a517fa2daf785013cffb1bd26fd7835b
 
-production_baseline_commit: 9f5fa864327e5d16b263250ce9e0348966b37f4f
+production_baseline_commit: 5e209e04a517fa2daf785013cffb1bd26fd7835b
 
 release_commits: `9f5fa86`（baseline）→ `02816ee`（task `20260907-002`、第1回API実装）→
 `47b0b1e`（notice更新）→ `5b2f68a`（task `20260907-004`、第2回レビュー対応。
@@ -36,7 +36,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_started
+deployment_status: applied
 
 ## 変更概要（B01反映）
 
@@ -194,18 +194,21 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
   `accepted`・実施可能と判断できる。GAS実装・実行（dry-run/write/canary）は
   別stageとして改めてreviewする。
 - 承認段階（B07: 分離して記録する）:
-  1. **app owner承認①**: 対象・価格判定ロジックの設計承認（API stage）
-  2. **VPS管理review**: 本notice改訂版の`accepted`（API stageのみで可）
+  1. **app owner承認①**: 対象・価格判定ロジックの設計承認（API stage）— **完了
+     （2026-09-12）**
+  2. **VPS管理review**: 本notice改訂版の`accepted`（API stageのみで可）— **完了
+     （第8回、2026-09-08）**
   3. **production承認②**: API deployの承認（`HISTORICAL_REPARSE_ENABLED`は
-     未設定のまま。この時点では業務データに一切影響しない）
+     未設定のまま。この時点では業務データに一切影響しない）— **完了・実施済み
+     （2026-09-12、task `20260912-001`、`verified`。詳細は上記「Production実施結果」参照）**
   4. **production承認③**: GAS実装完了後、`HISTORICAL_REPARSE_ENABLED`設定・
      **dry-run実行**（監査テーブルへの書き込みとrow lockを伴うため、
-     これ自体もproduction承認対象）の承認
+     これ自体もproduction承認対象）の承認 — 未実施
   5. **production承認④**: dry-run結果確認後、DB backup・canary・全件write・
-     必要時rollbackの承認
+     必要時rollbackの承認 — 未実施
   - 上記は同一回答でまとめて得る場合も、対象releaseと各操作を明記して記録する
-  - **VPS管理側の個別承認前にAPI/GAS deploy、DB write（dry-runの監査書き込みを
-    含む）、GAS batch起動を行わない**
+  - **VPS管理側の個別承認前にGAS deploy、DB write（dry-runの監査書き込みを
+    含む）、GAS batch起動を行わない**（API deployのみ承認②により完了済み）
 - downtime: possible（API container入替時の短時間の利用失敗の可能性。`none`と
   断定しない。前回提出時の誤りをB07で訂正）
 - maintenance window: 実施計画確定時に、家族（利用者）への通知・不使用確認要否を判断する
@@ -638,13 +641,59 @@ VPS管理レビュー正本§15が、第7回の指摘2件（S006-R7-01・S006-R7
 - API deploy、migration、feature flag有効化、過去単価のdry-run/write、GAS配信・
   実行はそれぞれproduction計画の明示範囲に含め、承認前には行わない。
 
+## Production実施結果（task `20260912-001`、API先行stage）
+
+**2026-09-12、app owner承認・利用者（妻）への事前通知/不使用確認・個別production承認②を
+経て、API先行stageをproductionへ反映した。`verified`（API先行stageの範囲。
+過去単価再解析機能全体としては引き続き未完了）。** 詳細な計画・実施記録は
+`C:\work\PRG\Sakura\Dev\vps-server-management\docs\operations\stockhome_historical_price_reparse_api_deployment_plan_20260912.md`
+（VPS管理側、読み取り専用）を正本とする。
+
+- 反映範囲: source `5e209e0`（第7回レビュー対応後の固定commit）。GET/POST
+  `/api/bridge/reparse-candidates`・`GET /api/bridge/reparse-progress`の3 route、
+  および`price_reparse_*`の新規4テーブルを作る4 migrationのみ。**`HISTORICAL_REPARSE_ENABLED`は
+  `true`に設定していない**（新設routeはbridge認証後も404を返し機能上は無効のまま）
+- 承認: app owner承認①（2026-09-12、再解析設計とAPI先行stage）、利用者通知・不使用確認
+  （2026-09-12）、production承認②（2026-09-12、task・固定source・4 migration・feature無効を
+  特定して承認）。production承認③・④（GAS実装後のfeature有効化・dry-run、その後の
+  全件write）は今回の対象外で別途行う
+- 実施経過: 3回試行した。第1回は隔離検証中の期待値誤り（新設routeの未認証応答を404と
+  誤って期待したが、実際は既存の共有bridge認証が先に401を返す設計）でproduction変更前に
+  停止し、StockHomeのAPI image・DB・業務dataは無変更のまま終了した。第2回はAPI自体は
+  正常に新imageへ入れ替わったが、無関係な別アプリ（recipe-generator等）のhealth check
+  pathの誤りにより全社横断の安全機構が働き、StockHomeも含めて旧image・旧sourceへ
+  自動rollbackされた（StockHome自体の不具合ではない。DBは4 migration適用済み・
+  新規4テーブル0 rowのまま保持し、schema削除やDB restoreは行っていない）。第3回で
+  正規のhealth pathと既適用・空schemaを開始条件として全工程が成功した
+- 最終実施時刻: 2026-09-12 16:11 JST、最終確認16:22:54 JST（10分27秒・11回観察、
+  すべて正常）
+- 新API image: `sha256:1fb0cee2bbe32d733b0891e9e34804a5f939bc58871aba4c0759a4837bf49c32`。
+  DB image・container・volumeは反映前から不変（running / healthy / restart 0）
+- 確認結果: migration成功10件・新規4テーブル合計0 row、`HISTORICAL_REPARSE_ENABLED`は
+  有効化していない、新規3 routeは未認証401・bridge認証後404、
+  `import_order_candidates`（239件）・`purchase_logs`（未確定単価59件）は開始前後で
+  不変、起動log 13行すべてJSON・error/fatal/critical/token名混入0、全7アプリhealth 200・
+  StockHome internal/public 200・bridge 401、restart 0・failed unit 0、backup timer
+  （3種）は変更前と同じ状態を維持
+- rollback: 第2回試行時の自動rollback（上記）以外は実施していない。schema削除・
+  DB restoreは行っていない
+- backup: `/home/deploy/stockhome/backups/deploy-20260912-001/`（DB dump SHA-256
+  `3fc74b15fe253b02c54642d523a2daafa88a4f6d14b6c311da3b20d4219c80eb`、旧source SHA-256
+  `102b7e740e2860fafb01988db2800985944c031dba7227aa6bb15c034415077d`）
+- **今回完了後も禁止する操作**（次段階の別review・別承認へ持ち越し）: GAS実装・push・
+  deploy・手動実行、`HISTORICAL_REPARSE_ENABLED=true`の設定、runTokenの発行・延長・
+  rotation、dry-run実行（監査tableへのwriteとrow lockを伴う）、
+  `import_order_candidates`/`purchase_logs`の更新、再解析用tableの削除
+
 ## VPS管理チャットへの引き継ぎ
 
-- 引き継ぎ要否: 不要（第8回レビューで`accepted`済み。次はapp owner・production承認の
-  取得段階であり、VPS管理チャットへの追加の依頼事項は無い）
-- 直近のVPS管理側とのやり取り: notice文書のpush・review状態を現在値
-  （source `5e209e0`・notice `8c042bc`のpush済み、第8回`accepted`、
-  production未承認・`deployment_status: not_started`）へ同期する本改訂を実施した
+- 引き継ぎ要否: 不要（API先行stageは2026-09-12に`verified`済み。次はGAS実装・
+  feature flag有効化・dry-runへ向けた別review・別承認の段階であり、現時点で
+  VPS管理チャットへの追加の依頼事項は無い）
+- 直近のVPS管理側とのやり取り: task `20260912-001`（API先行stage production反映）の
+  実施結果を受け、notice・runtime contractのproduction状態記述を現在値
+  （source `5e209e0`が実際にproduction反映済み、`deployment_status: applied`、
+  feature flag無効・過去単価再解析機能全体は未完了）へ同期する本改訂を実施した
 
 ## Codex実装結果（task 20260907-002、第1回対応。第2回レビューで問題7件を検出）
 
@@ -817,10 +866,13 @@ VPS管理レビュー正本§15が、第7回の指摘2件（S006-R7-01・S006-R7
 
 ## Approval
 
-- app owner: 未実施（B08の実装経路選択のみ2026-09-07に決定済み。dry-run結果への承認は未実施）
-- VPS management review: **`accepted`（第8回、2026-09-08。production反映の承認ではない）**
-- production approval: 未実施（app owner承認①〜④、利用者への事前通知・不使用確認、
-  production計画の提示を経てから行う。§15.3参照）
+- app owner: 承認①のみ**実施済み（2026-09-12、過去候補の再解析・確定可能な購入単価のみを
+  補完する設計、およびAPI先行stageを承認）**。B08の実装経路選択は2026-09-07に決定済み。
+  承認②〜④（GAS実装後のfeature有効化、dry-run結果、全件write）は未実施
+- VPS management review: `accepted`（第8回、2026-09-08。production反映の承認ではない）
+- production approval: **承認②のみ実施済み（2026-09-12、task `20260912-001`・固定source
+  `5e209e0`・4 migration・feature無効を特定して承認）。** 承認③・④（feature有効化・
+  dry-run、全件write）は未実施
 - related task_id: 20260907-002（第1回API実装、`success`・commit `02816ee`。
   第2回レビューで問題7件検出）、20260907-003（Codex CLI異常終了のため未完了）、
   20260907-004（20260907-003の再発行。第2回レビュー対応、`success`・commit `5b2f68a`・
@@ -837,4 +889,6 @@ VPS管理レビュー正本§15が、第7回の指摘2件（S006-R7-01・S006-R7
   20260907-008（第6回レビュー対応、`success`・commit `e2a3857`・`bf7ee66`。
   ローカルDB test 68件全成功。第7回レビューで問題3件検出）、
   20260907-009（第7回レビュー対応、`success`・commit `5e209e0`。
-  ローカルDB test 73件全成功）
+  ローカルDB test 73件全成功）、20260912-001（VPS管理側task。API先行stageの
+  production反映、`verified`。source `5e209e0`、4 migration適用、feature flag無効。
+  計画・結果は`stockhome_historical_price_reparse_api_deployment_plan_20260912.md`参照）

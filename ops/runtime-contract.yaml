@@ -108,14 +108,33 @@
 #     deployされても機能上は無効のまま）。VPS管理側がVPS上の実際のNginx設定を
 #     read-onlyで確認し、StockHomeが既定access log形式でrunToken用headerを記録する
 #     独自設定が無いことも確認済み。
+#   2026-09-08: VPS管理第8回レビューでnotice 20260907-STOCKHOME-006が`accepted`となった
+#     （production反映の承認ではない）。
+#   2026-09-12 (task_id: 20260912-001): app owner承認・利用者への事前通知/不使用確認・
+#     個別production承認を経て、API先行stage（source 5e209e0、GET/POST
+#     /api/bridge/reparse-candidates・GET /api/bridge/reparse-progressの3 route、
+#     price_reparse_*の新規4テーブルを作る4 migration）をproductionへ反映した。
+#     HISTORICAL_REPARSE_ENABLEDはtrueにしておらず、新設routeはbridge認証後も404を
+#     返すため機能上は無効のまま。GAS実装・runToken発行・dry-run・
+#     import_order_candidates/purchase_logsへの書き込みはいずれも未実施。
+#     反映は3回試行し、第1回は隔離検証中の期待値誤り（新規routeの未認証応答を404と
+#     誤って期待。実際は共通bridge認証が先に401を返す設計）でproduction変更前に停止、
+#     第2回はAPI自体は正常反映したが、無関係な別アプリ（recipe-generator等）のhealth
+#     check pathの誤りにより全社横断の安全機構が働きStockHomeも含めて旧image・旧sourceへ
+#     自動rollbackした（StockHome自体の不具合ではない）。第3回で正規のhealth pathと
+#     既適用・空schemaを開始条件として全工程が成功し、10分27秒の観察で異常が無いことを
+#     確認して`verified`（API先行stageの範囲）とされた。詳細は
+#     docs/operations/stockhome_historical_price_reparse_api_deployment_plan_20260912.md
+#     （vps-server-management側、読み取り専用）。
 
 schema_version: 1
 app: stockhome
 
 canonical_repo: https://github.com/soushinyamaoka/StockHome.git
 canonical_ref: main
-updated_at: 2026-09-05
-verified_against_runtime: 2026-09-05  # task 20260905-001の即時確認。19:55定期jobの実時刻確認は未完了
+updated_at: 2026-09-13
+verified_against_runtime: 2026-09-12  # task 20260912-001の即時確認・10分観察（API先行stageの範囲）。
+                                       # 19:55定期jobの実時刻確認はこのtask範囲外（既存job・route自体は無変更）
 
 runtime:
   type: docker-compose
@@ -160,8 +179,10 @@ config:
     - { name: POSTGRES_PASSWORD, required: true, secret: true }
     - { name: POSTGRES_DB, required: true, secret: false }
     - { name: HISTORICAL_REPARSE_ENABLED, required: false, secret: false }
-      # notice 20260907-STOCKHOME-006。'true'のときだけ GET/POST /api/bridge/reparse-candidates
-      # を有効化する一時フラグ（未設定時は404）。2026-09-07時点でproduction未設定・未反映。
+      # notice 20260907-STOCKHOME-006。'true'のときだけ GET/POST /api/bridge/reparse-candidates・
+      # GET /api/bridge/reparse-progress を有効化する一時フラグ（未設定時は404）。
+      # 対応するAPI code・4 migrationはtask 20260912-001で2026-09-12にproduction反映済みだが、
+      # このフラグ自体はtrueに設定していない（新設routeはbridge認証後も404を返し機能上は無効）。
       # docker-compose.prod.ymlのapp.environmentへの受け渡し追加はtask 20260907-004で対応済み。
       # runToken自体は環境変数ではなくAPI呼び出し側が専用header（X-Reparse-Run-Token）で渡す
       # （第3回レビューB03対応、task 20260907-005）
@@ -234,7 +255,9 @@ data:
       fields: [run_token, imported_by_email, household_id, cutoff_at, expires_at, revoked_at]
       meaning: >-
         2026-09-07（notice 20260907-STOCKHOME-006、task 20260907-004で追加、
-        production未反映）。過去候補の単価再解析APIへの認可専用テーブル。GAS側の
+        task 20260912-001で2026-09-12にproduction反映済み。schemaのみで0 row、
+        機能フラグ未設定のためHTTP経由での作成・利用は未発生）。過去候補の単価
+        再解析APIへの認可専用テーブル。GAS側の
         呼び出しを、この事前発行済みrun_tokenが指すimported_by_email・household_idの
         候補だけに限定する（共有BRIDGE_TOKEN保持者が任意のemailを自己申告して
         他利用者のGmail message ID・商品名へアクセスすることを防ぐ）。行の作成は
@@ -283,7 +306,8 @@ data:
       fields: [run_id, candidate_id]
       meaning: >-
         2026-09-08（notice 20260907-STOCKHOME-006、task 20260907-007で追加、
-        production未反映）。createReparseRun実行時点で対象となる候補ID一覧を
+        task 20260912-001で2026-09-12にproduction反映済み。schemaのみで0 row）。
+        createReparseRun実行時点で対象となる候補ID一覧を
         固定するmanifest（第5回レビューR5-02対応）。run作成後に他経路
         （通常のGmail確定フロー等）で候補の価格が確定しても、このmanifestの
         内容は不変である。**第6回レビューR6-02対応（task 20260907-008）で、
@@ -309,7 +333,8 @@ data:
       fields: [run_id, item_id, reference_price]
       meaning: >-
         2026-09-07（notice 20260907-STOCKHOME-006、task 20260907-005で追加、
-        production未反映）。run内で品目ごとに1回だけ計算・固定する「参照単価」の
+        task 20260912-001で2026-09-12にproduction反映済み。schemaのみで0 row）。
+        run内で品目ごとに1回だけ計算・固定する「参照単価」の
         snapshot。resolveCandidatePriceForItemの層3判定（過去の確定単価との照合）が
         毎回最新の購入履歴を読むと、同一run内の処理順序・dry-run/write・chunk分割で
         判定結果が変わってしまう問題（第3回レビューB02/B06、実DBへのprobeで確認済み）を
@@ -331,7 +356,9 @@ data:
     - table: price_reparse_audit
       fields: [run_id, mode, candidate_id, purchase_id, before_*, applied_*, outcome, skip_reason]
       meaning: >-
-        2026-09-06（notice 20260907-STOCKHOME-006、production未反映）。過去候補の単価
+        2026-09-06（notice 20260907-STOCKHOME-006、task 20260912-001で2026-09-12に
+        production反映済み。schemaのみで0 row。機能フラグ未設定のためHTTP経由での
+        書き込みは未発生）。過去候補の単価
         再解析batchが「正常に処理を完了した」全row（成功・skip・conflict・業務判断としての
         失敗（invalid_price_rejected等）を問わず、早期return経路も含む。第3回レビュー
         B05/B04対応、task 20260907-005で全経路を監査対象化）の変更前後値を記録する
@@ -473,6 +500,13 @@ deploy:
     stockhome-api:rollback-20260905-001、旧sourceとDB dumpを
     /home/deploy/stockhome/backups/deploy-20260905-001/へ保全し、hash・restoreを確認した。
     詳細はvps-server-managementの各production実行記録を正本とする。
+    task 20260912-001（API先行stage、4 migration追加）では、旧image・旧source・DB dumpを
+    `/home/deploy/stockhome/backups/deploy-20260912-001/`へ保全した。第2回試行では、
+    StockHome自体は正常に新imageへ入れ替わったが、無関係な別アプリのhealth check path誤りに
+    より全社横断の安全機構が働き、StockHomeも含めて旧image・旧sourceへ自動rollbackされた
+    （StockHome側の不具合ではない）。DBは4 migration適用済み・新規4テーブル0 rowのまま
+    保持し、schema削除・DB restoreは行わなかった。第3回試行で正規のhealth pathと
+    既適用schemaを開始条件として再実行し、成功した。
 
 logging:
   destinations: [stdout]     # Docker Compose (docker-compose.prod.yml) の logging driver が収集する。アプリ独自のログファイルは無い
@@ -505,9 +539,15 @@ user_impact:
 # 既知の未解決事項（隠さずそのまま記録する）
 known_gaps:
   - >-
-    notice 20260907-STOCKHOME-006（過去候補の単価再解析）はproduction未反映。
-    HISTORICAL_REPARSE_ENABLED未設定のため、新設したGET/POST /api/bridge/reparse-candidates・
-    GET /api/bridge/reparse-progressはdeployされても404を返すのみで機能上は無効。
+    notice 20260907-STOCKHOME-006（過去候補の単価再解析）は、VPS管理第8回レビューで
+    `accepted`となり、API先行stage（source 5e209e0、GET/POST
+    /api/bridge/reparse-candidates・GET /api/bridge/reparse-progressの3 route、
+    price_reparse_*の新規4テーブルを作る4 migration）がtask 20260912-001で
+    2026-09-12にproduction反映・`verified`（API先行stageの範囲）となった。
+    **ただしHISTORICAL_REPARSE_ENABLEDはtrueに設定していないため、新設routeは
+    bridge認証後も404を返すのみで機能上は無効のまま。GAS実装・GAS配信・runToken発行・
+    feature flag有効化・dry-run実行・import_order_candidates/purchase_logsへの
+    実際の書き込みはいずれも未実施であり、過去単価再解析機能全体としては未完了。**
     VPS管理側の第2回レビュー（mock再現、7件）・第3回〜第7回レビュー（実DBへのprobe、
     各6〜3件）で検出された問題はいずれもtask 20260907-004〜009とClaudeの直接対応
     （migration・schema）で修正済み（household/cutoff境界を全outcome経路で強制、
@@ -520,9 +560,10 @@ known_gaps:
     期限切れ（未失効）run向けのextendReparseRunによる同一manifest/監査履歴での再開、
     失効済みrun向けのrotateReparseRunTokenによる新token安全移行（旧tokenは永久無効）、
     manifest外candidate拒否時の監査不作成、本機能4 migration全体の明示的transaction化と
-    fresh隔離DBでの全rollback rehearsal）。第7回レビューへの再提出・再レビュー待ち。
-    GAS側バッチは未実装
+    fresh隔離DBでの全rollback rehearsal）。GAS側バッチは未実装
     （設計メモのみ ops/investigations/20260907-historical-price-reparse-gas-design.md）。
+    残る段階（GAS実装レビュー、production承認③、dry-run結果確認、production承認④）は
+    別途review・別承認で進める。
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
