@@ -69,6 +69,10 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
     const data = parseBody(reparseCandidatesPayloadSchema, req.body, reply);
     if (!data) return;
 
+    if (data.mode === 'write' && process.env.HISTORICAL_REPARSE_WRITE_ENABLED !== 'true') {
+      return reply.code(403).send({ message: 'write mode is not enabled' });
+    }
+
     let counts;
     try {
       counts = await processReparseResults(runToken, data.mode, data.results);

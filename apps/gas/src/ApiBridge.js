@@ -180,11 +180,11 @@ var ApiBridge = (function() {
         return { status: 'error', body: null };
       } catch (e) {
         if (attempt < maxAttempts) {
-          Logger.log('[ReparseHistorical] API呼び出しで例外、retry ' + (attempt + 1) + '/' + maxAttempts + ': ' + e.message);
+          Logger.log('[ReparseHistorical] API呼び出しで例外、retry ' + (attempt + 1) + '/' + maxAttempts + ': ' + safeErrName_(e));
           Utilities.sleep(backoffMs[attempt - 1]);
           continue;
         }
-        Logger.log('[ReparseHistorical] API呼び出しで例外（retry尽き）: ' + e.message);
+        Logger.log('[ReparseHistorical] API呼び出しで例外（retry尽き）: ' + safeErrName_(e));
         return { status: 'error', body: null };
       }
     }
@@ -201,10 +201,15 @@ var ApiBridge = (function() {
     var qs = 'limit=' + encodeURIComponent(limit);
     if (cursor) qs += '&cursor=' + encodeURIComponent(cursor);
     var result = callReparseApiWithRetry_('/api/bridge/reparse-candidates?' + qs, 'get');
-    return {
-      status: result.status,
-      candidates: (result.status === 'ok' && result.body && result.body.candidates) ? result.body.candidates : []
-    };
+    if (result.status !== 'ok') {
+      return { status: result.status, candidates: [] };
+    }
+    var candidates = (result.body && Array.isArray(result.body.candidates)) ? result.body.candidates : null;
+    if (candidates === null) {
+      Logger.log('[ReparseHistorical] 候補取得のレスポンス形式が想定外のため失敗として扱います。');
+      return { status: 'error', candidates: [] };
+    }
+    return { status: 'ok', candidates: candidates };
   }
 
   /**
@@ -215,10 +220,50 @@ var ApiBridge = (function() {
    */
   function postReparseResults(mode, results) {
     var result = callReparseApiWithRetry_('/api/bridge/reparse-candidates', 'post', { mode: mode, results: results });
-    return {
-      status: result.status,
-      summary: (result.status === 'ok' && result.body) ? result.body.summary : null
-    };
+    if (result.status !== 'ok') {
+      return { status: result.status, summary: null };
+    }
+    var summary = (result.body && typeof result.body.summary === 'object' && result.body.summary !== null) ? result.body.summary : null;
+    if (summary === null) {
+      Logger.log('[ReparseHistorical] 結果送信のレスポンス形式が想定外のため失敗として扱います。');
+      return { status: 'error', summary: null };
+    }
+    return { status: 'ok', summary: summary };
+  }
+
+  /**
+   * 例外からログ出力可能な安全な情報だけを取り出す（e.messageは出さない。
+   * 外部応答やURLの一部がエラー文言に含まれる可能性があるため）
+   * @param {Error} e
+   * @return {string}
+   * @private
+   */
+  function safeErrName_(e) {
+    return (e && e.name) ? String(e.name) : 'Error';
+  }
+
+  /**
+   * runの進捗を取得する（GET /api/bridge/reparse-progress）。
+   * write modeの完了判定で、GET候補0件を鵜呑みにせず照合するために使う
+   * （notice 20260907-STOCKHOME-006、GAS連携レビューS006-GAS-02対応）
+   * @return {{status: 'ok'|'not_found'|'error', progress: (Object|null)}}
+   */
+  function fetchReparseProgress() {
+    var result = callReparseApiWithRetry_('/api/bridge/reparse-progress', 'get');
+    if (result.status !== 'ok') {
+      return { status: result.status, progress: null };
+    }
+    var body = result.body;
+    var valid = body
+      && typeof body.totalTargets === 'number'
+      && typeof body.processedCount === 'number'
+      && typeof body.remainingCount === 'number'
+      && typeof body.complete === 'boolean';
+    if (!valid) {
+      Logger.log('[ReparseHistorical] 進捗取得のレスポンス形式が想定外のため失敗として扱います。');
+      return { status: 'error', progress: null };
+    }
+    return { status: 'ok', progress: body };
   }
 
   // 公開API
@@ -229,6 +274,7 @@ var ApiBridge = (function() {
     ackReadyGoDelivered: ackReadyGoDelivered,
     fetchReparseCandidates: fetchReparseCandidates,
     postReparseResults: postReparseResults,
+    fetchReparseProgress: fetchReparseProgress,
     getBridgeToken: getBridgeToken
   };
 

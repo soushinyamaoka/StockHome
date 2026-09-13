@@ -846,6 +846,42 @@ var GmailImportService = (function() {
   var REPARSE_PAGE_LIMIT = 20;
 
   /**
+   * runToken自体をkeyやlogに使わない、run+mode別のcursor保存キーを作る
+   * （notice 20260907-STOCKHOME-006、GAS連携レビューS006-GAS-02対応）。
+   * SHA-256ハッシュ先頭16桁だけを使う非可逆な識別子で、runTokenへ復元できない
+   * @param {string} runToken
+   * @param {string} mode 'dry_run' | 'write'
+   * @return {string} Script Propertiesのkey名
+   * @private
+   */
+  function reparseCursorKey_(runToken, mode) {
+    var digestBytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, runToken);
+    var hex = '';
+    for (var i = 0; i < digestBytes.length; i++) {
+      var b = digestBytes[i];
+      if (b < 0) b += 256;
+      hex += ('0' + b.toString(16)).slice(-2);
+    }
+    return 'REPARSE_CURSOR_' + mode + '_' + hex.slice(0, 16);
+  }
+
+  /** buildReparseResult_が判定不能な障害（quota・認可・通信・parser異常等）を検知したことを示す印 */
+  var REPARSE_INDETERMINATE = { indeterminate: true };
+
+  /**
+   * GmailApp.getMessageById()の例外が「本当に見つからない（恒久的）」ことを示すかを判定する。
+   * それ以外（quota、認可、内部エラー、一時的な通信障害等）は判定不能として扱う
+   * （notice 20260907-STOCKHOME-006、GAS連携レビューS006-GAS-04対応）
+   * @param {Error} e
+   * @return {boolean}
+   * @private
+   */
+  function isPermanentMessageNotFound_(e) {
+    var msg = (e && e.message) ? String(e.message) : '';
+    return /invalid argument|not found/i.test(msg);
+  }
+
+  /**
    * 過去候補の単価再解析バッチ
    * REPARSE_RUN_TOKEN（Script Properties）が未設定なら何もせず終了する。
    *
@@ -866,7 +902,8 @@ var GmailImportService = (function() {
         return { stoppedReason: 'no_run_token', pagesProcessed: 0, lastSummary: null };
       }
 
-      var cursor = PropertiesService.getScriptProperties().getProperty('REPARSE_CURSOR') || null;
+      var cursorKey = reparseCursorKey_(runToken, mode);
+      var cursor = PropertiesService.getScriptProperties().getProperty(cursorKey) || null;
       var startedAt = Date.now();
       var pagesProcessed = 0;
       var lastSummary = null;
@@ -892,14 +929,36 @@ var GmailImportService = (function() {
 
         var candidates = fetchResult.candidates;
         if (candidates.length === 0) {
-          PropertiesService.getScriptProperties().deleteProperty('REPARSE_CURSOR');
+          if (mode === 'write') {
+            var progressResult = ApiBridge.fetchReparseProgress();
+            if (!(progressResult.status === 'ok' && progressResult.progress.complete === true)) {
+              Logger.log('[ReparseHistorical] 候補取得は0件でしたが、進捗確認と一致しないため完了と判断せず終了します。cursorは変更しません。');
+              return { stoppedReason: 'progress_mismatch', pagesProcessed: pagesProcessed, lastSummary: lastSummary };
+            }
+          }
+          PropertiesService.getScriptProperties().deleteProperty(cursorKey);
           Logger.log('[ReparseHistorical] 完了: 対象候補がなくなりました。mode=' + mode);
           return { stoppedReason: 'complete', pagesProcessed: pagesProcessed, lastSummary: lastSummary };
         }
 
         var results = [];
+        var chunkAborted = false;
         for (var i = 0; i < candidates.length; i++) {
-          results.push(buildReparseResult_(candidates[i]));
+          if (Date.now() - startedAt > REPARSE_TIME_BUDGET_MS) {
+            chunkAborted = true;
+            break;
+          }
+          var oneResult = buildReparseResult_(candidates[i]);
+          if (oneResult === REPARSE_INDETERMINATE) {
+            chunkAborted = true;
+            break;
+          }
+          results.push(oneResult);
+        }
+
+        if (chunkAborted) {
+          Logger.log('[ReparseHistorical] 一時的な障害または時間予算超過のため、このchunkを中断します。cursorは進めず次回再試行します。');
+          return { stoppedReason: 'chunk_aborted', pagesProcessed: pagesProcessed, lastSummary: lastSummary };
         }
 
         var postResult = ApiBridge.postReparseResults(mode, results);
@@ -912,9 +971,8 @@ var GmailImportService = (function() {
         lastSummary = postResult.summary;
         Logger.log('[ReparseHistorical] chunk完了: mode=' + mode + ', summary=' + JSON.stringify(lastSummary));
 
-        // cursorは、直前のPOSTが正常応答を確認できた後にのみ進めて保存する
         cursor = candidates[candidates.length - 1].id;
-        PropertiesService.getScriptProperties().setProperty('REPARSE_CURSOR', cursor);
+        PropertiesService.getScriptProperties().setProperty(cursorKey, cursor);
         pagesProcessed++;
       }
     } finally {
@@ -935,10 +993,13 @@ var GmailImportService = (function() {
     try {
       message = GmailApp.getMessageById(candidate.mailMessageId);
     } catch (e) {
-      return { candidateId: candidate.id, skipReason: 'message_not_found' };
+      if (isPermanentMessageNotFound_(e)) {
+        return { candidateId: candidate.id, skipReason: 'message_not_found' };
+      }
+      return REPARSE_INDETERMINATE;
     }
     if (!message) {
-      return { candidateId: candidate.id, skipReason: 'message_not_found' };
+      return REPARSE_INDETERMINATE;
     }
 
     var parser = null;
@@ -955,7 +1016,7 @@ var GmailImportService = (function() {
     try {
       parseResult = parser.parse(message.getSubject() || '', message.getPlainBody() || '', message.getDate());
     } catch (e) {
-      return { candidateId: candidate.id, skipReason: 'item_not_found_in_reparse' };
+      return REPARSE_INDETERMINATE;
     }
 
     if (!parseResult || !parseResult.items) {

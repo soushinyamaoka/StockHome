@@ -39,6 +39,7 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       BRIDGE_TOKEN: ${BRIDGE_TOKEN}
       HISTORICAL_REPARSE_ENABLED: ${HISTORICAL_REPARSE_ENABLED}
+      HISTORICAL_REPARSE_WRITE_ENABLED: ${HISTORICAL_REPARSE_WRITE_ENABLED}
     ports:
       # Nginx(HTTPS)経由のみに限定し、ホスト外部からの4002直接到達を遮断する
       # Nginxは proxy_pass http://127.0.0.1:4002 で参照する
