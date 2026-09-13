@@ -110,6 +110,22 @@
 #     独自設定が無いことも確認済み。
 #   2026-09-08: VPS管理第8回レビューでnotice 20260907-STOCKHOME-006が`accepted`となった
 #     （production反映の承認ではない）。
+#   2026-09-12 (task_id: 20260912-001): app owner承認・利用者への事前通知/不使用確認・
+#     個別production承認を経て、API先行stage（source 5e209e0、GET/POST
+#     /api/bridge/reparse-candidates・GET /api/bridge/reparse-progressの3 route、
+#     price_reparse_*の新規4テーブルを作る4 migration）をproductionへ反映した。
+#     HISTORICAL_REPARSE_ENABLEDはtrueにしておらず、新設routeはbridge認証後も404を
+#     返すため機能上は無効のまま。GAS実装・runToken発行・dry-run・
+#     import_order_candidates/purchase_logsへの書き込みはいずれも未実施。
+#     反映は3回試行し、第1回は隔離検証中の期待値誤り（新規routeの未認証応答を404と
+#     誤って期待。実際は共通bridge認証が先に401を返す設計）でproduction変更前に停止、
+#     第2回はAPI自体は正常反映したが、無関係な別アプリ（recipe-generator等）のhealth
+#     check pathの誤りにより全社横断の安全機構が働きStockHomeも含めて旧image・旧sourceへ
+#     自動rollbackした（StockHome自体の不具合ではない）。第3回で正規のhealth pathと
+#     既適用・空schemaを開始条件として全工程が成功し、10分27秒の観察で異常が無いことを
+#     確認して`verified`（API先行stageの範囲）とされた。詳細は
+#     docs/operations/stockhome_historical_price_reparse_api_deployment_plan_20260912.md
+#     （vps-server-management側、読み取り専用）。
 #   2026-09-13 (task_id: 20260913-001): GAS版StockHomeをこのモノレポの`apps/gas/`へ
 #     統合した後（commit 70cccc6、production runtime・API側コードへの影響なし）、
 #     notice 20260907-STOCKHOME-006のB08（GAS側バッチ）をai-watchの
@@ -130,22 +146,25 @@
 #     確認済み。既存トリガー（Gmail取込・ReadyGo配信）が呼ぶ関数の本文は無変更のため
 #     動作に影響なし。HISTORICAL_REPARSE_ENABLED・REPARSE_RUN_TOKENはいずれも
 #     未設定のままで、API側runtime・production baseline・deployment_statusに変更なし。
-#   2026-09-12 (task_id: 20260912-001): app owner承認・利用者への事前通知/不使用確認・
-#     個別production承認を経て、API先行stage（source 5e209e0、GET/POST
-#     /api/bridge/reparse-candidates・GET /api/bridge/reparse-progressの3 route、
-#     price_reparse_*の新規4テーブルを作る4 migration）をproductionへ反映した。
-#     HISTORICAL_REPARSE_ENABLEDはtrueにしておらず、新設routeはbridge認証後も404を
-#     返すため機能上は無効のまま。GAS実装・runToken発行・dry-run・
-#     import_order_candidates/purchase_logsへの書き込みはいずれも未実施。
-#     反映は3回試行し、第1回は隔離検証中の期待値誤り（新規routeの未認証応答を404と
-#     誤って期待。実際は共通bridge認証が先に401を返す設計）でproduction変更前に停止、
-#     第2回はAPI自体は正常反映したが、無関係な別アプリ（recipe-generator等）のhealth
-#     check pathの誤りにより全社横断の安全機構が働きStockHomeも含めて旧image・旧sourceへ
-#     自動rollbackした（StockHome自体の不具合ではない）。第3回で正規のhealth pathと
-#     既適用・空schemaを開始条件として全工程が成功し、10分27秒の観察で異常が無いことを
-#     確認して`verified`（API先行stageの範囲）とされた。詳細は
-#     docs/operations/stockhome_historical_price_reparse_api_deployment_plan_20260912.md
-#     （vps-server-management側、読み取り専用）。
+#     この操作はVPS管理側の事前個別実行依頼を得ておらず、notice上で手続き上の
+#     逸脱として自己申告した（commit b5ab358）。
+#   2026-09-14 (task_id: 20260914-001): VPS管理側のGAS連携レビュー§16.3が、
+#     実際のGAS sourceをNode.jsのvmへ読み込みGAS APIを合成mockへ置換して再現した
+#     4件の問題（S006-GAS-01〜04）を検出。API側にHISTORICAL_REPARSE_WRITE_ENABLED
+#     （HISTORICAL_REPARSE_ENABLEDとは別flag）が'true'でない限りmode='write'を
+#     data/audit不変のまま403で拒否するgateを追加、GAS側のcursorをrunToken
+#     非可逆ハッシュ×mode別キーへ分離しwrite完了時はGET /reparse-progressとも
+#     突き合わせ、例外ログをe.nameのみへ変更しHTTP 200の想定外responseを
+#     エラーとして扱い、Gmail/parser例外を恒久的skipと判定不能（chunk中断・
+#     cursor不変で再送可能）に分離して修正した（commit d849129）。
+#     apps/gas/test/reparseHistoricalCandidates.gas.test.cjsを新規に
+#     リポジトリへ永続保存し23シナリオ全成功、API側もbridge.reparse.test.tsへ
+#     3件追加しnpm run test --workspace=@stockhome/apiで全76件成功を確認した。
+#     **この修正もローカルのsource変更のみで、clasp push/deployは未実施のため
+#     実際のApps Scriptプロジェクト（version @33、task 20260913-001時点のまま）
+#     には未反映。HISTORICAL_REPARSE_ENABLED・REPARSE_RUN_TOKENとも未設定のため
+#     修正前のバグは現時点で実害なし。production baseline・deployment_status・
+#     API側runtimeには一切変更なし。**
 
 schema_version: 1
 app: stockhome
@@ -584,9 +603,18 @@ known_gaps:
     ローカル実装完了（設計メモ ops/investigations/20260907-historical-price-reparse-gas-design.md
     どおり、apps/gas/src/GmailImportService.js・ApiBridge.jsへ追加、commit 3de1557）、
     2026-09-14にapp owner承認のうえclasp push/deployでApps Scriptへも反映済み
-    （version @33。既存トリガーの動作には影響なし）。**ただしHISTORICAL_REPARSE_ENABLED・
-    REPARSE_RUN_TOKENはいずれも未設定のため、機能自体は依然として動作しない
-    （手動実行しても即座にno_run_tokenで終了する）。** 残る段階（VPS側でのrunToken発行、
+    （version @33。既存トリガーの動作には影響なし）。続けて2026-09-14、VPS管理側の
+    GAS連携レビュー§16.3が4件（S006-GAS-01〜04: 承認③tokenでもwrite可能・
+    cursorがrun/modeから独立・例外/未知responseの扱いが不安全・一時障害を永久skip化）を
+    検出し、task 20260914-001で修正した（commit d849129。API側write gate、GAS側
+    cursorのrun/mode分離とprogress照合、安全なログ変換とresponse型検証、
+    Gmail/parser例外の恒久skip/判定不能分離。apps/gas/test/へ永続保存した
+    23シナリオとAPI test 76件で確認済み）。**ただしこの修正はローカルsourceのみで、
+    clasp push/deployは未実施のためApps Scriptには未反映（version @33は
+    task 20260913-001時点のまま、S006-GAS-01〜04のバグが現存するが
+    HISTORICAL_REPARSE_ENABLED・REPARSE_RUN_TOKENとも未設定のため実害なし）。
+    機能自体は依然として動作しない（手動実行しても即座にno_run_tokenで終了する）。**
+    VPS管理側の再レビュー待ち。残る段階（修正版のGAS再deploy、VPS側でのrunToken発行、
     production承認③によるHISTORICAL_REPARSE_ENABLED設定・dry-run結果確認、
     production承認④）は別途review・別承認で進める。
   - >-
