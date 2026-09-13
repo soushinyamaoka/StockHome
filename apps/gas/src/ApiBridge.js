@@ -123,12 +123,112 @@ var ApiBridge = (function() {
     return callApi_('/api/bridge/readygo-ack', 'post', { ids: ids });
   }
 
+  /**
+   * 過去候補の単価再解析API（notice 20260907-STOCKHOME-006）を呼び出す共通処理。
+   * X-Reparse-Run-Token（Script Propertiesの REPARSE_RUN_TOKEN）と
+   * 既存の X-Bridge-Token の両方を付与する。
+   * runToken・candidateの内容はログへ出さない。
+   *
+   * @param {string} path 例: '/api/bridge/reparse-candidates?cursor=xxx&limit=20'
+   * @param {string} method 'get' | 'post'
+   * @param {Object} [payload] POSTボディ
+   * @return {{status: 'ok'|'not_found'|'error', body: (Object|null)}}
+   *   status='not_found': API URL/Bridge Token/runTokenいずれかが未設定、またはHTTP 404。
+   *   status='error': リトライを尽くしても成功しなかった、または404以外の非成功status。
+   * @private
+   */
+  function callReparseApiWithRetry_(path, method, payload) {
+    var runToken = PropertiesService.getScriptProperties().getProperty('REPARSE_RUN_TOKEN');
+    if (!isConfigured() || !runToken) {
+      return { status: 'not_found', body: null };
+    }
+
+    var url = getApiUrl().replace(/\/+$/, '') + path;
+    var options = {
+      method: method,
+      headers: {
+        'X-Bridge-Token': getBridgeToken(),
+        'X-Reparse-Run-Token': runToken
+      },
+      muteHttpExceptions: true
+    };
+    if (payload) {
+      options.contentType = 'application/json';
+      options.payload = JSON.stringify(payload);
+    }
+
+    var maxAttempts = 3;
+    var backoffMs = [1000, 2000];
+
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        var res = UrlFetchApp.fetch(url, options);
+        var code = res.getResponseCode();
+
+        if (code >= 200 && code < 300) {
+          return { status: 'ok', body: JSON.parse(res.getContentText()) };
+        }
+        if (code === 404) {
+          return { status: 'not_found', body: null };
+        }
+        if (code >= 500 && attempt < maxAttempts) {
+          Logger.log('[ReparseHistorical] API呼び出し失敗(HTTP ' + code + ')、retry ' + (attempt + 1) + '/' + maxAttempts);
+          Utilities.sleep(backoffMs[attempt - 1]);
+          continue;
+        }
+        Logger.log('[ReparseHistorical] API呼び出し失敗: HTTP ' + code);
+        return { status: 'error', body: null };
+      } catch (e) {
+        if (attempt < maxAttempts) {
+          Logger.log('[ReparseHistorical] API呼び出しで例外、retry ' + (attempt + 1) + '/' + maxAttempts + ': ' + e.message);
+          Utilities.sleep(backoffMs[attempt - 1]);
+          continue;
+        }
+        Logger.log('[ReparseHistorical] API呼び出しで例外（retry尽き）: ' + e.message);
+        return { status: 'error', body: null };
+      }
+    }
+    return { status: 'error', body: null };
+  }
+
+  /**
+   * 再解析対象候補を取得する
+   * @param {string|null} cursor
+   * @param {number} limit
+   * @return {{status: 'ok'|'not_found'|'error', candidates: Object[]}}
+   */
+  function fetchReparseCandidates(cursor, limit) {
+    var qs = 'limit=' + encodeURIComponent(limit);
+    if (cursor) qs += '&cursor=' + encodeURIComponent(cursor);
+    var result = callReparseApiWithRetry_('/api/bridge/reparse-candidates?' + qs, 'get');
+    return {
+      status: result.status,
+      candidates: (result.status === 'ok' && result.body && result.body.candidates) ? result.body.candidates : []
+    };
+  }
+
+  /**
+   * 再解析結果を送信する
+   * @param {string} mode 'dry_run' | 'write'
+   * @param {Object[]} results
+   * @return {{status: 'ok'|'not_found'|'error', summary: (Object|null)}}
+   */
+  function postReparseResults(mode, results) {
+    var result = callReparseApiWithRetry_('/api/bridge/reparse-candidates', 'post', { mode: mode, results: results });
+    return {
+      status: result.status,
+      summary: (result.status === 'ok' && result.body) ? result.body.summary : null
+    };
+  }
+
   // 公開API
   return {
     isConfigured: isConfigured,
     postCandidatesToApi: postCandidatesToApi,
     fetchReadyGoPending: fetchReadyGoPending,
     ackReadyGoDelivered: ackReadyGoDelivered,
+    fetchReparseCandidates: fetchReparseCandidates,
+    postReparseResults: postReparseResults,
     getBridgeToken: getBridgeToken
   };
 

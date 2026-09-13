@@ -834,6 +834,158 @@ var GmailImportService = (function() {
     return rows.slice(0, max);
   }
 
+  // ============================================================
+  // 過去候補の単価再解析（notice 20260907-STOCKHOME-006）
+  // 既存の6時間cronには組み込まない。手動実行専用
+  // ============================================================
+
+  /** 実行時間予算（Apps Scriptの実行時間制限6分に対する安全マージン） */
+  var REPARSE_TIME_BUDGET_MS = 5 * 60 * 1000;
+
+  /** 1ページあたりの取得件数 */
+  var REPARSE_PAGE_LIMIT = 20;
+
+  /**
+   * 過去候補の単価再解析バッチ
+   * REPARSE_RUN_TOKEN（Script Properties）が未設定なら何もせず終了する。
+   *
+   * @param {string} mode 'dry_run' | 'write'
+   * @return {Object} { stoppedReason, pagesProcessed, lastSummary }
+   */
+  function reparseHistoricalCandidates(mode) {
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(0)) {
+      Logger.log('[ReparseHistorical] 他の処理が実行中のため終了します。');
+      return { stoppedReason: 'locked', pagesProcessed: 0, lastSummary: null };
+    }
+
+    try {
+      var runToken = PropertiesService.getScriptProperties().getProperty('REPARSE_RUN_TOKEN');
+      if (!runToken) {
+        Logger.log('[ReparseHistorical] REPARSE_RUN_TOKEN未設定のため終了します（運用者がrunTokenを発行・登録していません）。');
+        return { stoppedReason: 'no_run_token', pagesProcessed: 0, lastSummary: null };
+      }
+
+      var cursor = PropertiesService.getScriptProperties().getProperty('REPARSE_CURSOR') || null;
+      var startedAt = Date.now();
+      var pagesProcessed = 0;
+      var lastSummary = null;
+
+      Logger.log('[ReparseHistorical] 開始: mode=' + mode);
+
+      while (true) {
+        if (Date.now() - startedAt > REPARSE_TIME_BUDGET_MS) {
+          Logger.log('[ReparseHistorical] 時間予算に達したため中断します。次回同じcursorから再開します。');
+          return { stoppedReason: 'time_budget', pagesProcessed: pagesProcessed, lastSummary: lastSummary };
+        }
+
+        var fetchResult = ApiBridge.fetchReparseCandidates(cursor, REPARSE_PAGE_LIMIT);
+
+        if (fetchResult.status === 'not_found') {
+          Logger.log('[ReparseHistorical] 対象なし、またはproduction側の準備が完了していません。終了します。');
+          return { stoppedReason: 'not_found', pagesProcessed: pagesProcessed, lastSummary: lastSummary };
+        }
+        if (fetchResult.status === 'error') {
+          Logger.log('[ReparseHistorical] 候補取得に失敗しました。cursorを進めずに終了します。次回同じ範囲から再試行してください。');
+          return { stoppedReason: 'fetch_error', pagesProcessed: pagesProcessed, lastSummary: lastSummary };
+        }
+
+        var candidates = fetchResult.candidates;
+        if (candidates.length === 0) {
+          PropertiesService.getScriptProperties().deleteProperty('REPARSE_CURSOR');
+          Logger.log('[ReparseHistorical] 完了: 対象候補がなくなりました。mode=' + mode);
+          return { stoppedReason: 'complete', pagesProcessed: pagesProcessed, lastSummary: lastSummary };
+        }
+
+        var results = [];
+        for (var i = 0; i < candidates.length; i++) {
+          results.push(buildReparseResult_(candidates[i]));
+        }
+
+        var postResult = ApiBridge.postReparseResults(mode, results);
+
+        if (postResult.status !== 'ok') {
+          Logger.log('[ReparseHistorical] 結果送信に失敗しました。cursorを進めずに終了します。次回同じchunkを再送します。');
+          return { stoppedReason: 'post_error', pagesProcessed: pagesProcessed, lastSummary: lastSummary };
+        }
+
+        lastSummary = postResult.summary;
+        Logger.log('[ReparseHistorical] chunk完了: mode=' + mode + ', summary=' + JSON.stringify(lastSummary));
+
+        // cursorは、直前のPOSTが正常応答を確認できた後にのみ進めて保存する
+        cursor = candidates[candidates.length - 1].id;
+        PropertiesService.getScriptProperties().setProperty('REPARSE_CURSOR', cursor);
+        pagesProcessed++;
+      }
+    } finally {
+      lock.releaseLock();
+    }
+  }
+
+  /**
+   * 1候補を再解析し、POST用のresult要素を構築する。
+   * message_id・商品名・金額はLoggerへ出さない。
+   *
+   * @param {{id: string, mailMessageId: string, itemNameRaw: (string|null), vendor: string, mailPhase: string}} candidate
+   * @return {Object} reparseResultItemSchema形式（camelCase）
+   * @private
+   */
+  function buildReparseResult_(candidate) {
+    var message;
+    try {
+      message = GmailApp.getMessageById(candidate.mailMessageId);
+    } catch (e) {
+      return { candidateId: candidate.id, skipReason: 'message_not_found' };
+    }
+    if (!message) {
+      return { candidateId: candidate.id, skipReason: 'message_not_found' };
+    }
+
+    var parser = null;
+    if (candidate.vendor === ENUMS.EXTERNAL_VENDOR.AMAZON) {
+      parser = AmazonMailParser;
+    } else if (candidate.vendor === ENUMS.EXTERNAL_VENDOR.MATSUKIYO) {
+      parser = MatsukiyoMailParser;
+    }
+    if (!parser) {
+      return { candidateId: candidate.id, skipReason: 'item_not_found_in_reparse' };
+    }
+
+    var parseResult;
+    try {
+      parseResult = parser.parse(message.getSubject() || '', message.getPlainBody() || '', message.getDate());
+    } catch (e) {
+      return { candidateId: candidate.id, skipReason: 'item_not_found_in_reparse' };
+    }
+
+    if (!parseResult || !parseResult.items) {
+      return { candidateId: candidate.id, skipReason: 'item_not_found_in_reparse' };
+    }
+
+    var wanted = toStr(candidate.itemNameRaw);
+    var matches = parseResult.items.filter(function(item) {
+      return toStr(item.item_name_raw) === wanted;
+    });
+
+    if (matches.length === 0) {
+      return { candidateId: candidate.id, skipReason: 'item_not_found_in_reparse' };
+    }
+    if (matches.length > 1) {
+      return { candidateId: candidate.id, skipReason: 'ambiguous_item_match' };
+    }
+
+    var matched = matches[0];
+    if (matched.detected_price === undefined || matched.detected_price === null || matched.detected_price === '') {
+      return { candidateId: candidate.id };
+    }
+
+    var out = { candidateId: candidate.id, detectedPrice: matched.detected_price };
+    if (matched.price_source) {
+      out.priceSource = matched.price_source;
+    }
+    return out;
+  }
+
   // 公開API（仕様書 Section 20 準拠）
   return {
     runMyGmailImport: runMyGmailImport,
@@ -844,7 +996,23 @@ var GmailImportService = (function() {
     getAutoConfirmedCandidates: getAutoConfirmedCandidates,
     confirmImportCandidate: confirmImportCandidate,
     ignoreImportCandidate: ignoreImportCandidate,
-    upgradeOrderedToShipped: upgradeOrderedToShipped
+    upgradeOrderedToShipped: upgradeOrderedToShipped,
+    reparseHistoricalCandidates: reparseHistoricalCandidates
   };
 
 })();
+
+/**
+ * 過去候補の単価再解析（dry-run）。スクリプトエディタから直接実行する。
+ */
+function reparseHistoricalCandidatesDryRun() {
+  return GmailImportService.reparseHistoricalCandidates('dry_run');
+}
+
+/**
+ * 過去候補の単価再解析（write）。スクリプトエディタから直接実行する。
+ * dry-runの結果をapp ownerが確認し、production承認を得てから実行すること。
+ */
+function reparseHistoricalCandidatesWrite() {
+  return GmailImportService.reparseHistoricalCandidates('write');
+}
