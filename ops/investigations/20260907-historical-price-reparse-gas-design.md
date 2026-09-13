@@ -13,9 +13,11 @@ notice: `20260907-STOCKHOME-006`のB08対応。API側（対応するGET/POST）�
 GAS版がこのモノレポの`apps/gas/`へ統合され、ai-watchのClaude→Codexパイプラインが
 `apps/gas/`を対象に含めるようになったため、本メモに基づきtask `20260913-001`として
 同パイプライン経由で実装した（commit `3de1557`）。本メモ下記の設計方針と実装内容に
-齟齬はない。**残っているのは`clasp push`/`clasp deploy`によるApps Scriptプロジェクトへの
-反映のみ**（production承認③の対象。「対象repository・実装担当」節の`push.bat`・
-`deploy.bat`に関する記載は現在も有効）。
+齟齬はない。**2026-09-14、app ownerが本チャットで明示承認した範囲（clasp push/deployのみ、
+VPS・production DB接続なし）で、Claudeが`clasp push -f`→`clasp deploy`を実行し
+Apps Scriptプロジェクトへ反映した（version `@33`）。** 残っているのは
+`HISTORICAL_REPARSE_ENABLED`設定・runToken発行・dry-run実行（production承認③の対象、
+VPS側操作を伴う）のみ。
 
 **2026-09-07 第2回VPS管理レビューを受けて全面改訂**: API側の認可方式が
 自己申告emailから事前発行済み`runToken`へ変更されたため、本メモの該当箇所を
@@ -94,6 +96,10 @@ manifestが、進捗計算だけでなくGET/POST双方の正本になった。G
 - 実装担当: **実装完了（2026-09-13、ai-watchのStockHome-ClaudeToCodexパイプライン経由、
   task `20260913-001`、commit `3de1557`）**。当初検討していた「手動起動Codexセッション」
   「Claudeへの一時例外」はどちらも不要になった
+- deploy: **完了（2026-09-14、app owner承認によりClaudeが`clasp push -f`→
+  `clasp deploy -i <DEPLOY_ID> -d "auto-deploy"`を実行、version `@33`）**。
+  事前に`clasp pull`でcloud側の現行sourceを取得し、意図した2ファイル以外に
+  乖離が無いことを確認済み
 - レビュー: Claudeが差分レビュー・独立ビルド確認済み（上記「2026-09-13追記」参照）。
   実Gmailへ接続した動作確認（実データでのdry-run）は、production承認③後にapp owner
   立ち会いのもとClaudeが対話セッションで確認する（未実施）

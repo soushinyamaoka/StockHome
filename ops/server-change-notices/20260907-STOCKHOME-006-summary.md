@@ -172,7 +172,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 | 過去候補の`price_source`（`price_source`/`detected_price`とも NULL の行） | NULL/空 | 再解析で価格が判明した候補のみ値が入る（対象外は変化なし） |
 | 対応する`purchase_logs.price`（NULLの行のみ） | NULL | 層1〜3判定で確定できたものだけ値が入る |
 | API | 該当エンドポイントなし | `GET /api/bridge/reparse-candidates`・`POST /api/bridge/reparse-candidates`・`GET /api/bridge/reparse-progress`（第5回レビューR5-02対応で追加）を新設（`HISTORICAL_REPARSE_ENABLED=true`のときのみ有効。未設定時は404）。認可は事前発行済み`runToken`（第2回レビューB03対応、下記参照）で行い、自己申告emailは受け付けない。`runToken`はquery string/bodyではなく専用header（`X-Reparse-Run-Token`）で受け渡す（第3回レビューB03対応） |
-| GAS | 該当機能なし | **ローカルのソースコード実装は完了（2026-09-13、task `20260913-001`）。`apps/gas/src/GmailImportService.js`へ`reparseHistoricalCandidates(mode)`、`apps/gas/src/ApiBridge.js`へ再解析専用API呼び出し（リトライ付き）を追加した。ただし`clasp push`/`clasp deploy`は未実施のため、実際のApps Scriptプロジェクトには未反映（実運用では動作しない）。runTokenの発行・登録、実Gmailへの接続、feature flag有効化もいずれも未実施。**詳細は下記「Codex実装結果（task 20260913-001）」参照 |
+| GAS | 該当機能なし | **実装・deployとも完了（2026-09-13実装task `20260913-001`、2026-09-14 app owner承認によりclasp push/deploy実施、version `@33`）。`apps/gas/src/GmailImportService.js`へ`reparseHistoricalCandidates(mode)`、`apps/gas/src/ApiBridge.js`へ再解析専用API呼び出し（リトライ付き）を追加しApps Scriptへ反映した。ただしrunTokenの発行・登録、`HISTORICAL_REPARSE_ENABLED`有効化、実Gmailへの接続を伴う実行はいずれも未実施であり、現時点で誰かが`reparseHistoricalCandidatesDryRun`等を実行しても`no_run_token`で即座に終了する（既存トリガーの動作にも影響なし）。**詳細は下記「Codex実装結果（task 20260913-001）」「GAS clasp push/deploy実施結果」参照 |
 | `price_reparse_audit`テーブル | 存在しない | 新設（production row変更前後値の監査ログ。Git管理外）。`mode`列と`(run_id, candidate_id, mode)`の一意制約を追加し、write再送の冪等・dry-run再実行の重複防止に使う（第3回レビューB02/B04対応） |
 | `price_reparse_runs`テーブル | 存在しない | 新設（第2回レビューB03対応。runToken・対象owner・有効期限を保持する認可テーブル。HTTP経由では作成せず、production承認後に運用者が直接1件だけ発行する）。`cutoff_at`列を追加し、run作成後に新規追加された候補を対象から除外する（第3回レビューB02/B04対応）。期限切れ（未失効）のrunだけを同じrunToken・manifest・監査履歴を維持したまま再開する`extendReparseRun`関数（第6回レビューR6-02対応。第7回レビューR7-01対応で`revokedAt`設定済みrunは拒否するよう修正）と、失効済みrunだけを新しいrunTokenへ安全に移行する`rotateReparseRunToken`関数（第7回レビューR7-01対応。旧tokenは以後永久に無効）を追加（いずれも`createReparseRun`と同じくHTTP非公開） |
 | `price_reparse_item_snapshots`テーブル | 存在しない | 新設（第3回レビューB02/B06対応。run内で品目ごとに参照単価を1回だけ計算・固定し、dry-run/write・chunk分割・処理順序によらず同じ判定になるようにする） |
@@ -500,21 +500,25 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 なった（下記「第8回レビュー結果」参照）。これはproduction反映の承認ではない。
 4段階の承認取得（app owner承認①〜production承認④）・client配信承認は、
 production計画の提示後に行う。GAS側バッチのローカル実装は2026-09-13に
-task `20260913-001`で完了した（下記「Codex実装結果（task 20260913-001）」参照）。
-`clasp push`/`clasp deploy`によるApps Scriptへの反映はproduction承認③の対象として
-未実施のまま。
+task `20260913-001`で完了し（下記「Codex実装結果（task 20260913-001）」参照）、
+2026-09-14にapp ownerが本チャットで明示承認した範囲（`clasp push`/`clasp deploy`のみ、
+VPS・production DB接続なし）でApps Scriptへの反映も完了した（下記「GAS clasp
+push/deploy実施結果」参照）。`HISTORICAL_REPARSE_ENABLED`設定・runToken発行・
+dry-run（production承認③の対象）は引き続き未実施のまま。
 
 ## 未解決事項
 
-1. **B08（実装経路→実装完了、deploy未実施）**: GAS側バッチの実装は、当初
+1. **B08（実装経路→実装・deploy完了）**: GAS側バッチの実装は、当初
    app owner判断により「今回は実装せず、別途手動Codexセッションで実装する」
    方針だった（2026-09-07）が、2026-09-13にGAS版StockHomeがこのモノレポの
    `apps/gas/`へ統合され、ai-watchのClaude→Codexパイプラインが`apps/gas/`を
    対象に含めるようになったため、同パイプライン経由でtask `20260913-001`として
    実装した。設計メモ（`ops/investigations/20260907-historical-price-reparse-gas-design.md`、
    第7回VPS管理レビュー反映版）どおりの実装であることをCodex・Claude双方で確認済み。
-   **残っているのは`clasp push`/`clasp deploy`によるApps Scriptプロジェクトへの反映
-   （production承認③の対象）のみ**であり、実装そのものはこれ以上のCodex作業を要しない。
+   2026-09-14、app ownerの明示承認を受け`clasp push`/`clasp deploy`でApps Scriptへも
+   反映した（version `@33`）。**残っているのは`HISTORICAL_REPARSE_ENABLED`設定・
+   runToken発行・dry-run実行（production承認③の対象、VPS側操作を伴う）のみ**であり、
+   実装・deployそのものはこれ以上の作業を要しない。
 2. `runToken`の発行（`createReparseRun`）は関数として用意するのみで、実際の発行・
    GASへの受け渡し方法（Script Propertiesへ手動設定する想定）はproduction承認後に確定する
 3. `HISTORICAL_REPARSE_ENABLED`の実際の設定・解除手順（VPS管理側の`.env`変更）は
@@ -939,6 +943,36 @@ GAS版StockHome（従来はGit管理外の独立フォルダ`C:\work\PRG\ZZ_Othe
   `HISTORICAL_REPARSE_ENABLED`設定変更はいずれも未実施。実際のApps Scriptには
   未反映のため実運用では動作しない）
 - commit: `3de1557`（origin/mainへpush済み）
+
+## GAS clasp push/deploy実施結果（2026-09-14、app owner承認）
+
+**app ownerが本チャットで「GAS clasp push/deploy」を明示承認したことを受け、
+Claudeが実行した。VPS・production DBへは一切接続していない
+（Google Apps Scriptのcloud sourceのみを更新する操作）。**
+
+- 事前確認: 別ディレクトリへ`clasp pull`しApps Script側の現行cloud sourceを取得、
+  `apps/gas/src/`とdiffした。`ApiBridge.js`・`GmailImportService.js`
+  （今回意図して変更した2ファイル）以外の30ファイルはcloudとlocalで完全一致
+  （意図しない乖離なし）。上記2ファイルの差分も、task `20260913-001`で追加した
+  コードのみであることを確認した
+- 実行: `clasp push -f`で33ファイルを反映（`Pushed 33 files`）。続けて
+  `clasp deploy -i <既存DEPLOY_ID> -d "auto-deploy"`で既存デプロイをバージョン
+  `@33`へ更新（`Deployed <DEPLOY_ID> @33`）。`deploy.bat`と同一のコマンド列を
+  Claudeが直接実行した（`.bat`ファイル自体はpause付きのため対話実行不可の
+  ため未使用）
+- 影響範囲: `reparseHistoricalCandidates`・`reparseHistoricalCandidatesDryRun`/
+  `Write`・`ApiBridge.fetchReparseCandidates`/`postReparseResults`が
+  Apps Scriptエディタから手動実行可能になった。**既存の関数
+  （`runMyGmailImport`・`deliverStockHomeNotifications`等、既存トリガーが
+  呼び出す関数）は追加のみで本文が変更されていないため、既存の6時間Gmail取込
+  トリガー・夜間ReadyGo配信トリガーの動作に変更はない**（task `20260913-001`の
+  差分レビューで確認済み）。`REPARSE_RUN_TOKEN`が未設定のため、
+  `reparseHistoricalCandidates`を誰かが誤って実行しても`no_run_token`で
+  即座に終了し、外部API呼び出し・Gmail接続は発生しない
+- 未実施のまま: `REPARSE_RUN_TOKEN`の発行（`createReparseRun`）、
+  `HISTORICAL_REPARSE_ENABLED`の設定、dry-run/write実行。API側もこのflagが
+  未設定のため新設route群は引き続き404を返す。**過去単価再解析機能全体としては
+  引き続き未完了**
 
 ## Approval
 

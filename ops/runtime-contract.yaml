@@ -122,6 +122,14 @@
 #     Apps Scriptプロジェクトには未反映（実運用では動作しない）。production
 #     baseline（source 5e209e0）・deployment_status（applied）・API側runtime
 #     には一切変更なし。**
+#   2026-09-14: app ownerが本チャットで「clasp push/deploy」の範囲を明示承認し
+#     （VPS・production DB接続は含まない）、Claudeが`clasp push -f`→
+#     `clasp deploy -i <DEPLOY_ID> -d "auto-deploy"`を実行してApps Scriptプロジェクトへ
+#     反映した（version @33）。事前に`clasp pull`でcloud側現行sourceを取得し、
+#     意図した2ファイル（ApiBridge.js・GmailImportService.js）以外に乖離が無いことを
+#     確認済み。既存トリガー（Gmail取込・ReadyGo配信）が呼ぶ関数の本文は無変更のため
+#     動作に影響なし。HISTORICAL_REPARSE_ENABLED・REPARSE_RUN_TOKENはいずれも
+#     未設定のままで、API側runtime・production baseline・deployment_statusに変更なし。
 #   2026-09-12 (task_id: 20260912-001): app owner承認・利用者への事前通知/不使用確認・
 #     個別production承認を経て、API先行stage（source 5e209e0、GET/POST
 #     /api/bridge/reparse-candidates・GET /api/bridge/reparse-progressの3 route、
@@ -574,11 +582,13 @@ known_gaps:
     manifest外candidate拒否時の監査不作成、本機能4 migration全体の明示的transaction化と
     fresh隔離DBでの全rollback rehearsal）。GAS側バッチは2026-09-13にtask 20260913-001で
     ローカル実装完了（設計メモ ops/investigations/20260907-historical-price-reparse-gas-design.md
-    どおり、apps/gas/src/GmailImportService.js・ApiBridge.jsへ追加、commit 3de1557）。
-    **ただしclasp push/clasp deployは未実施のため実際のApps Scriptプロジェクトには
-    未反映であり、実運用では動作しない。** 残る段階（clasp push/deployによる反映、
-    runToken発行、production承認③、dry-run結果確認、production承認④）は
-    別途review・別承認で進める。
+    どおり、apps/gas/src/GmailImportService.js・ApiBridge.jsへ追加、commit 3de1557）、
+    2026-09-14にapp owner承認のうえclasp push/deployでApps Scriptへも反映済み
+    （version @33。既存トリガーの動作には影響なし）。**ただしHISTORICAL_REPARSE_ENABLED・
+    REPARSE_RUN_TOKENはいずれも未設定のため、機能自体は依然として動作しない
+    （手動実行しても即座にno_run_tokenで終了する）。** 残る段階（VPS側でのrunToken発行、
+    production承認③によるHISTORICAL_REPARSE_ENABLED設定・dry-run結果確認、
+    production承認④）は別途review・別承認で進める。
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
