@@ -483,7 +483,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
       API先行stage production反映同期`a627859`、GASリポジトリ統合`70cccc6`、
       GAS側実装task `20260913-001`の`3de1557`はいずれもorigin/mainへpush済み。
       第8回レビューがGit上でsource `5e209e0`・notice `8c042bc`のpush済み一致を確認済み。
-      本改訂（GAS実装反映）も本commit後にorigin/mainへpushする）
+      本改訂（GAS実装反映）は`5d38632`としてorigin/mainへpush済み）
 - [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回〜第7回
       レビューがmock再現・実DBへのprobeで確認した計32件の問題を含むregression test 52件を
       含む全73件をローカルDBで実行し全件成功を確認済み）
