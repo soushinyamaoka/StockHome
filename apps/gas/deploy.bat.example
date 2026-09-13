@@ -1,0 +1,34 @@
+@echo off
+chcp 65001 >nul
+setlocal
+
+set DEPLOY_ID=<clasp deployments で確認したデプロイIDを記入>
+
+cd /d "%~dp0"
+
+echo ==== [1/2] clasp push ====
+call clasp push -f
+set RC=%ERRORLEVEL%
+if %RC% NEQ 0 (
+  echo.
+  echo [ERROR] push failed. exit code=%RC%
+  goto :end
+)
+
+echo.
+echo ==== [2/2] clasp deploy ====
+call clasp deploy -i %DEPLOY_ID% -d "auto-deploy"
+set RC=%ERRORLEVEL%
+if %RC% NEQ 0 (
+  echo.
+  echo [ERROR] deploy failed. exit code=%RC%
+  goto :end
+)
+
+echo.
+echo [OK] push and deploy completed.
+
+:end
+echo.
+pause
+endlocal

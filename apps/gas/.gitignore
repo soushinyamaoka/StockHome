@@ -1,0 +1,12 @@
+# GAS プロジェクト固有の scriptId を含むため、フォークしたユーザーが自前で用意する想定。
+# .clasp.json.example をコピーして scriptId を記入する
+.clasp.json
+
+# デプロイID（DEPLOY_ID）を含むため、フォークしたユーザーが自前で用意する想定。
+# deploy.bat.example をコピーして DEPLOY_ID を記入する
+deploy.bat
+
+# 個人データ・テストデータ（実スプレッドシートID、家族の氏名、メールアドレス、注文情報、
+# 購入履歴、Gmail 本文サンプル等）。リポジトリ直下の .gitignore の data/ でも既に対象だが、
+# このディレクトリ固有の注意として明記する
+data/
