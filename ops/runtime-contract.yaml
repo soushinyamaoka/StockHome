@@ -165,6 +165,22 @@
 #     には未反映。HISTORICAL_REPARSE_ENABLED・REPARSE_RUN_TOKENとも未設定のため
 #     修正前のバグは現時点で実害なし。production baseline・deployment_status・
 #     API側runtimeには一切変更なし。**
+#   2026-09-14 (task_id: 20260914-002): VPS管理側のGAS連携再レビュー§17.3が、
+#     追加の合成probeでS006-GAS-03の残り2件（応答検証・ログ許可listの不足）を
+#     検出。apps/gas/src/ApiBridge.jsへ、GET候補要素の必須field検証、
+#     POST応答のmode一致・total一致・summary許可7fieldへの再構築、
+#     bySkipReasonの許可list15種（API内部12種+GAS入力3種）検証、
+#     safeErrName_の許可listされたJS標準Error名7種への限定を追加して修正した
+#     （commit 9c20a5d）。apps/gas/test/reparseHistoricalCandidates.gas.test.cjs
+#     へ新規11シナリオを追加し（既存23件のうちシナリオ23のPOST応答fixtureのみ
+#     実契約へ更新、assertionは無変更）、全34シナリオ成功を確認した。
+#     これでS006-GAS-01〜04の4項目すべてが解消済み。**この修正もローカルの
+#     source変更のみで、clasp push/deployは未実施のため実際のApps Script
+#     プロジェクト（version @33、task 20260913-001時点のまま）には未反映。
+#     HISTORICAL_REPARSE_ENABLED・REPARSE_RUN_TOKENとも未設定のため修正前の
+#     バグは現時点で実害なし。今回はapps/api・apps/mobile・packages/shared側の
+#     コード変更は無い。production baseline・deployment_status・API側runtimeには
+#     一切変更なし。**
 
 schema_version: 1
 app: stockhome
@@ -609,11 +625,18 @@ known_gaps:
     検出し、task 20260914-001で修正した（commit d849129。API側write gate、GAS側
     cursorのrun/mode分離とprogress照合、安全なログ変換とresponse型検証、
     Gmail/parser例外の恒久skip/判定不能分離。apps/gas/test/へ永続保存した
-    23シナリオとAPI test 76件で確認済み）。**ただしこの修正はローカルsourceのみで、
-    clasp push/deployは未実施のためApps Scriptには未反映（version @33は
-    task 20260913-001時点のまま、S006-GAS-01〜04のバグが現存するが
-    HISTORICAL_REPARSE_ENABLED・REPARSE_RUN_TOKENとも未設定のため実害なし）。
-    機能自体は依然として動作しない（手動実行しても即座にno_run_tokenで終了する）。**
+    23シナリオとAPI test 76件で確認済み）。続くGAS連携再レビュー§17.3が
+    S006-GAS-03の残り2件（応答検証・ログ許可listの不足）を検出し、
+    task 20260914-002で修正した（commit 9c20a5d。GET候補要素の必須field検証、
+    POST応答のmode/total一致確認とsummary許可7field＋許可bySkipReason15種への
+    再構築、safeErrName_の許可Error名7種への限定、progress応答の整合性検証。
+    apps/gas/test/reparseHistoricalCandidates.gas.test.cjsへ11シナリオ追加し
+    全34シナリオで確認済み）。**これでS006-GAS-01〜04の4項目すべてが解消済み。
+    ただしこれらの修正はいずれもローカルsourceのみで、clasp push/deployは
+    未実施のためApps Scriptには未反映（version @33はtask 20260913-001時点の
+    まま、S006-GAS-01〜04のバグが現存するがHISTORICAL_REPARSE_ENABLED・
+    REPARSE_RUN_TOKENとも未設定のため実害なし）。機能自体は依然として
+    動作しない（手動実行しても即座にno_run_tokenで終了する）。**
     VPS管理側の再レビュー待ち。残る段階（修正版のGAS再deploy、VPS側でのrunToken発行、
     production承認③によるHISTORICAL_REPARSE_ENABLED設定・dry-run結果確認、
     production承認④）は別途review・別承認で進める。

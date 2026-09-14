@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: d849129d22fc3bac08f03da7c455610c94ac5912
+source_commit: 9c20a5dfeac17f8714a0e4e4b4fe36fa73d244c1
 
 production_baseline_commit: 5e209e04a517fa2daf785013cffb1bd26fd7835b
 
@@ -34,7 +34,10 @@ Apps Script側には未反映、production baselineには影響しない**）→
 `b5ab358`（notice更新、GAS deployの手続き上の逸脱を自己申告）→
 `d849129`（task `20260914-001`、GAS連携レビュー§16.3対応。S006-GAS-01〜04を修正。
 **こちらもローカルのソースコード変更のみ。`clasp push`/`clasp deploy`は
-未実施のためApps Script側には未反映**）。API側の
+未実施のためApps Script側には未反映**）→ `008a4de`（notice更新、§16.4文書同期）→
+`9c20a5d`（task `20260914-002`、GAS連携再レビュー§17.3対応。S006-GAS-03の
+残り2件（応答検証・ログ許可list）を修正。**こちらもローカルのソースコード
+変更のみ。`clasp push`/`clasp deploy`は未実施**）。API側の
 production baselineは引き続き`5e209e0`のまま変わらない（GAS側はAPI containerの
 デプロイ対象ではないため）
 
@@ -176,7 +179,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 | 過去候補の`price_source`（`price_source`/`detected_price`とも NULL の行） | NULL/空 | 再解析で価格が判明した候補のみ値が入る（対象外は変化なし） |
 | 対応する`purchase_logs.price`（NULLの行のみ） | NULL | 層1〜3判定で確定できたものだけ値が入る |
 | API | 該当エンドポイントなし | `GET /api/bridge/reparse-candidates`・`POST /api/bridge/reparse-candidates`・`GET /api/bridge/reparse-progress`（第5回レビューR5-02対応で追加）を新設（`HISTORICAL_REPARSE_ENABLED=true`のときのみ有効。未設定時は404）。認可は事前発行済み`runToken`（第2回レビューB03対応、下記参照）で行い、自己申告emailは受け付けない。`runToken`はquery string/bodyではなく専用header（`X-Reparse-Run-Token`）で受け渡す（第3回レビューB03対応） |
-| GAS | 該当機能なし | **実装は完了（2026-09-13 task `20260913-001`、2026-09-14 GAS連携レビュー対応task `20260914-001`でS006-GAS-01〜04も修正）。deployはtask `20260913-001`時点のsource（`3de1557`、version `@33`）のみ実施済みで、task `20260914-001`の修正分は`clasp push`/`clasp deploy`未実施のためApps Scriptには未反映（現在deploy済みのsourceにはS006-GAS-01〜04のバグが残っているが、`HISTORICAL_REPARSE_ENABLED`・`REPARSE_RUN_TOKEN`とも未設定のため実害なし）。次回GAS反映時は修正版（commit `d849129`以降）を対象にする。runTokenの発行・登録、`HISTORICAL_REPARSE_ENABLED`有効化、実Gmailへの接続を伴う実行はいずれも未実施。**詳細は下記「Codex実装結果（task 20260913-001）」「GAS clasp push/deploy実施結果」「GAS連携レビュー対応状況」参照 |
+| GAS | 該当機能なし | **実装は完了（2026-09-13 task `20260913-001`、2026-09-14 GAS連携レビュー対応task `20260914-001`・再レビュー対応task `20260914-002`でS006-GAS-01〜04すべて修正済み）。deployはtask `20260913-001`時点のsource（`3de1557`、version `@33`）のみ実施済みで、task `20260914-001`・`20260914-002`の修正分は`clasp push`/`clasp deploy`未実施のためApps Scriptには未反映（現在deploy済みのsourceにはS006-GAS-01〜04のバグが残っているが、`HISTORICAL_REPARSE_ENABLED`・`REPARSE_RUN_TOKEN`とも未設定のため実害なし）。次回GAS反映時は最新修正版（commit `9c20a5d`以降）を対象にする。runTokenの発行・登録、`HISTORICAL_REPARSE_ENABLED`有効化、実Gmailへの接続を伴う実行はいずれも未実施。**詳細は下記「Codex実装結果」各節・「GAS clasp push/deploy実施結果」「GAS連携レビュー対応状況」「GAS連携再レビュー対応状況」参照 |
 | `price_reparse_audit`テーブル | 存在しない | 新設（production row変更前後値の監査ログ。Git管理外）。`mode`列と`(run_id, candidate_id, mode)`の一意制約を追加し、write再送の冪等・dry-run再実行の重複防止に使う（第3回レビューB02/B04対応） |
 | `price_reparse_runs`テーブル | 存在しない | 新設（第2回レビューB03対応。runToken・対象owner・有効期限を保持する認可テーブル。HTTP経由では作成せず、production承認後に運用者が直接1件だけ発行する）。`cutoff_at`列を追加し、run作成後に新規追加された候補を対象から除外する（第3回レビューB02/B04対応）。期限切れ（未失効）のrunだけを同じrunToken・manifest・監査履歴を維持したまま再開する`extendReparseRun`関数（第6回レビューR6-02対応。第7回レビューR7-01対応で`revokedAt`設定済みrunは拒否するよう修正）と、失効済みrunだけを新しいrunTokenへ安全に移行する`rotateReparseRunToken`関数（第7回レビューR7-01対応。旧tokenは以後永久に無効）を追加（いずれも`createReparseRun`と同じくHTTP非公開） |
 | `price_reparse_item_snapshots`テーブル | 存在しない | 新設（第3回レビューB02/B06対応。run内で品目ごとに参照単価を1回だけ計算・固定し、dry-run/write・chunk分割・処理順序によらず同じ判定になるようにする） |
@@ -488,7 +491,9 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
       GAS側実装task `20260913-001`の`3de1557`はいずれもorigin/mainへpush済み。
       第8回レビューがGit上でsource `5e209e0`・notice `8c042bc`のpush済み一致を確認済み。
       GAS実装反映`5d38632`、GAS deploy実施記録`0a1a1da`、手続き逸脱自己申告`b5ab358`、
-      GAS連携レビュー対応`d849129`・本改訂`7abce78`はいずれもorigin/mainへpush済み）
+      GAS連携レビュー対応`d849129`、notice同期`7abce78`・`008a4de`、
+      GAS連携再レビュー対応`9c20a5d`はいずれもorigin/mainへpush済み。本改訂も
+      本commit後にpushする）
 - [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（第2回〜第7回
       レビューがmock再現・実DBへのprobeで確認した計32件の問題を含むregression test 52件を
       含む全73件をローカルDBで実行し全件成功を確認済み）
@@ -716,12 +721,12 @@ VPS管理レビュー正本§15が、第7回の指摘2件（S006-R7-01・S006-R7
 
 ## VPS管理チャットへの引き継ぎ
 
-- 引き継ぎ要否: **必要**（GAS連携レビュー§16.5が、S006-GAS-01〜04を修正した
-  固定sourceでの再レビューを求めている。source `d849129`、
-  `apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`23シナリオ全成功、
-  API `npm run test --workspace=@stockhome/api`全76件成功を報告する。
-  `clasp push`/`clasp deploy`は未実施のため、GAS deployの個別実行依頼を含む
-  次のVPS管理側判断を仰ぐ。production_baseline_commit（`5e209e0`）・
+- 引き継ぎ要否: **必要**（GAS連携再レビュー§17.4が求めたS006-GAS-03の残り2件
+  （応答検証・ログ許可list）を修正した。source `9c20a5d`、
+  `apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`全34シナリオ成功
+  （既存23件＋新規11件）を報告する。これでS006-GAS-01〜04の4項目すべてが
+  解消済み。`clasp push`/`clasp deploy`は未実施のため、GAS deployの個別実行
+  依頼を含む次のVPS管理側判断を仰ぐ。production_baseline_commit（`5e209e0`）・
   deployment_status（`applied`）はどちらも変わらない）
 - 直近のVPS管理側とのやり取り: task `20260912-001`（API先行stage production反映）の
   実施結果を受け、notice・runtime contractのproduction状態記述を現在値
@@ -1064,6 +1069,57 @@ S006-GAS-01〜04で修正した内容は反映されていない。ただし`HIS
   発行・設定、実Gmail・実VPS・実production DB接続はいずれも未実施）
 - commit: `d849129`（origin/mainへpush済み。Claudeが直接commit・push）
 
+## GAS連携再レビュー対応状況（2026-09-14、task `20260914-002`で対応完了）
+
+VPS管理側がtask `20260914-001`の修正（固定tree `008a4de`）を再レビューした
+GAS連携再レビュー（正本§17、追加の合成probeで再現）が、S006-GAS-01・02・04の
+主要修正を確認しつつ、**S006-GAS-03のみ**応答検証・ログ許可listの不足を継続指摘した。
+
+| # | レビュー指摘 | 対応方針 |
+|---|---|---|
+| 1 | `fetchReparseCandidates`が`candidates`配列の型しか確認せず、`mailMessageId`等の必要fieldが欠けた要素も受理していた | 候補要素ごとに`id`・`mailMessageId`（非空文字列）・`itemNameRaw`（`null`または文字列）・`vendor`・`mailPhase`（非空文字列）を検証し、1件でも不正なら応答全体を`error`にする |
+| 2 | `postReparseResults`が`summary`の非nullobject判定しかせず、要求と異なる`mode`、送信件数と異なる`total`、未知fieldを含む`summary`もそのまま受理していた | `body.mode`が送信modeと一致することを確認し、`summary`は既知7フィールド＋許可された`bySkipReason`のみを検証したうえで**新しいobjectへ作り直して**返す。未知の top-level fieldが1つでもあれば`error`にする |
+| 3 | `bySkipReason`のキーに許可list（API内部12種＋GAS入力3種＝15種）が無かった | `REPARSE_KNOWN_SKIP_REASONS`（`priceReparse.ts`の`skipReason`literal12箇所＋共有schemaの3値と一致することを実装前にgrepで確認）を追加し、許可list外キー・非負整数以外の値は`error`にする |
+| 4 | `safeErrName_`が`e.name`を無検証でそのまま返していた | JS標準の組み込みError名7種のみを許可する`REPARSE_SAFE_ERROR_NAMES`を追加し、それ以外は固定`'Error'`へ丸める |
+| 5 | `fetchReparseProgress`の型検証だけでは`totalTargets`/`processedCount`/`remainingCount`/`complete`間の矛盾を検出できなかった | 非負整数チェックに加え、`remainingCount === totalTargets - processedCount`・`complete === (remainingCount === 0)`の整合性を検証する |
+
+上記すべてtask `20260914-002`（commit `9c20a5d`）で対応済み。レビューの追加probe
+（`stockhome-gas-response-review-20260914.cjs`）が再現した4件の問題が修正後の
+sourceでは再現しないことを含む新規11シナリオを、既存の永続test
+`apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`へ追加し（24〜34）、
+既存23件のうちシナリオ23のPOST応答fixtureのみ実際のAPI契約（`mode`必須・
+summary7フィールド完備）に合わせて更新した（アサーション自体は無変更）。
+**全34シナリオ**がpassしたことをCodex・Claude双方で独立に確認した。今回は
+`apps/api`・`apps/mobile`・`packages/shared`側のコード変更は無く、固定ビルド
+3コマンドは無変更のまま成功を確認した。
+
+## Codex実装結果（task 20260914-002、GAS連携再レビュー§17.3対応）
+
+- 実装ファイル: `apps/gas/src/ApiBridge.js`（`isValidReparseCandidate_`・
+  `sanitizeReparseSummary_`・`isNonNegativeInteger_`・`REPARSE_KNOWN_SKIP_REASONS`・
+  `REPARSE_SAFE_ERROR_NAMES`の新設、`fetchReparseCandidates`・
+  `postReparseResults`・`safeErrName_`・`fetchReparseProgress`の検証強化）、
+  `apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`（シナリオ23の
+  fixtureのみ実契約へ更新、新規シナリオ24〜34を追加）
+- Codexは実装前に`apps/api/src/services/priceReparse.ts`の
+  `skipReason: '...'`literal12箇所と共有schemaの`REPARSE_SKIP_REASONS`3値を
+  照合し、指示書の許可list15種と一致することを確認したうえで実装した
+- `apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`を実行し
+  **34/34シナリオ成功**（exit code 0）を報告。ビルド3コマンド・GAS 2ファイルの
+  `node --check`もすべて成功を確認したうえでcommit・push（`9c20a5d`）まで
+  Codex自身が完了させた
+- Claudeが差分レビューし、指示書のコード例と完全一致すること（`sanitizeReparseSummary_`が
+  仕様外のtop-level未知fieldも拒否する追加のガードを自主的に加えていたが、
+  実際のAPI契約と矛盾せず安全側の強化のため許容と判断）、
+  `apps/api`・`apps/mobile`・`packages/shared`・`ops/`・
+  `apps/gas/src/GmailImportService.js`に変更が無いことを確認した。
+  `node apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`・ビルド3コマンド・
+  GAS 2ファイルの`node --check`をすべて独立に再実行し、同じ結果（34/34成功）を確認した
+- **production変更なし**（`production_operation: none`で実施。`clasp push`/
+  `clasp deploy`、実運用値の発行・設定、実Gmail・実VPS・実production DB接続は
+  いずれも未実施）
+- commit: `9c20a5d`（origin/mainへpush済み。Codexが直接commit・push）
+
 ## Approval
 
 - app owner: 承認①のみ**実施済み（2026-09-12、過去候補の再解析・確定可能な購入単価のみを
@@ -1101,5 +1157,12 @@ S006-GAS-01〜04で修正した内容は反映されていない。ただし`HIS
   Codex環境でDB未起動のためAPI testはblockedのままcommit・push未実施、
   Claudeが対話セッションでDocker Desktop・ローカル開発DBを起動しAPI test全76件
   成功を独立確認してcommit・push。`clasp push`/`clasp deploy`未実施のため
-  Apps Scriptには未反映、production baseline・deployment_statusに影響なし。
-  VPS管理側の再レビュー待ち）
+  Apps Scriptには未反映、production baseline・deployment_statusに影響なし）、
+  20260914-002（GAS連携再レビュー§17.3対応、S006-GAS-03の残り2件を修正、
+  `success`・commit `9c20a5d`。1回目は既存シナリオ23のfixtureが新検証仕様と
+  噛み合わない矛盾をCodexが検出し`blocked`、シナリオ23のfixtureのみ実契約へ
+  合わせてよいと明示し再承認して2回目で完了。GAS側永続test全34シナリオ
+  （既存23＋新規11）成功をCodex・Claude双方で確認、Codex自身がcommit・push。
+  `clasp push`/`clasp deploy`未実施のためApps Scriptには未反映、
+  production baseline・deployment_statusに影響なし。これでS006-GAS-01〜04
+  すべて解消。VPS管理側の再レビュー待ち）
