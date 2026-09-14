@@ -16,7 +16,8 @@ source_commit: 9c20a5dfeac17f8714a0e4e4b4fe36fa73d244c1
 
 production_baseline_commit: 117e41d3c12153f9594f0d8bc8cd78098ba9b4bf
 
-現在状態（2026-09-14、VPS管理側の未commit文書同期・app側了承待ち）:
+現在状態（2026-09-14、承認④・本人画面確認まで完了。app側了承・commit済み。
+VPS管理側の最終close判断待ち）:
 承認③ task `20260914-001`はdry-run stageとしてverified。採用231件のうち候補単価193件、
 購入履歴単価31件の補完見込みを確認した（承認③時点のbusiness writeは0）。
 続く承認④ task `20260914-002`は妻への今回の単価補完通知・不使用確認後、ユーザーが個別承認。
