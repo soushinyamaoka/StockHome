@@ -23,13 +23,14 @@ production_baseline_commit: 117e41d3c12153f9594f0d8bc8cd78098ba9b4bf
 新backup/隔離write検証後に既存HTTP APIで候補193件・購入履歴31件を実補完、許可外差分0。
 2026-09-14 17:16:21 JSTに全5run失効・一時production token撤去・feature/write無効化。
 購入履歴GETは16品目/31補完単価・価格統計を正常確認。
-17:26:27 JSTに終了後10分観察を含む技術検証完了、一時runtime envも撤去。使用再開可能、本人UI確認待ち。
+17:26:27 JSTに終了後10分観察を含む技術検証完了、一時runtime envも撤去。
+ユーザー「画面確認OK」を17:33:20 JSTに記録し、VPS task `20260914-002` verified。使用再開可能。
 GASは固定tree `117e41d`/version `@34`への配信完了というアプリ側報告に基づく。
 未取得37件・商品特定不可1件・購入単価の確実性不足6件（重複区分）は推測補完しない。
 Gmail再読/GAS・mobile配信/trigger・権限変更/在庫・数量・購入日変更/DB restoreは今回実施していない。
 下記の「承認③未実施」「修正版GAS未反映」等は各時点の履歴であり、現在値ではない。
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\operations\stockhome_historical_price_reparse_dry_run_plan_20260914.md` §29〜§31。
-承認④正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\operations\stockhome_historical_price_reparse_write_plan_20260914.md` §11〜§13。
+承認④正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\operations\stockhome_historical_price_reparse_write_plan_20260914.md` §11〜§14。
 
 release_commits: `9f5fa86`（baseline）→ `02816ee`（task `20260907-002`、第1回API実装）→
 `47b0b1e`（notice更新）→ `5b2f68a`（task `20260907-004`、第2回レビュー対応。
@@ -66,7 +67,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: applied
+deployment_status: verified
 
 ## 変更概要（B01反映）
 

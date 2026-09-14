@@ -200,7 +200,7 @@ app: stockhome
 canonical_repo: https://github.com/soushinyamaoka/StockHome.git
 canonical_ref: main
 updated_at: 2026-09-14
-verified_against_runtime: 2026-09-14  # VPS task 20260914-002、候補193/購入31補完・17:26:27 JSTに10分観察を含む技術検証完了。本人UI確認待ち。
+verified_against_runtime: 2026-09-14  # VPS task 20260914-002 verified。17:26:27 JST技術検証完了、本人画面確認OKを17:33:20 JSTに記録。
                                        # 19:55定期jobの実時刻確認はこのtask範囲外（既存job・route自体は無変更）
 
 runtime:
@@ -618,12 +618,13 @@ known_gaps:
     notice 20260907-STOCKHOME-006の承認④はVPS task 20260914-002で個別承認後に実施。
     候補単価193件・購入履歴単価31件は補完済み、許可外差分0。
     2026-09-14 17:16:21 JSTにfeature/write無効・全5run失効・一時production token撤去済み。
-    17:26:27 JSTに終了後10分観察を含む技術検証完了、使用再開可能。本人UI確認待ち。
+    17:26:27 JSTに終了後10分観察を含む技術検証完了。
+    本人画面確認OKを17:33:20 JSTに記録してtask verified、使用再開可能。
     購入履歴GETは16品目/補完31単価と価格統計の件数/最小/最大/平均/最新値を正常確認。
     単価なし37件・商品特定不可1件、購入単価の確実性を満たさない6件は推測補完しない。
     これらの区分は重複を含み単純合算しない。未判明分の推測補完や追加writeは承認範囲外。
     稼働source正本はVPS管理のdocs/runtime-state/production_deployments.yamlを参照。
-    承認④の詳細はVPS管理側stockhome_historical_price_reparse_write_plan_20260914.md §11〜§13、
+    承認④の詳細はVPS管理側stockhome_historical_price_reparse_write_plan_20260914.md §11〜§14、
     承認③/過去の実装・review履歴は本noticeと承認③計画§29〜§31を参照。
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
@@ -640,7 +641,8 @@ resolved_gaps:
     新backup/隔離write検証・限定2run/旧snapshotコピー・既存HTTP canary/chunkで
     候補193/購入31の未取得単価を補完した。許可外差分0。
     flags false/false・全5run失効・一時token/runtime env撤去・10分観察・health正常・JSON error0、
-    購入履歴API/価格統計を確認して17:26:27 JSTに技術検証完了。本人UI確認は別に待つ。
+    購入履歴API/価格統計を確認して17:26:27 JSTに技術検証完了。
+    本人画面確認OKを17:33:20 JSTに記録しtask verified。
     元audit/manifest/snapshot保持、Gmail再読/GAS・mobile追加配信/在庫・数量・購入日変更/DB restoreなし。
     詳細はVPS管理側承認④計画§11〜§13。
   - >-
