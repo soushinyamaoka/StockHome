@@ -473,7 +473,20 @@ test('23 logs omit run token, message id, item name, and price including progres
         progressCalls += 1;
         return httpResponse(200, { totalTargets: 1, processedCount: 1, remainingCount: 0, complete: true });
       }
-      if (options.method === 'post') return httpResponse(200, { summary: { total: 1, updatedCandidate: 1 } });
+      if (options.method === 'post') {
+        return httpResponse(200, {
+          mode: 'write',
+          summary: {
+            total: 1,
+            updatedCandidate: 1,
+            updatedPurchase: 1,
+            unchanged: 0,
+            skipped: 0,
+            conflict: 0,
+            failed: 0,
+          },
+        });
+      }
       candidateGetCount += 1;
       return candidateGetCount === 1
         ? httpResponse(200, { candidates: [candidate('secret-candidate', { mailMessageId: messageId, itemNameRaw: itemName })] })
@@ -486,6 +499,178 @@ test('23 logs omit run token, message id, item name, and price including progres
   for (const secretValue of [runToken, messageId, itemName, price]) {
     assert.equal(output.includes(secretValue), false);
   }
+});
+
+test('24 candidate missing required fields is rejected', () => {
+  const h = createHarness({ fetch: () => httpResponse(200, { candidates: [{ id: 'synthetic-id' }] }) });
+  const result = h.context.ApiBridge.fetchReparseCandidates(null, 20);
+  assert.equal(result.status, 'error');
+  assert.equal(result.candidates.length, 0);
+});
+
+test('25 POST response with wrong mode is rejected', () => {
+  const h = createHarness({
+    fetch: () => httpResponse(200, {
+      mode: 'write',
+      summary: {
+        total: 0,
+        updatedCandidate: 0,
+        updatedPurchase: 0,
+        unchanged: 0,
+        skipped: 0,
+        conflict: 0,
+        failed: 0,
+      },
+    }),
+  });
+  assert.equal(h.context.ApiBridge.postReparseResults('dry_run', []).status, 'error');
+});
+
+test('26 POST response with wrong summary total is rejected', () => {
+  const h = createHarness({
+    fetch: () => httpResponse(200, {
+      mode: 'dry_run',
+      summary: {
+        total: 1,
+        updatedCandidate: 0,
+        updatedPurchase: 0,
+        unchanged: 1,
+        skipped: 0,
+        conflict: 0,
+        failed: 0,
+      },
+    }),
+  });
+  assert.equal(h.context.ApiBridge.postReparseResults('dry_run', []).status, 'error');
+});
+
+test('27 POST response with unknown summary field is rejected', () => {
+  const h = createHarness({
+    fetch: () => httpResponse(200, {
+      mode: 'dry_run',
+      summary: { total: 0, extra: 'synthetic-sensitive-marker' },
+    }),
+  });
+  assert.equal(h.context.ApiBridge.postReparseResults('dry_run', []).status, 'error');
+});
+
+test('28 POST response with unknown bySkipReason key is rejected', () => {
+  const h = createHarness({
+    fetch: () => httpResponse(200, {
+      mode: 'dry_run',
+      summary: {
+        total: 0,
+        updatedCandidate: 0,
+        updatedPurchase: 0,
+        unchanged: 0,
+        skipped: 0,
+        conflict: 0,
+        failed: 0,
+        bySkipReason: { unexpected_reason: 1 },
+      },
+    }),
+  });
+  assert.equal(h.context.ApiBridge.postReparseResults('dry_run', []).status, 'error');
+});
+
+test('29 valid POST summary is accepted as a new sanitized object', () => {
+  const rawSummary = {
+    total: 1,
+    updatedCandidate: 0,
+    updatedPurchase: 0,
+    unchanged: 1,
+    skipped: 0,
+    conflict: 0,
+    failed: 0,
+    bySkipReason: { no_price_found: 1 },
+  };
+  const rawBody = { mode: 'dry_run', summary: rawSummary };
+  const h = createHarness({
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => 'synthetic-response-body',
+    }),
+  });
+  h.context.JSON = { parse: () => rawBody, stringify: JSON.stringify };
+  const result = h.context.ApiBridge.postReparseResults('dry_run', [{}]);
+  assert.equal(result.status, 'ok');
+  assert.equal(JSON.stringify(result.summary), JSON.stringify(rawSummary));
+  assert.notEqual(result.summary, rawSummary);
+  assert.notEqual(result.summary.bySkipReason, rawSummary.bySkipReason);
+});
+
+test('30 rejected POST summary does not reach logs or advance cursor', () => {
+  const marker = 'synthetic-sensitive-marker';
+  const token = 'malicious-summary-run';
+  const key = cursorKey(token, 'dry_run');
+  const h = createHarness({
+    properties: { REPARSE_RUN_TOKEN: token, [key]: 'saved-cursor' },
+    amazonParse: () => ({ items: [{ item_name_raw: 'item-c1', detected_price: '500' }] }),
+    fetch: (_url, options) => options.method === 'post'
+      ? httpResponse(200, {
+          mode: 'dry_run',
+          summary: {
+            total: 1,
+            updatedCandidate: 1,
+            updatedPurchase: 0,
+            unchanged: 0,
+            skipped: 0,
+            conflict: 0,
+            failed: 0,
+            extra: marker,
+          },
+        })
+      : httpResponse(200, { candidates: [candidate('c1')] }),
+  });
+  const result = h.context.reparseHistoricalCandidatesDryRun();
+  assert.equal(result.stoppedReason, 'post_error');
+  assert.equal(h.properties.get(key), 'saved-cursor');
+  assert.equal(h.logs.join('\n').includes(marker), false);
+});
+
+test('31 arbitrary exception name is replaced before logging', () => {
+  const marker = 'synthetic-sensitive-marker';
+  const h = createHarness({
+    fetch: () => {
+      const error = new Error('synthetic failure');
+      error.name = marker;
+      throw error;
+    },
+  });
+  assert.equal(h.context.ApiBridge.fetchReparseCandidates(null, 20).status, 'error');
+  const output = h.logs.join('\n');
+  assert.equal(output.includes(marker), false);
+  assert.equal(output.includes('Error'), true);
+});
+
+test('32 standard TypeError name is preserved in logs', () => {
+  const h = createHarness({ fetch: () => { throw new TypeError('synthetic failure'); } });
+  assert.equal(h.context.ApiBridge.fetchReparseCandidates(null, 20).status, 'error');
+  assert.equal(h.logs.join('\n').includes('TypeError'), true);
+});
+
+test('33 progress response with inconsistent remaining count is rejected', () => {
+  const h = createHarness({
+    fetch: () => httpResponse(200, {
+      totalTargets: 5,
+      processedCount: 2,
+      remainingCount: 0,
+      complete: false,
+    }),
+  });
+  assert.equal(h.context.ApiBridge.fetchReparseProgress().status, 'error');
+});
+
+test('34 progress response with inconsistent complete flag is rejected', () => {
+  const h = createHarness({
+    fetch: () => httpResponse(200, {
+      totalTargets: 5,
+      processedCount: 5,
+      remainingCount: 0,
+      complete: false,
+    }),
+  });
+  assert.equal(h.context.ApiBridge.fetchReparseProgress().status, 'error');
 });
 
 (async () => {

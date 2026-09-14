@@ -192,6 +192,89 @@ var ApiBridge = (function() {
   }
 
   /**
+   * API側 apps/api/src/services/priceReparse.ts が実際に生成しうる
+   * skipReasonの固定集合（GASが送る3種＋API内部が生成する12種）。
+   * summary.bySkipReasonのキーをこの集合だけへ限定する
+   * （notice 20260907-STOCKHOME-006、GAS連携レビューS006-GAS-03対応）
+   */
+  var REPARSE_KNOWN_SKIP_REASONS = [
+    'message_not_found', 'item_not_found_in_reparse', 'ambiguous_item_match',
+    'candidate_not_found', 'candidate_owner_mismatch', 'candidate_after_cutoff',
+    'candidate_not_in_manifest', 'invalid_price_rejected', 'already_has_price',
+    'matched_item_missing', 'concurrent_update', 'no_price_found',
+    'ambiguous_purchase_match', 'purchase_price_unresolved', 'purchase_concurrent_update'
+  ];
+
+  /** safeErrName_が返してよい固定許可list（JS標準の組み込みError名のみ） */
+  var REPARSE_SAFE_ERROR_NAMES = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError'];
+
+  /**
+   * 非負整数かどうかを判定する
+   * @param {*} value
+   * @return {boolean}
+   * @private
+   */
+  function isNonNegativeInteger_(value) {
+    return typeof value === 'number' && isFinite(value) && Math.floor(value) === value && value >= 0;
+  }
+
+  /**
+   * GET /reparse-candidatesの候補1件がAPI契約どおりの形をしているかを検証する
+   * @param {*} item
+   * @return {boolean}
+   * @private
+   */
+  function isValidReparseCandidate_(item) {
+    return !!item
+      && typeof item === 'object'
+      && typeof item.id === 'string' && item.id.length > 0
+      && typeof item.mailMessageId === 'string' && item.mailMessageId.length > 0
+      && (item.itemNameRaw === null || typeof item.itemNameRaw === 'string')
+      && typeof item.vendor === 'string' && item.vendor.length > 0
+      && typeof item.mailPhase === 'string' && item.mailPhase.length > 0;
+  }
+
+  /**
+   * POST応答のsummaryを検証し、既知fieldだけを持つ新しいobjectへ作り直す。
+   * 不正・未知fieldがあればnullを返す
+   * @param {*} rawSummary
+   * @param {number} expectedTotal 送信したresultsの件数
+   * @return {Object|null}
+   * @private
+   */
+  function sanitizeReparseSummary_(rawSummary, expectedTotal) {
+    if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary)) return null;
+    var countFields = ['total', 'updatedCandidate', 'updatedPurchase', 'unchanged', 'skipped', 'conflict', 'failed'];
+    var allowedFields = countFields.concat(['bySkipReason']);
+    var rawFields = Object.keys(rawSummary);
+    for (var i = 0; i < rawFields.length; i++) {
+      if (allowedFields.indexOf(rawFields[i]) === -1) return null;
+    }
+
+    var clean = {};
+    for (var j = 0; j < countFields.length; j++) {
+      var field = countFields[j];
+      if (!isNonNegativeInteger_(rawSummary[field])) return null;
+      clean[field] = rawSummary[field];
+    }
+    if (clean.total !== expectedTotal) return null;
+
+    var bySkipReason = {};
+    if (rawSummary.bySkipReason !== undefined) {
+      if (typeof rawSummary.bySkipReason !== 'object' || rawSummary.bySkipReason === null || Array.isArray(rawSummary.bySkipReason)) return null;
+      var reasonKeys = Object.keys(rawSummary.bySkipReason);
+      for (var k = 0; k < reasonKeys.length; k++) {
+        var reasonKey = reasonKeys[k];
+        if (REPARSE_KNOWN_SKIP_REASONS.indexOf(reasonKey) === -1) return null;
+        if (!isNonNegativeInteger_(rawSummary.bySkipReason[reasonKey])) return null;
+        bySkipReason[reasonKey] = rawSummary.bySkipReason[reasonKey];
+      }
+    }
+    clean.bySkipReason = bySkipReason;
+    return clean;
+  }
+
+  /**
    * 再解析対象候補を取得する
    * @param {string|null} cursor
    * @param {number} limit
@@ -205,7 +288,7 @@ var ApiBridge = (function() {
       return { status: result.status, candidates: [] };
     }
     var candidates = (result.body && Array.isArray(result.body.candidates)) ? result.body.candidates : null;
-    if (candidates === null) {
+    if (candidates === null || !candidates.every(isValidReparseCandidate_)) {
       Logger.log('[ReparseHistorical] 候補取得のレスポンス形式が想定外のため失敗として扱います。');
       return { status: 'error', candidates: [] };
     }
@@ -223,7 +306,12 @@ var ApiBridge = (function() {
     if (result.status !== 'ok') {
       return { status: result.status, summary: null };
     }
-    var summary = (result.body && typeof result.body.summary === 'object' && result.body.summary !== null) ? result.body.summary : null;
+    var body = result.body;
+    if (!body || body.mode !== mode) {
+      Logger.log('[ReparseHistorical] 結果送信のレスポンス形式が想定外のため失敗として扱います。');
+      return { status: 'error', summary: null };
+    }
+    var summary = sanitizeReparseSummary_(body.summary, results.length);
     if (summary === null) {
       Logger.log('[ReparseHistorical] 結果送信のレスポンス形式が想定外のため失敗として扱います。');
       return { status: 'error', summary: null };
@@ -239,7 +327,8 @@ var ApiBridge = (function() {
    * @private
    */
   function safeErrName_(e) {
-    return (e && e.name) ? String(e.name) : 'Error';
+    var name = (e && e.name) ? String(e.name) : 'Error';
+    return REPARSE_SAFE_ERROR_NAMES.indexOf(name) !== -1 ? name : 'Error';
   }
 
   /**
@@ -255,10 +344,12 @@ var ApiBridge = (function() {
     }
     var body = result.body;
     var valid = body
-      && typeof body.totalTargets === 'number'
-      && typeof body.processedCount === 'number'
-      && typeof body.remainingCount === 'number'
-      && typeof body.complete === 'boolean';
+      && isNonNegativeInteger_(body.totalTargets)
+      && isNonNegativeInteger_(body.processedCount)
+      && isNonNegativeInteger_(body.remainingCount)
+      && typeof body.complete === 'boolean'
+      && body.remainingCount === body.totalTargets - body.processedCount
+      && body.complete === (body.remainingCount === 0);
     if (!valid) {
       Logger.log('[ReparseHistorical] 進捗取得のレスポンス形式が想定外のため失敗として扱います。');
       return { status: 'error', progress: null };
