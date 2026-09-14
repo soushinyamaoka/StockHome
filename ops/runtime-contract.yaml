@@ -199,8 +199,8 @@ app: stockhome
 
 canonical_repo: https://github.com/soushinyamaoka/StockHome.git
 canonical_ref: main
-updated_at: 2026-09-13
-verified_against_runtime: 2026-09-12  # task 20260912-001の即時確認・10分観察（API先行stageの範囲）。
+updated_at: 2026-09-14
+verified_against_runtime: 2026-09-14  # VPS task 20260914-001、dry-run stage終了検証14:41:23 JST。business write未実施。
                                        # 19:55定期jobの実時刻確認はこのtask範囲外（既存job・route自体は無変更）
 
 runtime:
@@ -606,57 +606,16 @@ user_impact:
 # 既知の未解決事項（隠さずそのまま記録する）
 known_gaps:
   - >-
-    notice 20260907-STOCKHOME-006（過去候補の単価再解析）は、VPS管理第8回レビューで
-    `accepted`となり、API先行stage（source 5e209e0、GET/POST
-    /api/bridge/reparse-candidates・GET /api/bridge/reparse-progressの3 route、
-    price_reparse_*の新規4テーブルを作る4 migration）がtask 20260912-001で
-    2026-09-12にproduction反映・`verified`（API先行stageの範囲）となった。
-    **ただしHISTORICAL_REPARSE_ENABLEDはtrueに設定していないため、新設routeは
-    bridge認証後も404を返すのみで機能上は無効のまま。GAS実装・GAS配信・runToken発行・
-    feature flag有効化・dry-run実行・import_order_candidates/purchase_logsへの
-    実際の書き込みはいずれも未実施であり、過去単価再解析機能全体としては未完了。**
-    VPS管理側の第2回レビュー（mock再現、7件）・第3回〜第7回レビュー（実DBへのprobe、
-    各6〜3件）で検出された問題はいずれもtask 20260907-004〜009とClaudeの直接対応
-    （migration・schema）で修正済み（household/cutoff境界を全outcome経路で強制、
-    matched itemのhousehold不一致検知をcandidate更新前へ移動、run/item単位の価格判定
-    snapshot、監査の冪等化とinfrastructure障害/業務判断の区別、runTokenのheader化、
-    price_reparse_targets manifestをGET/POST双方の正本にする全面書き換えと
-    期限切れ後も動作するDBだけの進捗復元、createReparseRunのSERIALIZABLE
-    transaction化によるsingle active run制約、item snapshot作成のP2002以外再throw、
-    httpErrorHandling.ts抽出によるproduction相当ログ経路のtest化（stdout/stderr両方）、
-    期限切れ（未失効）run向けのextendReparseRunによる同一manifest/監査履歴での再開、
-    失効済みrun向けのrotateReparseRunTokenによる新token安全移行（旧tokenは永久無効）、
-    manifest外candidate拒否時の監査不作成、本機能4 migration全体の明示的transaction化と
-    fresh隔離DBでの全rollback rehearsal）。GAS側バッチは2026-09-13にtask 20260913-001で
-    ローカル実装完了（設計メモ ops/investigations/20260907-historical-price-reparse-gas-design.md
-    どおり、apps/gas/src/GmailImportService.js・ApiBridge.jsへ追加、commit 3de1557）、
-    2026-09-14にapp owner承認のうえclasp push/deployでApps Scriptへも反映済み
-    （version @33。既存トリガーの動作には影響なし）。続けて2026-09-14、VPS管理側の
-    GAS連携レビュー§16.3が4件（S006-GAS-01〜04: 承認③tokenでもwrite可能・
-    cursorがrun/modeから独立・例外/未知responseの扱いが不安全・一時障害を永久skip化）を
-    検出し、task 20260914-001で修正した（commit d849129。API側write gate、GAS側
-    cursorのrun/mode分離とprogress照合、安全なログ変換とresponse型検証、
-    Gmail/parser例外の恒久skip/判定不能分離。apps/gas/test/へ永続保存した
-    23シナリオとAPI test 76件で確認済み）。続くGAS連携再レビュー§17.3が
-    S006-GAS-03の残り2件（応答検証・ログ許可listの不足）を検出し、
-    task 20260914-002で修正した（commit 9c20a5d。GET候補要素の必須field検証、
-    POST応答のmode/total一致確認とsummary許可7field＋許可bySkipReason15種への
-    再構築、safeErrName_の許可Error名7種への限定、progress応答の整合性検証。
-    apps/gas/test/reparseHistoricalCandidates.gas.test.cjsへ11シナリオ追加し
-    全34シナリオで確認済み）。**これでS006-GAS-01〜04の4項目すべてが解消済み。
-    ただしこれらの修正はいずれもローカルsourceのみで、clasp push/deployは
-    未実施のためApps Scriptには未反映（version @33はtask 20260913-001時点の
-    まま、S006-GAS-01〜04のバグが現存するがHISTORICAL_REPARSE_ENABLED・
-    REPARSE_RUN_TOKENとも未設定のため実害なし）。機能自体は依然として
-    動作しない（手動実行しても即座にno_run_tokenで終了する）。**
-    2026-09-14、VPS管理側GAS連携レビュー正本§18が、固定tree 7c7c6c7（実装
-    commit 9c20a5d・d849129を含む）に対しGAS連携実装レビューを`accepted`と
-    判定した（**production実行承認ではない**）。永続GAS test 34/34成功を
-    VPS管理側も独自に再確認済み。残る段階（production承認③実行版の計画確定:
-    修正版のGAS再deploy、修正API/Compose反映、独立write flag無効、VPS側での
-    runToken発行、秘密値の安全な受け渡し、手動dry-run範囲の固定、backup・
-    妻への通知・不使用確認、個別production承認によるHISTORICAL_REPARSE_ENABLED
-    設定・dry-run結果確認、production承認④）は別途review・別承認で進める。
+    notice 20260907-STOCKHOME-006の過去単価補完は承認③dry-run stageまでverified。
+    VPS task 20260914-001は2026-09-14 14:41:23 JSTに、採用231件の解析結果・
+    business data不変・全run失効・feature/write無効・終了後10分26秒の検証を完了。
+    失敗した2組目175件のaccount不一致は、奥様accountでの追加runにより再解析できた。
+    候補単価193件・購入履歴単価31件は補完見込みであり、実データは未更新。
+    単価なし37件・商品特定不可1件、購入単価の確実性を満たさない6件は推測補完しない。
+    これらの区分は重複を含み単純合算しない。残る承認④の実データ更新は別計画・別承認。
+    稼働source正本はVPS管理のdocs/runtime-state/production_deployments.yamlを参照。
+    承認③の詳細/過去の実装・review履歴は本noticeとVPS管理側の
+    stockhome_historical_price_reparse_dry_run_plan_20260914.md §29〜§31を参照。
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
@@ -667,6 +626,13 @@ known_gaps:
 
 # 2026-08-31〜09-02 時点で解消済みの事項
 resolved_gaps:
+  - >-
+    2026-09-14、VPS task 20260914-001で独立write gateを含む固定API source117e41dを反映し、
+    GASは同じ固定tree/version @34への配信完了というアプリ側報告を受領した。
+    dry-runは全231件の監査を確認、business write0、候補193件/購入履歴31件の補完見込みを算出。
+    全3run失効・VPS一時token撤去・feature/write無効・health正常・業務hash不変を確認しverified。
+    本人Properties/PC撤去は本人報告。修正版の未反映・dry-run未検証という不足は解消済み。
+    business writeは未実施なので機能全体の完了ではない。詳細はVPS管理側承認③計画§29〜§31。
   - >-
     task_id: 20260903-001 でnotice 20260902-STOCKHOME-004をproduction反映し、2026-09-03の
     19:55 daily_batch（run_id 20260903-195500）と20:10 push_receipt_check_and_cleanup

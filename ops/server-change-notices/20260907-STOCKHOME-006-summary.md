@@ -14,7 +14,16 @@ source_branch: main
 
 source_commit: 9c20a5dfeac17f8714a0e4e4b4fe36fa73d244c1
 
-production_baseline_commit: 5e209e04a517fa2daf785013cffb1bd26fd7835b
+production_baseline_commit: 117e41d3c12153f9594f0d8bc8cd78098ba9b4bf
+
+現在状態（2026-09-14、VPS管理側の未commit文書同期・app側了承待ち）:
+承認③ task `20260914-001`はdry-run stageとしてverified。採用231件のうち候補単価193件、
+購入履歴単価31件の補完見込みを確認したが、business writeは0。
+全3run失効・一時token撤去・feature/write無効、2026-09-14 14:41:23 JSTに終了後検証済み。
+GASは固定tree `117e41d`/version `@34`への配信完了というアプリ側報告に基づく。
+承認④の実データ更新は未承認・未実施で、機能全体は未完了。
+下記の「承認③未実施」「修正版GAS未反映」等は各時点の履歴であり、現在値ではない。
+正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\operations\stockhome_historical_price_reparse_dry_run_plan_20260914.md` §29〜§31。
 
 release_commits: `9f5fa86`（baseline）→ `02816ee`（task `20260907-002`、第1回API実装）→
 `47b0b1e`（notice更新）→ `5b2f68a`（task `20260907-004`、第2回レビュー対応。
