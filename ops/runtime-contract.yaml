@@ -181,6 +181,18 @@
 #     バグは現時点で実害なし。今回はapps/api・apps/mobile・packages/shared側の
 #     コード変更は無い。production baseline・deployment_status・API側runtimeには
 #     一切変更なし。**
+#   2026-09-14: VPS管理側のGAS連携レビュー正本§18が、固定tree 7c7c6c7
+#     （実装commit 9c20a5d・d849129を含む）に対しGAS連携実装レビューを
+#     `accepted`と判定した（production実行承認ではない）。永続GAS test
+#     34/34成功を独自に再確認し、S006-GAS-01〜04すべての受入指摘が解消済みと
+#     確認した。API先行stage（task 20260912-001）はverifiedのまま、過去単価
+#     再解析機能全体は引き続き未完了。修正版GAS/APIはApps Script・VPSとも
+#     未反映（Apps Scriptはversion @33のまま、VPS側はsource 5e209e0・
+#     feature無効のまま）。production承認③実行版の計画確定（修正API/Compose
+#     反映、GAS修正版配信、独立write flag無効、run発行、秘密値受け渡し、
+#     手動dry-run範囲の固定、backup・通知・個別production承認）が次の段階。
+#     本レビューでもVPS・production DB・実Gmail・実Apps Scriptへの接続・
+#     変更は行っていない。
 
 schema_version: 1
 app: stockhome
@@ -637,9 +649,14 @@ known_gaps:
     まま、S006-GAS-01〜04のバグが現存するがHISTORICAL_REPARSE_ENABLED・
     REPARSE_RUN_TOKENとも未設定のため実害なし）。機能自体は依然として
     動作しない（手動実行しても即座にno_run_tokenで終了する）。**
-    VPS管理側の再レビュー待ち。残る段階（修正版のGAS再deploy、VPS側でのrunToken発行、
-    production承認③によるHISTORICAL_REPARSE_ENABLED設定・dry-run結果確認、
-    production承認④）は別途review・別承認で進める。
+    2026-09-14、VPS管理側GAS連携レビュー正本§18が、固定tree 7c7c6c7（実装
+    commit 9c20a5d・d849129を含む）に対しGAS連携実装レビューを`accepted`と
+    判定した（**production実行承認ではない**）。永続GAS test 34/34成功を
+    VPS管理側も独自に再確認済み。残る段階（production承認③実行版の計画確定:
+    修正版のGAS再deploy、修正API/Compose反映、独立write flag無効、VPS側での
+    runToken発行、秘密値の安全な受け渡し、手動dry-run範囲の固定、backup・
+    妻への通知・不使用確認、個別production承認によるHISTORICAL_REPARSE_ENABLED
+    設定・dry-run結果確認、production承認④）は別途review・別承認で進める。
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。

@@ -179,7 +179,7 @@ container再起動を伴うdeploy、実Gmailへの再アクセスを伴う一度
 | 過去候補の`price_source`（`price_source`/`detected_price`とも NULL の行） | NULL/空 | 再解析で価格が判明した候補のみ値が入る（対象外は変化なし） |
 | 対応する`purchase_logs.price`（NULLの行のみ） | NULL | 層1〜3判定で確定できたものだけ値が入る |
 | API | 該当エンドポイントなし | `GET /api/bridge/reparse-candidates`・`POST /api/bridge/reparse-candidates`・`GET /api/bridge/reparse-progress`（第5回レビューR5-02対応で追加）を新設（`HISTORICAL_REPARSE_ENABLED=true`のときのみ有効。未設定時は404）。認可は事前発行済み`runToken`（第2回レビューB03対応、下記参照）で行い、自己申告emailは受け付けない。`runToken`はquery string/bodyではなく専用header（`X-Reparse-Run-Token`）で受け渡す（第3回レビューB03対応） |
-| GAS | 該当機能なし | **実装は完了（2026-09-13 task `20260913-001`、2026-09-14 GAS連携レビュー対応task `20260914-001`・再レビュー対応task `20260914-002`でS006-GAS-01〜04すべて修正済み）。deployはtask `20260913-001`時点のsource（`3de1557`、version `@33`）のみ実施済みで、task `20260914-001`・`20260914-002`の修正分は`clasp push`/`clasp deploy`未実施のためApps Scriptには未反映（現在deploy済みのsourceにはS006-GAS-01〜04のバグが残っているが、`HISTORICAL_REPARSE_ENABLED`・`REPARSE_RUN_TOKEN`とも未設定のため実害なし）。次回GAS反映時は最新修正版（commit `9c20a5d`以降）を対象にする。runTokenの発行・登録、`HISTORICAL_REPARSE_ENABLED`有効化、実Gmailへの接続を伴う実行はいずれも未実施。**詳細は下記「Codex実装結果」各節・「GAS clasp push/deploy実施結果」「GAS連携レビュー対応状況」「GAS連携再レビュー対応状況」参照 |
+| GAS | 該当機能なし | **実装は完了し、VPS管理側のGAS連携レビューが2026-09-14に`accepted`（§18。production実行承認ではない）。2026-09-13 task `20260913-001`、GAS連携レビュー対応task `20260914-001`・再レビュー対応task `20260914-002`でS006-GAS-01〜04すべて修正済み。deployはtask `20260913-001`時点のsource（`3de1557`、version `@33`）のみ実施済みで、それ以降の修正分は`clasp push`/`clasp deploy`未実施のためApps Scriptには未反映（現在deploy済みのsourceにはS006-GAS-01〜04のバグが残っているが、`HISTORICAL_REPARSE_ENABLED`・`REPARSE_RUN_TOKEN`とも未設定のため実害なし）。次回GAS反映時は最新修正版（commit `9c20a5d`以降）を対象にする。runTokenの発行・登録、`HISTORICAL_REPARSE_ENABLED`有効化、実Gmailへの接続を伴う実行はいずれも未実施。**詳細は下記「Codex実装結果」各節・「GAS clasp push/deploy実施結果」「GAS連携レビュー対応状況」「GAS連携再レビュー対応状況」「GAS連携レビュー結果」参照 |
 | `price_reparse_audit`テーブル | 存在しない | 新設（production row変更前後値の監査ログ。Git管理外）。`mode`列と`(run_id, candidate_id, mode)`の一意制約を追加し、write再送の冪等・dry-run再実行の重複防止に使う（第3回レビューB02/B04対応） |
 | `price_reparse_runs`テーブル | 存在しない | 新設（第2回レビューB03対応。runToken・対象owner・有効期限を保持する認可テーブル。HTTP経由では作成せず、production承認後に運用者が直接1件だけ発行する）。`cutoff_at`列を追加し、run作成後に新規追加された候補を対象から除外する（第3回レビューB02/B04対応）。期限切れ（未失効）のrunだけを同じrunToken・manifest・監査履歴を維持したまま再開する`extendReparseRun`関数（第6回レビューR6-02対応。第7回レビューR7-01対応で`revokedAt`設定済みrunは拒否するよう修正）と、失効済みrunだけを新しいrunTokenへ安全に移行する`rotateReparseRunToken`関数（第7回レビューR7-01対応。旧tokenは以後永久に無効）を追加（いずれも`createReparseRun`と同じくHTTP非公開） |
 | `price_reparse_item_snapshots`テーブル | 存在しない | 新設（第3回レビューB02/B06対応。run内で品目ごとに参照単価を1回だけ計算・固定し、dry-run/write・chunk分割・処理順序によらず同じ判定になるようにする） |
@@ -720,13 +720,15 @@ VPS管理レビュー正本§15が、第7回の指摘2件（S006-R7-01・S006-R7
 
 ## VPS管理チャットへの引き継ぎ
 
-- 引き継ぎ要否: **必要**（GAS連携再レビュー§17.4が求めたS006-GAS-03の残り2件
-  （応答検証・ログ許可list）を修正した。source `9c20a5d`、
-  `apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`全34シナリオ成功
-  （既存23件＋新規11件）を報告する。これでS006-GAS-01〜04の4項目すべてが
-  解消済み。`clasp push`/`clasp deploy`は未実施のため、GAS deployの個別実行
-  依頼を含む次のVPS管理側判断を仰ぐ。production_baseline_commit（`5e209e0`）・
-  deployment_status（`applied`）はどちらも変わらない）
+- 引き継ぎ要否: **不要**（GAS連携レビュー§18でGAS連携実装レビューが
+  `accepted`となった。production実行承認ではなく、修正版GAS/APIはApps Script・
+  VPSとも未反映のまま、production承認③は未実施。現時点でVPS管理チャットへの
+  追加の依頼事項は無い。次に進めるのは承認③実行版の計画確定（§18.3、
+  修正API/Compose反映・GAS修正版配信・独立write flag無効・run発行・秘密値
+  受け渡し・手動dry-run範囲の固定、backup・通知・individual production承認）
+  であり、app ownerが実行版計画を求める段階になったら改めて依頼する。
+  production_baseline_commit（`5e209e0`）・deployment_status（`applied`）は
+  どちらも変わらない）
 - 直近のVPS管理側とのやり取り: task `20260912-001`（API先行stage production反映）の
   実施結果を受け、notice・runtime contractのproduction状態記述を現在値
   （source `5e209e0`が実際にproduction反映済み、`deployment_status: applied`、
@@ -1119,12 +1121,44 @@ summary7フィールド完備）に合わせて更新した（アサーション
   いずれも未実施）
 - commit: `9c20a5d`（origin/mainへpush済み。Codexが直接commit・push）
 
+## GAS連携レビュー結果（2026-09-14、`accepted`）
+
+VPS管理レビュー正本§18が、固定tree `7c7c6c7`（notice同期commit。対象treeに
+実装commit`9c20a5d`・`d849129`の両方が含まれることを確認済み）に対し、
+**GAS連携実装レビューをacceptedと判定した。これはproduction実行承認ではない。**
+S006-GAS-01〜04すべての受入を妨げていた指摘は解消。API先行stage
+`20260912-001`は引き続き`verified`のままで、過去単価再解析機能全体としては
+未完了。
+
+- VPS管理側が永続GAS testを独自に再実行し**34/34成功・失敗0**を確認、
+  `ApiBridge.js`の構文確認も成功。前回固定tree`008a4de`から今回treeまで
+  API・shared・Compose・lockfileの差分が0であることを確認し、API test
+  76/76は§17.2の結果を継承する扱いとした（今回はDB test再実行なし）
+- §17.3の残り5観点（GET必須field・POST mode/count・summary/log許可list・
+  progress整合・例外name許可list）すべてについて、対応する回帰testの成功を
+  個別に確認した
+- GASの既知skip reason集合は現在のAPI `priceReparse.ts`とshared schemaの
+  固定reasonと照合済み。今後reason追加等で契約が変わる場合はGAS・APIを
+  合わせて再確認する必要がある旨の注記あり
+- **production計画へ進める条件**（§18.3）: 修正版はまだGASにもVPSにも未反映
+  （Apps Scriptは`3de1557`/version `@33`のまま、VPS側はsource `5e209e0`・
+  feature無効のまま）。承認③実行版では今回のfixed treeを基準に、修正API/
+  Compose反映、GAS修正版配信、独立write flag無効、1 owner/householdのrun発行、
+  秘密値の安全なProperties受け渡し、手動dry-run、検証・停止・復旧範囲を
+  固定する。開始前のread-only照合、backup・隔離restore、妻への通知・
+  不使用確認、個別production承認が必要。write flag有効化・業務data更新・
+  schema削除は含めない
+- 本レビューでもVPS管理側はproduction接続・GAS配信・Properties変更・
+  runToken発行・dry-run/write・task配置のいずれも行っていない
+
 ## Approval
 
 - app owner: 承認①のみ**実施済み（2026-09-12、過去候補の再解析・確定可能な購入単価のみを
   補完する設計、およびAPI先行stageを承認）**。B08の実装経路選択は2026-09-07に決定済み。
   承認②〜④（GAS実装後のfeature有効化、dry-run結果、全件write）は未実施
-- VPS management review: `accepted`（第8回、2026-09-08。production反映の承認ではない）
+- VPS management review: `accepted`（第8回、2026-09-08、API単独stage。
+  GAS連携レビュー、2026-09-14、§18、S006-GAS-01〜04修正済みのGAS実装。
+  いずれもproduction反映の承認ではない）
 - production approval: **承認②のみ実施済み（2026-09-12、task `20260912-001`・固定source
   `5e209e0`・4 migration・feature無効を特定して承認）。** 承認③・④（feature有効化・
   dry-run、全件write）は未実施
@@ -1164,4 +1198,5 @@ summary7フィールド完備）に合わせて更新した（アサーション
   （既存23＋新規11）成功をCodex・Claude双方で確認、Codex自身がcommit・push。
   `clasp push`/`clasp deploy`未実施のためApps Scriptには未反映、
   production baseline・deployment_statusに影響なし。これでS006-GAS-01〜04
-  すべて解消。VPS管理側の再レビュー待ち）
+  すべて解消し、VPS管理側GAS連携レビューが2026-09-14`accepted`（§18。
+  production実行承認ではない）となった）
