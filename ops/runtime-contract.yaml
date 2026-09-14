@@ -200,7 +200,7 @@ app: stockhome
 canonical_repo: https://github.com/soushinyamaoka/StockHome.git
 canonical_ref: main
 updated_at: 2026-09-14
-verified_against_runtime: 2026-09-14  # VPS task 20260914-001、dry-run stage終了検証14:41:23 JST。business write未実施。
+verified_against_runtime: 2026-09-14  # VPS task 20260914-002、候補193/購入31補完・17:26:27 JSTに10分観察を含む技術検証完了。本人UI確認待ち。
                                        # 19:55定期jobの実時刻確認はこのtask範囲外（既存job・route自体は無変更）
 
 runtime:
@@ -323,13 +323,15 @@ data:
       meaning: >-
         2026-09-07（notice 20260907-STOCKHOME-006、task 20260907-004で追加、
         task 20260912-001で2026-09-12にproduction反映済み。schemaのみで0 row、
-        機能フラグ未設定のためHTTP経由での作成・利用は未発生）。過去候補の単価
+        機能フラグ未設定のため同時点ではHTTP経由の利用は未発生）。現在はtask
+        20260914-001/002で計5runを作成・全失効済み。過去候補の単価
         再解析APIへの認可専用テーブル。GAS側の
         呼び出しを、この事前発行済みrun_tokenが指すimported_by_email・household_idの
         候補だけに限定する（共有BRIDGE_TOKEN保持者が任意のemailを自己申告して
         他利用者のGmail message ID・商品名へアクセスすることを防ぐ）。行の作成は
         HTTP経由では行わず、production承認後に運用者がローカル/VPS上で直接1件だけ
-        発行する想定（createReparseRun関数、本notice時点で未実運用）。cutoff_atは
+        発行する（createReparseRun関数）。task 20260914-002では個別承認された運用helperで
+        検証済みsubset49/144件だけのrunをSERIALIZABLE transaction内に作成した。cutoff_atは
         run作成時刻（第3回レビューB02/B04対応、task 20260907-005で追加）で、
         この時刻より後に作成された候補（通常の6時間取込等）はこのrunの対象に含めない
         （対象集合をrun作成時点で固定し、動的に増減しないようにする）。
@@ -364,7 +366,8 @@ data:
         （rotateReparseRunTokenによるクリアを除く）。cutoff_atはcreateReparseRun実行時に
         自動設定され、以後変更しない。expires_atはcreateReparseRun実行時に自動設定され、
         以後extendReparseRunまたはrotateReparseRunTokenでのみ更新される。run_tokenは
-        rotateReparseRunTokenでのみ変更される。
+        rotateReparseRunTokenでのみ変更される。task 20260914-002の限定run作成は
+        個別承認された運用helperで行い、旧runの再有効化/期限延長/token変更はしていない。
       failure_consistency: >-
         該当なし（認可専用、業務データではない）。ただしcreateReparseRunの
         SERIALIZABLE transactionはrun作成とprice_reparse_targetsへの書き込みを
@@ -373,7 +376,8 @@ data:
       fields: [run_id, candidate_id]
       meaning: >-
         2026-09-08（notice 20260907-STOCKHOME-006、task 20260907-007で追加、
-        task 20260912-001で2026-09-12にproduction反映済み。schemaのみで0 row）。
+        task 20260912-001で2026-09-12にproduction反映済み。同時点はschemaのみで0 row）。
+        現在はtask 20260914-001/002の計599targetを保持する。
         createReparseRun実行時点で対象となる候補ID一覧を
         固定するmanifest（第5回レビューR5-02対応）。run作成後に他経路
         （通常のGmail確定フロー等）で候補の価格が確定しても、このmanifestの
@@ -390,7 +394,8 @@ data:
         household/owner/cutoff一致だけでGET/POST対象になり得る、という2つの問題が
         実DBへのprobeで確認された。
       update_paths: >-
-        createReparseRunのSERIALIZABLE transaction内でのみ作成する（run作成と
+        createReparseRunまたは個別承認されたtask 20260914-002の限定運用helperの
+        SERIALIZABLE transaction内で作成する（run作成と
         同一transaction。対象候補が0件の場合は何も作成しない）。以後の更新・削除は
         行わない。
       failure_consistency: >-
@@ -400,14 +405,17 @@ data:
       fields: [run_id, item_id, reference_price]
       meaning: >-
         2026-09-07（notice 20260907-STOCKHOME-006、task 20260907-005で追加、
-        task 20260912-001で2026-09-12にproduction反映済み。schemaのみで0 row）。
+        task 20260912-001で2026-09-12にproduction反映済み。同時点はschemaのみで0 row）。
+        現在は元dry-runの20snapshotと、task 20260914-002でコピーした20snapshotの計40件を保持。
         run内で品目ごとに1回だけ計算・固定する「参照単価」の
         snapshot。resolveCandidatePriceForItemの層3判定（過去の確定単価との照合）が
         毎回最新の購入履歴を読むと、同一run内の処理順序・dry-run/write・chunk分割で
         判定結果が変わってしまう問題（第3回レビューB02/B06、実DBへのprobeで確認済み）を
         防ぐため、run内で最初にその品目が必要になった時点の値を固定して使い回す。
       update_paths: >-
-        priceReparse.tsのgetOrCreateItemSnapshotのみ。呼び出し元のtransaction
+        通常はpriceReparse.tsのgetOrCreateItemSnapshot。task 20260914-002では個別承認により、
+        元dry-runの参照値を新限定runへコピーし判定を固定した。元snapshotは不変。
+        通常のgetOrCreateItemSnapshotは呼び出し元のtransaction
         （dry_runでrollbackされる場合を含む）とは独立したprisma呼び出しで作成するため、
         dry_runでも実際にrowが残る。同一(run_id, item_id)への同時作成はunique制約で
         検知し、先に作成された側の値を再取得して使う。
@@ -424,8 +432,9 @@ data:
       fields: [run_id, mode, candidate_id, purchase_id, before_*, applied_*, outcome, skip_reason]
       meaning: >-
         2026-09-06（notice 20260907-STOCKHOME-006、task 20260912-001で2026-09-12に
-        production反映済み。schemaのみで0 row。機能フラグ未設定のためHTTP経由での
-        書き込みは未発生）。過去候補の単価
+        production反映済み。同時点はschemaのみで0 row・HTTP書込み未発生）。現在は
+        task 20260914-001のdry-run406件とtask 20260914-002のwrite193件、計599件を保持。
+        過去候補の単価
         再解析batchが「正常に処理を完了した」全row（成功・skip・conflict・業務判断としての
         失敗（invalid_price_rejected等）を問わず、早期return経路も含む。第3回レビュー
         B05/B04対応、task 20260907-005で全経路を監査対象化）の変更前後値を記録する
@@ -606,16 +615,16 @@ user_impact:
 # 既知の未解決事項（隠さずそのまま記録する）
 known_gaps:
   - >-
-    notice 20260907-STOCKHOME-006の過去単価補完は承認③dry-run stageまでverified。
-    VPS task 20260914-001は2026-09-14 14:41:23 JSTに、採用231件の解析結果・
-    business data不変・全run失効・feature/write無効・終了後10分26秒の検証を完了。
-    失敗した2組目175件のaccount不一致は、奥様accountでの追加runにより再解析できた。
-    候補単価193件・購入履歴単価31件は補完見込みであり、実データは未更新。
+    notice 20260907-STOCKHOME-006の承認④はVPS task 20260914-002で個別承認後に実施。
+    候補単価193件・購入履歴単価31件は補完済み、許可外差分0。
+    2026-09-14 17:16:21 JSTにfeature/write無効・全5run失効・一時production token撤去済み。
+    17:26:27 JSTに終了後10分観察を含む技術検証完了、使用再開可能。本人UI確認待ち。
+    購入履歴GETは16品目/補完31単価と価格統計の件数/最小/最大/平均/最新値を正常確認。
     単価なし37件・商品特定不可1件、購入単価の確実性を満たさない6件は推測補完しない。
-    これらの区分は重複を含み単純合算しない。残る承認④の実データ更新は別計画・別承認。
+    これらの区分は重複を含み単純合算しない。未判明分の推測補完や追加writeは承認範囲外。
     稼働source正本はVPS管理のdocs/runtime-state/production_deployments.yamlを参照。
-    承認③の詳細/過去の実装・review履歴は本noticeとVPS管理側の
-    stockhome_historical_price_reparse_dry_run_plan_20260914.md §29〜§31を参照。
+    承認④の詳細はVPS管理側stockhome_historical_price_reparse_write_plan_20260914.md §11〜§13、
+    承認③/過去の実装・review履歴は本noticeと承認③計画§29〜§31を参照。
   - >-
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
@@ -627,12 +636,21 @@ known_gaps:
 # 2026-08-31〜09-02 時点で解消済みの事項
 resolved_gaps:
   - >-
+    2026-09-14、VPS task 20260914-002は今回の妻通知・不使用確認とユーザー個別承認後、
+    新backup/隔離write検証・限定2run/旧snapshotコピー・既存HTTP canary/chunkで
+    候補193/購入31の未取得単価を補完した。許可外差分0。
+    flags false/false・全5run失効・一時token/runtime env撤去・10分観察・health正常・JSON error0、
+    購入履歴API/価格統計を確認して17:26:27 JSTに技術検証完了。本人UI確認は別に待つ。
+    元audit/manifest/snapshot保持、Gmail再読/GAS・mobile追加配信/在庫・数量・購入日変更/DB restoreなし。
+    詳細はVPS管理側承認④計画§11〜§13。
+  - >-
     2026-09-14、VPS task 20260914-001で独立write gateを含む固定API source117e41dを反映し、
     GASは同じ固定tree/version @34への配信完了というアプリ側報告を受領した。
     dry-runは全231件の監査を確認、business write0、候補193件/購入履歴31件の補完見込みを算出。
     全3run失効・VPS一時token撤去・feature/write無効・health正常・業務hash不変を確認しverified。
     本人Properties/PC撤去は本人報告。修正版の未反映・dry-run未検証という不足は解消済み。
-    business writeは未実施なので機能全体の完了ではない。詳細はVPS管理側承認③計画§29〜§31。
+    これは承認③時点の結果。続く承認④では候補193/購入31を実補完した。
+    詳細はVPS管理側承認③計画§29〜§31と承認④計画§11〜§13。
   - >-
     task_id: 20260903-001 でnotice 20260902-STOCKHOME-004をproduction反映し、2026-09-03の
     19:55 daily_batch（run_id 20260903-195500）と20:10 push_receipt_check_and_cleanup
