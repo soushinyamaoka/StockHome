@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { parseBody } from '../utils/validate';
 import { serializeItem, serializeSnapshot, serializeRuntimeState } from '../utils/serialize';
-import { refreshStockSnapshotForItem } from '../services/stockCalc';
+import { lockItemForAccumulation, refreshStockSnapshotForItem } from '../services/stockCalc';
 
 const itemRoutes: FastifyPluginAsync = async (app) => {
   // 一覧（既定は有効品目のみ。includeInactive=true で論理削除分も含む）
@@ -155,22 +155,28 @@ const itemRoutes: FastifyPluginAsync = async (app) => {
   // 論理削除の復元
   app.post('/:id/restore', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const exists = await prisma.item.findFirst({
-      where: { id, householdId: req.auth.householdId },
+    const outcome = await prisma.$transaction(async (tx) => {
+      await lockItemForAccumulation(tx, id);
+      const exists = await tx.item.findFirst({
+        where: { id, householdId: req.auth.householdId },
+      });
+      if (!exists) return { kind: 'not_found' as const };
+      if (exists.isActive) return { kind: 'already_active' as const };
+
+      const item = await tx.item.update({
+        where: { id },
+        data: { isActive: true, deletedAt: null, deletedBy: null },
+      });
+      // 削除中は夜間バッチの対象外だったため、復元時点の状態で再計算する
+      await refreshStockSnapshotForItem(id, tx);
+      return { kind: 'ok' as const, item };
     });
-    if (!exists) return reply.code(404).send({ message: '品目が見つかりません' });
-    if (exists.isActive) {
+
+    if (outcome.kind === 'not_found') return reply.code(404).send({ message: '品目が見つかりません' });
+    if (outcome.kind === 'already_active') {
       return reply.code(409).send({ message: 'この品目は削除されていません' });
     }
-
-    const item = await prisma.item.update({
-      where: { id },
-      data: { isActive: true, deletedAt: null, deletedBy: null },
-    });
-
-    // 削除中は夜間バッチの対象外だったため、復元時点の状態で再計算する
-    await refreshStockSnapshotForItem(id);
-    return { item: serializeItem(item) };
+    return { item: serializeItem(outcome.item) };
   });
 };
 

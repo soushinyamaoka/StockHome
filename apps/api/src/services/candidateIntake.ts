@@ -297,36 +297,60 @@ export async function createPurchaseLogFromCandidate(
   return log;
 }
 
+// import_order_candidatesの1行を直列化するロック（S008-B02対応）。
+// 同一候補への同時取消（二重クリック等）で、片方が購入削除後にもう片方が
+// 同じ購入行を削除しようとして失敗する、または二重に取消処理が走ることを防ぐ
+async function lockCandidateForUpdate(
+  tx: Prisma.TransactionClient,
+  candidateId: string
+): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM import_order_candidates WHERE id = ${candidateId} FOR UPDATE`;
+}
+
 // 候補確定の取り消し（GAS版には無い新機能。所見B-3対応）。
-// 紐づくpurchase_logを削除し、countedInInventoryだった場合は積み上げ分を差し戻す。
-// 差し戻しはreverseAccumulatedPurchaseと同じ「近似的な巻き戻し」であり、
-// その後の別の積み上げ・補正で上書き済みの場合は完全には一致しない（既知の制約）。
+// 購入履歴削除・積み上げ差し戻し・候補ステータス更新・snapshot再計算を
+// すべて同一transaction内で行う（S008-B02対応: 部分適用・同時取消の二重処理を防ぐ）。
+// トランザクション内で候補をロック・再取得して状態を再確認するため、同時に2回
+// 呼ばれても一方だけが取消を実行し、もう一方はnullを返す（呼び出し元は409として扱う）。
 // 対象のpurchase_logが既に手動削除済み等で見つからない場合は、ステータスの
 // 差し戻しのみ行う（エラーにはしない）
 export async function unconfirmImportCandidate(
-  candidate: ImportOrderCandidate
-): Promise<{ candidate: ImportOrderCandidate; reversedPurchaseId: string | null }> {
-  const lookupIds = [candidate.id, ...(candidate.legacyId ? [candidate.legacyId] : [])];
-  const purchase = await prisma.purchaseLog.findFirst({
-    where: { importCandidateId: { in: lookupIds } },
-  });
+  candidateId: string,
+  householdId: string
+): Promise<{ candidate: ImportOrderCandidate; reversedPurchaseId: string | null } | null> {
+  return prisma.$transaction(async (tx) => {
+    await lockCandidateForUpdate(tx, candidateId);
 
-  if (purchase) {
-    await prisma.$transaction(async (tx) => {
+    const candidate = await tx.importOrderCandidate.findFirst({
+      where: { id: candidateId, householdId },
+    });
+    if (!candidate) return null;
+    if (candidate.candidateStatus !== 'confirmed' && candidate.candidateStatus !== 'auto_confirmed') {
+      return null;
+    }
+
+    const lookupIds = [candidate.id, ...(candidate.legacyId ? [candidate.legacyId] : [])];
+    const purchase = await tx.purchaseLog.findFirst({
+      where: { importCandidateId: { in: lookupIds } },
+    });
+
+    let reversedPurchaseId: string | null = null;
+    if (purchase) {
       await tx.purchaseLog.delete({ where: { id: purchase.id } });
       if (purchase.countedInInventory) {
         await reverseAccumulatedPurchase(tx, purchase.itemId, purchase.qty);
       }
+      await refreshStockSnapshotForItem(purchase.itemId, tx);
+      reversedPurchaseId = purchase.id;
+    }
+
+    const updated = await tx.importOrderCandidate.update({
+      where: { id: candidate.id },
+      data: { candidateStatus: 'detected', matchedItemId: null },
     });
-    await refreshStockSnapshotForItem(purchase.itemId);
-  }
 
-  const updated = await prisma.importOrderCandidate.update({
-    where: { id: candidate.id },
-    data: { candidateStatus: 'detected', matchedItemId: null },
+    return { candidate: updated, reversedPurchaseId };
   });
-
-  return { candidate: updated, reversedPurchaseId: purchase?.id ?? null };
 }
 
 // 商品名/品名の正規化（小文字化・連続空白の圧縮・前後空白除去）

@@ -147,8 +147,11 @@ const importCandidateRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(409).send({ message: 'この候補は確定済みではありません' });
     }
 
-    const { candidate: updated } = await unconfirmImportCandidate(candidate);
-    return { candidate: serializeCandidate(updated) };
+    const result = await unconfirmImportCandidate(id, req.auth.householdId);
+    if (!result) {
+      return reply.code(409).send({ message: 'この候補は既に取消済みか、確定済みではありません' });
+    }
+    return { candidate: serializeCandidate(result.candidate) };
   });
 
   // 候補の無視の取り消し

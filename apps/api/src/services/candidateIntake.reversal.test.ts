@@ -137,8 +137,9 @@ test('countedな確定を取り消すと購入履歴と積み上げが差し戻�
     const purchase = await createLinkedPurchase(scope, candidate, 3, true);
     assert.equal(await currentManualOverrideQty(scope.itemId), 3);
 
-    const result = await unconfirmImportCandidate(candidate);
+    const result = await unconfirmImportCandidate(candidate.id, scope.householdId);
 
+    assert.ok(result);
     assert.equal(result.reversedPurchaseId, purchase.id);
     assert.equal(await prisma.purchaseLog.findUnique({ where: { id: purchase.id } }), null);
     assert.equal(await currentManualOverrideQty(scope.itemId), 0);
@@ -163,8 +164,9 @@ test('未countedな確定を取り消しても積み上げ値は変更されず�
     });
     const purchase = await createLinkedPurchase(scope, candidate, 3, false);
 
-    const result = await unconfirmImportCandidate(candidate);
+    const result = await unconfirmImportCandidate(candidate.id, scope.householdId);
 
+    assert.ok(result);
     assert.equal(result.reversedPurchaseId, purchase.id);
     assert.equal(await prisma.purchaseLog.findUnique({ where: { id: purchase.id } }), null);
     assert.equal(await currentManualOverrideQty(scope.itemId), 4);
@@ -183,8 +185,9 @@ test('legacyIdで紐づく購入履歴も見つけて削除し、積み上げを
     const purchase = await createLinkedPurchase(scope, candidate, 2, true, legacyId);
     assert.equal(await currentManualOverrideQty(scope.itemId), 2);
 
-    const result = await unconfirmImportCandidate(candidate);
+    const result = await unconfirmImportCandidate(candidate.id, scope.householdId);
 
+    assert.ok(result);
     assert.equal(result.reversedPurchaseId, purchase.id);
     assert.equal(await prisma.purchaseLog.findUnique({ where: { id: purchase.id } }), null);
     assert.equal(await currentManualOverrideQty(scope.itemId), 0);
@@ -200,8 +203,9 @@ test('紐づく購入履歴が無くてもエラーにせず候補だけを未�
   try {
     const candidate = await createConfirmedCandidate(scope, 'missing-purchase');
 
-    const result = await unconfirmImportCandidate(candidate);
+    const result = await unconfirmImportCandidate(candidate.id, scope.householdId);
 
+    assert.ok(result);
     assert.equal(result.reversedPurchaseId, null);
     assert.equal(result.candidate.candidateStatus, 'detected');
     assert.equal(result.candidate.matchedItemId, null);
@@ -215,7 +219,9 @@ test('取り消した候補を同じ品目へ再確定すると新しい購入�
   try {
     const candidate = await createConfirmedCandidate(scope, 'reconfirm');
     const originalPurchase = await createLinkedPurchase(scope, candidate, 1, true);
-    const { candidate: detected } = await unconfirmImportCandidate(candidate);
+    const unconfirmed = await unconfirmImportCandidate(candidate.id, scope.householdId);
+    assert.ok(unconfirmed);
+    const { candidate: detected } = unconfirmed;
 
     const newPurchase = await createPurchaseLogFromCandidate(
       detected,
@@ -236,6 +242,64 @@ test('取り消した候補を同じ品目へ再確定すると新しい購入�
     assert.equal(await currentManualOverrideQty(scope.itemId), 1);
     assert.ok(newPurchase.inventoryEffectiveAt);
     assert.ok(newPurchase.inventoryEffectiveAt <= todayDateOnly());
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('同一候補への同時取消は一方だけが成功し、購入履歴と積み上げを一度だけ差し戻す', async () => {
+  const scope = await createTestScope();
+  try {
+    const candidate = await createConfirmedCandidate(scope, 'concurrent');
+    const purchase = await createLinkedPurchase(scope, candidate, 3, true);
+    assert.equal(await currentManualOverrideQty(scope.itemId), 3);
+
+    const results = await Promise.all([
+      unconfirmImportCandidate(candidate.id, scope.householdId),
+      unconfirmImportCandidate(candidate.id, scope.householdId),
+    ]);
+    const succeeded = results.filter((result) => result !== null);
+    const rejected = results.filter((result) => result === null);
+
+    assert.equal(succeeded.length, 1);
+    assert.equal(rejected.length, 1);
+    assert.equal(succeeded[0]!.reversedPurchaseId, purchase.id);
+    assert.equal(await prisma.purchaseLog.findUnique({ where: { id: purchase.id } }), null);
+    assert.equal(await currentManualOverrideQty(scope.itemId), 0);
+    const storedCandidate = await prisma.importOrderCandidate.findUniqueOrThrow({
+      where: { id: candidate.id },
+    });
+    assert.equal(storedCandidate.candidateStatus, 'detected');
+    assert.equal(storedCandidate.matchedItemId, null);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('既に取消済みの候補を再度取り消すとnullを返しDB状態を変更しない', async () => {
+  const scope = await createTestScope();
+  try {
+    const candidate = await createConfirmedCandidate(scope, 'already-unconfirmed');
+    const purchase = await createLinkedPurchase(scope, candidate, 2, true);
+
+    const first = await unconfirmImportCandidate(candidate.id, scope.householdId);
+    assert.ok(first);
+    const candidateBeforeRetry = await prisma.importOrderCandidate.findUniqueOrThrow({
+      where: { id: candidate.id },
+    });
+    const purchaseBeforeRetry = await prisma.purchaseLog.findUnique({ where: { id: purchase.id } });
+
+    const second = await unconfirmImportCandidate(candidate.id, scope.householdId);
+
+    assert.equal(second, null);
+    const candidateAfterRetry = await prisma.importOrderCandidate.findUniqueOrThrow({
+      where: { id: candidate.id },
+    });
+    const purchaseAfterRetry = await prisma.purchaseLog.findUnique({ where: { id: purchase.id } });
+    assert.deepEqual(candidateAfterRetry, candidateBeforeRetry);
+    assert.equal(purchaseBeforeRetry, null);
+    assert.equal(purchaseAfterRetry, null);
+    assert.equal(await currentManualOverrideQty(scope.itemId), 0);
   } finally {
     await scope.cleanup();
   }
