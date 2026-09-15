@@ -245,8 +245,24 @@ secret値は記載しない。
 
 ## Approval
 
-- app owner: 未実施（本notice記載の利用者影響についての明示承認はこれから）
-- VPS management review: 未実施
+- app owner: **2026-09-15、ユーザー（app owner）がS008-B06記載の5点を明示承認**
+  （VPS管理レビュー正本
+  `C:\work\PRG\Sakura\Dev\vps-server-management\docs\operations\stockhome_undo_actions_review_20260915.md`
+  §3 S008-B06）。承認範囲は次の5点。
+  1. 確定取消は紐づく購入履歴を削除し、積み上げは既知仕様（`reverseAccumulatedPurchase`）に
+     より近似的に差し戻す
+  2. 紐づく購入履歴が見つからない場合でも候補だけを`detected`へ戻す
+  3. 取消後の再確定は新しい購入履歴を作る
+  4. 品目復元は削除前の`notificationEnabled`・snooze等を維持し、条件次第で次回batchの
+     通知対象になる
+  5. image rollbackでは、利用者操作後の削除・補正・復元データは戻らない
+  - **production反映の承認・S008-B02〜B04修正内容の承認は、上記5点とは別に必要**。
+    上記は取り消し・復元機能の設計そのものへの承認であり、production deployの
+    実施承認ではない
+- VPS management review: 初回2026-09-15実施・`blocked`（S008-B01〜B06、正本上記参照）。
+  S008-B01（007のS007-B01解消と最終source確定が前提）・S008-B02〜B04（transaction化・
+  同時実行対応・HTTP認可テスト）は修正中（task `20260915-004`）。S008-B05（client配信計画）は
+  作成中。S008-B06は上記のとおりapp owner承認済み
 - production approval: 未実施
-- source task_id（app/ai-watch）: 20260915-002
+- source task_id（app/ai-watch）: 20260915-002（初版）, 20260915-004（S008-B02〜B04修正）
 - related VPS task_id: 未採番
