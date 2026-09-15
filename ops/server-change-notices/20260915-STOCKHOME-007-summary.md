@@ -12,19 +12,27 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 40c7947f7d33d74aaf5b97723db87ca47f310b2b
+source_commit: 038e173199ad8daee3ed3fd268673c8642976eb7
 
 production_baseline_commit: 117e41d3c12153f9594f0d8bc8cd78098ba9b4bf
 
-release_commits: `117e41d`（baseline）→ `52c5a7c`（notice `20260907-STOCKHOME-006`の承認③dry-run stage
-verified同期。`ops/runtime-contract.yaml`・同notice文書のみ）→ `d909c9f`（同notice、承認④実データ補完完了同期。
-同上2ファイルのみ）→ `f14b97f`（同notice、本人画面確認OK・verified同期。同上2ファイルのみ）→
-`b0007b4`（同notice、現在状態見出しを最終状態へ更新。同notice文書のみ）→ `40c7947`（task `20260915-001`、
-本notice対象の実装。**baseline以降で唯一build inputに影響するcommit**）。
-`52c5a7c`〜`b0007b4`の4件はいずれも`ops/**`のみの変更（notice `20260907-STOCKHOME-006`の事後記録）で、
-`apps/api/**`・`packages/shared/**`・`package.json`・`package-lock.json`・`apps/mobile/package.json`
-（Dockerfileが取り込むbuild input）に該当ファイルは無く、本notice・前回notice `20260907-STOCKHOME-006`の
-いずれの対象機能にも影響しない。
+release_commits: `117e41d`（baseline）→ `52c5a7c`/`d909c9f`/`f14b97f`/`b0007b4`（notice
+`20260907-STOCKHOME-006`の事後記録4件。`ops/**`のみで build input に影響しない）→
+`40c7947`（task `20260915-001`、本notice当初対象の通知先修正。**build inputに影響**）→
+`1122158`/`5f36e55`/`cb7e194`（本notice自体の作成・改訂3件。`ops/**`のみ）→
+`4105725`（task `20260915-002`、notice `20260915-STOCKHOME-008`対象の取り消し・復元機能追加。
+**build inputに影響**）→ `c4954ee`/`d7a1f7d`（notice `008`の作成・改訂2件。`ops/**`のみ）→
+`5699b30`（task `20260915-003`、S007-B01修正。householdId+userIdでプッシュ端末query・
+通知集約・`lastPushAt`更新を絞る。**build inputに影響**）→ `038e173`（task `20260915-004`、
+S008-B02〜B04修正。取り消し・復元処理のtransaction統合とHTTP認可テスト追加。
+**build inputに影響**）。
+
+**S008-B01対応（VPS管理レビュー §3、両notice共通）**: notice `20260915-STOCKHOME-008`の
+source（`4105725`、S007-B01未解消のためVPS管理側から一旦deploy対象外とされていた）に
+S007-B01・S008-B02〜B04の修正を重ねた結果、**本notice `007` と notice `008` は
+同一の最終source commit `038e173` を共有する**。両noticeを分けてdeployすることはなく、
+`038e173`から作る1つのAPI artifactとしてreview・承認・deployする（VPS管理側が受理済みの
+結合リリース方針、`stockhome_undo_actions_review_20260915.md` §1参照）。
 
 impact_level: L2
 
@@ -62,6 +70,14 @@ deployment_status: not_started
 設計はClaude、実装はCodex（ai-watch経由、アプリ側task `20260915-001`）が行い、Claudeが
 コードレビューと純粋関数テストの実行確認を行った。
 
+**S007-B01対応（VPS管理レビュー、2026-09-15、task `20260915-003`）**: 初版の
+`sendPushToUser`は`userId`だけで端末検索・通知集約を行っており、schema上は同一ユーザーが
+複数household（`household_members`は多対多）に所属できるにもかかわらず、その場合に
+他householdの品目名が1通の通知本文へ混ざる、または他householdの端末へ送信されうる欠陥を
+VPS管理側が指摘した。`sendPushToUser`の端末検索・`lastPushAt`更新を`householdId + userId`で
+絞り、夜間バッチの新規アラート集約も`(household, user)`単位へ変更した（`apps/api/src/services/pushNotify.ts`・
+`apps/api/src/services/batch.ts`）。詳細は下記「現在と変更後」表・「Health・テスト」参照。
+
 ## 変更理由
 
 ユーザーから、2026-09-03の全体点検所見のうち「通知先『代表者のみ／特定ユーザー』を
@@ -96,6 +112,8 @@ port/bind/URL変更・認証境界の変更はいずれも無い。品目・在�
 | `READYGO_QUEUED.alerts` | LINEキューに積んだ件数（`targets.length`、当時から実質`all`限定） | 同じ意味（LINEキューに積んだ件数）。算出元が`result.lineAlerts`に変わっただけで値の意味は不変 |
 | `PUSH_DISPATCHED`ログ | 夜間バッチ1回あたり世帯単位で最大1行 | 夜間バッチ1回あたりユーザー単位で複数行になりうる。既存フィールド（`items`/`targeted`/`accepted`/`failed`/`deactivated`）は不変、`user_id`等の個人識別子は追加していない |
 | `pushNotify.ts`の関数 | `sendPushToHousehold(householdId, ...)` | `sendPushToUser(userId, ...)`（旧関数は削除。呼び出し元は`batch.ts`の1箇所のみだったため未使用のまま残していない） |
+| プッシュ端末検索・`lastPushAt`更新（S007-B01対応） | `sendPushToUser(userId, ...)`が`userId`のみで絞る | `sendPushToUser(householdId, userId, ...)`へ変更。`findActiveDevicesForHouseholdUser`・`markDevicesPushed`が`householdId + userId + isActive`で絞る |
+| 新規アラートの集約単位（S007-B01対応） | `userId`のみ（同一userが複数household所属だと本文が混ざりうる） | `groupNewAlertsByHouseholdUser`で`(householdId, userId)`単位に変更。household境界をまたいで1通に混ざらない |
 
 ## 影響対象
 
@@ -179,6 +197,17 @@ secret値は記載しない。
     含む`where`句が残っていないこと、`sendPushToHousehold`がリポジトリ全体から
     消えていること、`apps/mobile`/`packages/shared`/`apps/gas`/`ops/`/`prisma/`に
     差分が無いことをそれぞれ`grep`・`git diff --stat`で確認済み
+- **S007-B01対応の追加テスト（2026-09-15、task `20260915-003`）**:
+  - `batch.groupTargets.test.ts`（`groupNewAlertsByHouseholdUser`のDB非依存純粋関数テスト）
+    3件: 同一userが2household所属時に本文が混ざらないこと、同一household内の複数ユーザーへの
+    正しい分配、対象0人の品目がどのグループにも現れないことを確認。Codexが自環境で実行し
+    全件成功、Claudeが対話セッションで再実行し同じ結果（3件成功）を確認した（2026-09-15）
+  - `pushNotify.householdScope.test.ts`（`findActiveDevicesForHouseholdUser`・
+    `markDevicesPushed`のDB依存テスト）3件: 同一userIdが2household所属時に端末検索・
+    `lastPushAt`更新がそれぞれのhouseholdへ正しく限定されること、無効端末が除外されることを
+    確認。Claudeが対話セッションでローカル開発用Postgres（`localhost:5434`）に対して実行し
+    全件成功を確認した（2026-09-15）
+  - 結果: 上記6件すべて成功（失敗0件）
 - 未実施テストと理由: 既存のDB依存テスト（`stockCalc.accumulation.test.ts`・
   `priceReparse.test.ts`）は本変更の対象ファイルではなく差分も無いため、本task経由では
   実行していない（ai-watch経由のCodex実行ではDB操作が禁止のため元々対象外）。
@@ -206,8 +235,9 @@ secret値は記載しない。
 - [x] production baselineとrelease全commit・build入力差分を確認した（`production_deployments.yaml`の
       `117e41d`を基準に、baseline以降の全5commitをbuild input該当有無で区別した。上記
       `release_commits`参照）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`40c7947`はCodexが
-      `git push origin main`済み・確認済み。本notice文書のcommitはこの後に作成する）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`40c7947`・`5699b30`・
+      `038e173`はいずれもCodexが`git push origin main`済み・確認済み。本notice文書の
+      改訂commitはこの後に作成する）
 - [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（該当なし。本変更は
       既存データへの書き込み内容・意味を一切変更しないため、この観点のリスクは無い）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（上記「Deploy・rollback」
@@ -260,8 +290,16 @@ VPS management review・production承認は、本notice提出後にVPS管理チ�
 - VPS management review: 初回2026-09-15実施・`blocked`（S007-B01〜B04、正本上記参照）。
   S007-B02（task_id名前空間分離）・S007-B03（rollback/メタデータ記述訂正）はVPS管理側が
   noticeへ直接反映し、アプリ側で確認・commit済み（commit `5f36e55`）。S007-B04は
-  上記のとおりapp owner承認済み。**S007-B01（household境界）は修正中**
-  （task `20260915-003`、本改訂時点で未完了）。全4点の解消確認後、再レビューへ回す
+  上記のとおりapp owner承認済み。**S007-B01（household境界）はtask `20260915-003`
+  （commit `5699b30`）で解消し、追加テスト6件（上記「Health・テスト」参照）すべて成功を
+  Claudeが確認済み**。続く2回目のVPS管理レビュー（`stockhome_undo_actions_review_20260915.md`）
+  でS008-B01〜B06（notice `20260915-STOCKHOME-008`対象）が新たに指摘され`blocked`。
+  S008-B02〜B04はtask `20260915-004`（commit `038e173`）で解消し、追加テスト17件
+  （notice `008`の「Health・テスト」参照）すべて成功を確認済み。S008-B05（client配信計画）は
+  `ops/client-releases/20260915-STOCKHOME-004-plan.md`として作成済み。S008-B06は
+  notice `008`でapp owner承認済み。**本改訂により007/008とも全blocker解消、
+  最終source `038e173`で再レビューへ回す**
 - production approval: 未実施
-- source task_id（app/ai-watch）: 20260915-001（初版）, 20260915-003（S007-B01修正）
+- source task_id（app/ai-watch）: 20260915-001（初版）, 20260915-003（S007-B01修正）,
+  20260915-004（S008-B02〜B04修正。007自体の変更は無いが最終sourceを共有するため記載）
 - related VPS task_id: 未採番（`20260915-001`はVPS2管理画面レイアウト作業で使用済み）
