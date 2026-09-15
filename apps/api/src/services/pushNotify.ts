@@ -1,6 +1,6 @@
 // Expo Push 通知の送信
 // 仕様: https://docs.expo.dev/push-notifications/sending-notifications/
-// - 送信先は household 内の is_active=true な端末のみ
+// - 送信先は user に紐づく is_active=true な端末のみ
 // - Expo は1リクエスト最大100件までなので分割して送る
 // - DeviceNotRegistered が返った端末は is_active=false にして以後の対象から外す
 // - 送信失敗はバッチ全体を止めない（ログに残して継続する）
@@ -319,8 +319,8 @@ export async function runPushReceiptMaintenance(
   return { receipt, cleanup };
 }
 
-export async function sendPushToHousehold(
-  householdId: string,
+export async function sendPushToUser(
+  userId: string,
   title: string,
   body: string,
   logger: AppLogger = appLogger
@@ -328,7 +328,7 @@ export async function sendPushToHousehold(
   const result: PushResult = { targeted: 0, accepted: 0, failed: 0, deactivated: 0 };
 
   const devices = await prisma.pushDevice.findMany({
-    where: { householdId, isActive: true },
+    where: { userId, isActive: true },
     select: { id: true, expoPushToken: true },
   });
   result.targeted = devices.length;
@@ -392,7 +392,7 @@ export async function sendPushToHousehold(
 
   if (result.accepted > 0) {
     await prisma.pushDevice.updateMany({
-      where: { householdId, isActive: true },
+      where: { userId, isActive: true },
       data: { lastPushAt: new Date() },
     });
   }

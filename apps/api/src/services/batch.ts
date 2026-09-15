@@ -2,8 +2,9 @@
 // 毎日 19:55 JST に実行（GAS の夜間トリガー(20時台) → ReadyGo の 21:00 LINE 配信の前段）
 //   1. inventory_effective_at 到来分の counted_in_inventory 更新
 //   2. 全品目の在庫計算 → stock_snapshot 更新
-//   3. 通知判定（notify_target_type=all のみ）→ 集約メッセージ生成
-//   4. ReadyGoOutbox（配信待ちキュー）に積む
+//   3. 通知判定（全notify_target_type）
+//   4. all のみ集約して ReadyGoOutbox（配信待ちキュー）に積む
+//   5. 新規アラートを notify_target_type に応じたユーザーへプッシュ送信
 //
 // ReadyGo への実投入は GAS 側の夜間トリガーが行う:
 //   GAS が GET /api/bridge/readygo-pending でキューを取得
@@ -14,7 +15,12 @@ import type { Item, StockSnapshot } from '@prisma/client';
 import { appLogger, ERROR_KINDS, LOG_EVENTS, safeErr, type AppLogger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { updateCountedInInventory, recalculateAllStocks } from './stockCalc';
-import { checkPushReceipts, sendPushToHousehold } from './pushNotify';
+import { checkPushReceipts, sendPushToUser } from './pushNotify';
+import {
+  isBroadcastTarget,
+  resolveNotifyTargetUserIds,
+  type NotifyMember,
+} from './notifyTarget';
 
 interface AlertTarget {
   item: Item;
@@ -65,6 +71,7 @@ export interface BatchResult {
   recalculated: number;
   processed: number;
   alerts: number;
+  lineAlerts: number;
   queued: boolean;
   newAlerts: number;
   pushTargeted: number;
@@ -98,6 +105,7 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
     recalculated: 0,
     processed: 0,
     alerts: 0,
+    lineAlerts: 0,
     queued: false,
     newAlerts: 0,
     pushTargeted: 0,
@@ -154,13 +162,12 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
       recalculated: result.recalculated,
     });
 
-    // Step 4: 通知対象抽出（notify_target_type=all / 通知ON / スヌーズ外 / アラートあり）
+    // Step 4: 通知対象抽出（通知ON / スヌーズ外 / アラートあり）
     const now = new Date();
     const items = await prisma.item.findMany({
       where: {
         isActive: true,
         notificationEnabled: true,
-        notifyTargetType: 'all',
       },
       include: { stockSnapshot: true, runtimeState: true },
     });
@@ -186,6 +193,10 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
         (a.snapshot.estimatedDaysLeft ?? 0) - (b.snapshot.estimatedDaysLeft ?? 0)
     );
 
+    // LINE は世帯全員が読む一括配信のため、通知先が all の品目だけを載せる
+    const lineTargets = targets.filter((target) => isBroadcastTarget(target.item));
+    result.lineAlerts = lineTargets.length;
+
     logger.info({
       event: LOG_EVENTS.BATCH_STEP,
       job: 'daily_batch',
@@ -193,12 +204,13 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
       step: 'alert_evaluation',
       processed: result.processed,
       alerts: result.alerts,
+      line_alerts: result.lineAlerts,
     });
 
-    if (targets.length > 0) {
+    if (lineTargets.length > 0) {
       // household ごとに1メッセージへ集約してキューに積む（実運用は単一家庭）
       const byHousehold = new Map<string, AlertTarget[]>();
-      for (const target of targets) {
+      for (const target of lineTargets) {
         const list = byHousehold.get(target.item.householdId) ?? [];
         list.push(target);
         byHousehold.set(target.item.householdId, list);
@@ -224,36 +236,73 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
         job: 'daily_batch',
         run_id: runId,
         households: queuedHouseholds,
-        alerts: result.alerts,
+        alerts: result.lineAlerts,
       });
     }
 
     try {
       if (newTargets.length > 0) {
-        const newByHousehold = new Map<string, AlertTarget[]>();
-        for (const target of newTargets) {
-          const list = newByHousehold.get(target.item.householdId) ?? [];
-          list.push(target);
-          newByHousehold.set(target.item.householdId, list);
+        const householdIds = new Set(newTargets.map((target) => target.item.householdId));
+        const members = await prisma.householdMember.findMany({
+          where: { householdId: { in: [...householdIds] } },
+          select: {
+            householdId: true,
+            userId: true,
+            role: true,
+            user: { select: { isActive: true } },
+          },
+        });
+        const membersByHousehold = new Map<string, NotifyMember[]>();
+        for (const member of members) {
+          const list = membersByHousehold.get(member.householdId) ?? [];
+          list.push({
+            userId: member.userId,
+            role: member.role,
+            isActive: member.user.isActive,
+          });
+          membersByHousehold.set(member.householdId, list);
         }
-        for (const [householdId, list] of newByHousehold) {
+
+        const targetsByUser = new Map<string, AlertTarget[]>();
+        for (const target of newTargets) {
+          const householdMembers = membersByHousehold.get(target.item.householdId) ?? [];
+          const userIds = resolveNotifyTargetUserIds(target.item, householdMembers);
+          for (const userId of userIds) {
+            const list = targetsByUser.get(userId) ?? [];
+            list.push(target);
+            targetsByUser.set(userId, list);
+          }
+        }
+
+        for (const [userId, list] of targetsByUser) {
           const title = `そろそろ切れそう（${list.length}件）`;
           const body = list
             .map((t) => buildItemSummaryLine(t.item, t.snapshot, t.reason))
             .join('\n');
-          const push = await sendPushToHousehold(householdId, title, body, logger);
-          result.pushTargeted += push.targeted;
-          result.pushAccepted += push.accepted;
-          logger.info({
-            event: LOG_EVENTS.PUSH_DISPATCHED,
-            job: 'daily_batch',
-            run_id: runId,
-            items: list.length,
-            targeted: push.targeted,
-            accepted: push.accepted,
-            failed: push.failed,
-            deactivated: push.deactivated,
-          });
+          try {
+            const push = await sendPushToUser(userId, title, body, logger);
+            result.pushTargeted += push.targeted;
+            result.pushAccepted += push.accepted;
+            logger.info({
+              event: LOG_EVENTS.PUSH_DISPATCHED,
+              job: 'daily_batch',
+              run_id: runId,
+              items: list.length,
+              targeted: push.targeted,
+              accepted: push.accepted,
+              failed: push.failed,
+              deactivated: push.deactivated,
+            });
+          } catch (e) {
+            // 1ユーザーの送信失敗で、残りのユーザーへの送信を止めない
+            logger.warn({
+              event: LOG_EVENTS.PUSH_SEND_FAILED,
+              error_kind: ERROR_KINDS.INTERNAL,
+              job: 'daily_batch',
+              run_id: runId,
+              err: safeErr(e),
+            });
+          }
         }
       }
     } catch (e) {
@@ -285,6 +334,7 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
       recalculated: result.recalculated,
       processed: result.processed,
       alerts: result.alerts,
+      line_alerts: result.lineAlerts,
       new_alerts: result.newAlerts,
       push_targeted: result.pushTargeted,
       push_accepted: result.pushAccepted,

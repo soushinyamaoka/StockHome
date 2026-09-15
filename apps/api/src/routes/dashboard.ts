@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma';
 import { serializeItem, serializeSnapshot, serializeRuntimeState } from '../utils/serialize';
 import { todayDateOnly } from '../services/stockCalc';
 import { runDailyBatch } from '../services/batch';
+import { isNotifyTargetForUser } from '../services/notifyTarget';
 import { candidateOwnerFilter } from './importCandidates';
 
 const dashboardRoutes: FastifyPluginAsync = async (app) => {
@@ -18,7 +19,7 @@ const dashboardRoutes: FastifyPluginAsync = async (app) => {
     // アラート品目のフィルタ。夜間バッチ(LINE通知)の抑止条件とホーム表示を揃える:
     //   - 通知OFF の品目は出さない
     //   - スヌーズ中（snooze_until が未来）は出さない
-    //   - notify_target_type でユーザー別フィルタ（GAS 30.2 準拠）
+    //   - 共通関数で notify_target_type をユーザー別フィルタ（GAS 30.2 準拠）
     //     all → 全員 / representative → admin のみ / specific_user → 指定ユーザーのみ
     const now = new Date();
     const alerts = items
@@ -28,9 +29,7 @@ const dashboardRoutes: FastifyPluginAsync = async (app) => {
         if (!item.notificationEnabled) return false;
         const snoozeUntil = item.runtimeState?.snoozeUntil;
         if (snoozeUntil && snoozeUntil > now) return false;
-        if (item.notifyTargetType === 'representative') return role === 'admin';
-        if (item.notifyTargetType === 'specific_user') return item.notifyTargetUserId === userId;
-        return true;
+        return isNotifyTargetForUser(item, userId, role);
       })
       .sort(
         (a, b) =>
