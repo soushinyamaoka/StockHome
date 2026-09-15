@@ -59,7 +59,7 @@ deployment_status: not_started
 変更のみで、`apps/mobile` / `packages/shared` / `apps/gas` に差分は無い（品目フォーム・
 ホーム画面は既に3種へ対応済みのため変更不要）。
 
-設計はClaude、実装はCodex（ai-watch経由、task `20260915-001`）が行い、Claudeが
+設計はClaude、実装はCodex（ai-watch経由、アプリ側task `20260915-001`）が行い、Claudeが
 コードレビューと純粋関数テストの実行確認を行った。
 
 ## 変更理由
@@ -73,9 +73,10 @@ deployment_status: not_started
 server_impact: notify
 
 判定理由: DBスキーマ変更・migration・新規env var・新規外部依存・新規cron・
-port/bind/URL変更・認証境界の変更はいずれも無い。既存データの値・意味を書き換える
-処理も無い（`items`・`push_devices`等の既存カラムは読むだけで、書き込み先や
-書き込み内容は変えていない）。一方で、(a) 夜間バッチの通知ログ（`job_end`・
+port/bind/URL変更・認証境界の変更はいずれも無い。品目・在庫・購入履歴等の業務データを
+書き換える処理も無い。一方、通知対象が増えることで、既存のプッシュ送信処理による
+`push_tickets`の追加、`push_devices.last_push_at`の更新、Expo応答に応じた無効端末の
+`is_active=false`更新が従来より広い通知対象で発生し得る。(a) 夜間バッチの通知ログ（`job_end`・
 `batch_step`）のフィールド意味が変わる、(b) 利用者から見える通知の届き方が変わる
 （従来通知が一切届かなかった設定の品目に、プッシュ通知が届くようになる）ため、
 `none`とはせず`notify`と判定する。データ破壊性・認証境界変更を伴う
@@ -103,8 +104,9 @@ port/bind/URL変更・認証境界の変更はいずれも無い。既存デー�
 - cron/timer/worker: 変更なし。`daily_batch`のスケジュール（19:55 JST、node-cron）・
   `job_start`/`job_end`（同一`run_id`）のペア構造は不変。フィールド追加のみ
 - dependency: 追加・削除なし
-- data/DB/volume: スキーマ変更なし。既存データの書き込み内容・意味も変更なし
-  （読み取り専用の参照先が増えただけ。`householdMember`・`user.isActive`を新たに参照する）
+- data/DB/volume: スキーマ変更なし。品目・在庫・購入履歴等の業務データの書込みは変更なし。
+  `householdMember`・`user.isActive`を新たに参照し、通知対象が増えた場合は既存の通知運用
+  メタデータ（`push_tickets`、`push_devices.last_push_at`、無効端末の`is_active`）が更新される
 - log/monitoring: 上記「現在と変更後」表のとおり。`processed`/`alerts`の意味変化、
   `line_alerts`新規フィールド、`PUSH_DISPATCHED`のユーザー単位分割
 
@@ -142,9 +144,11 @@ secret値は記載しない。
 
 - schema/format変更: なし
 - migration: なし
-- backup対象: 不要（本変更はデータの読み取り専用の参照先を増やすのみで、書き込み内容・
-  意味を変更しないため、通常のdeploy時運用を超えるbackupは不要と判断）
-- restore確認: 不要（上記のとおりdata rollbackが原理的に発生しないため）
+- backup対象: 通常のdeploy時運用を超える追加backupは不要。業務データの書込みは変わらず、
+  追加で発生し得るのは既存の通知運用メタデータ更新のみ
+- restore確認: 追加restore試験は不要。誤送信済みの通知は取り消せず、送信済みticket・
+  `last_push_at`・無効端末判定もimage rollbackでは巻き戻らないため、deploy後検証で誤振分けを
+  検出した場合は送信停止を優先し、必要なメタデータ補正は別承認で扱う
 - backward compatibility: 旧API imageへ戻しても、DBスキーマ・データ内容とも一切変更されて
   いないため完全に元の挙動へ戻る
 
@@ -152,10 +156,11 @@ secret値は記載しない。
 
 - deploy前提: 本notice `ready_for_review`後、VPS管理側レビュー・production承認
 - deploy手順の変更: なし（既存の`scripts/deploy.ps1`をそのまま使う）
-- rollback方法: 旧API imageへ戻すのみ（**image rollbackだけで完全に元の挙動に戻る**。
-  データの書き込み内容・意味を変更する処理が無いため、notice `20260904-STOCKHOME-005`の
-  ような「image rollbackとdata rollbackの分離」は本件では不要）
-- rollback不能条件: なし
+- rollback方法: 旧API imageへ戻すことで、以後の通知先判定を旧挙動へ戻す。既に送信した
+  通知は取り消せず、送信に伴って記録された`push_tickets`・`last_push_at`・無効端末判定は
+  image rollbackでは巻き戻らない。これらの補正が必要な場合は別のDB変更承認で扱う
+- rollback不能条件: 送信済み通知の取り消しは不可。したがって初回19:55実行の前に対象件数を
+  read-onlyで確認し、初回実行後は通知先別集計・失敗数を速やかに検証する
 
 ## Health・テスト
 
@@ -245,4 +250,5 @@ VPS management review・production承認は、本notice提出後にVPS管理チ�
 - app owner: 未実施（本notice記載の利用者影響についての明示承認はこれから）
 - VPS management review: 未実施
 - production approval: 未実施
-- related task_id: 20260915-001
+- source task_id（app/ai-watch）: 20260915-001
+- related VPS task_id: 未採番（`20260915-001`はVPS2管理画面レイアウト作業で使用済み）
