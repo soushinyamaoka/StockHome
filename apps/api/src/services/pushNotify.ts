@@ -319,7 +319,28 @@ export async function runPushReceiptMaintenance(
   return { receipt, cleanup };
 }
 
+// household境界を維持して有効な端末を検索する（S007-B01対応）。
+// 同一userが複数household所属でも、他householdの端末が混ざらないようにする
+export async function findActiveDevicesForHouseholdUser(
+  householdId: string,
+  userId: string
+): Promise<{ id: string; expoPushToken: string }[]> {
+  return prisma.pushDevice.findMany({
+    where: { householdId, userId, isActive: true },
+    select: { id: true, expoPushToken: true },
+  });
+}
+
+// 送信成功後のlastPushAt更新も同様にhousehold境界で絞る（S007-B01対応）
+export async function markDevicesPushed(householdId: string, userId: string): Promise<void> {
+  await prisma.pushDevice.updateMany({
+    where: { householdId, userId, isActive: true },
+    data: { lastPushAt: new Date() },
+  });
+}
+
 export async function sendPushToUser(
+  householdId: string,
   userId: string,
   title: string,
   body: string,
@@ -327,10 +348,7 @@ export async function sendPushToUser(
 ): Promise<PushResult> {
   const result: PushResult = { targeted: 0, accepted: 0, failed: 0, deactivated: 0 };
 
-  const devices = await prisma.pushDevice.findMany({
-    where: { userId, isActive: true },
-    select: { id: true, expoPushToken: true },
-  });
+  const devices = await findActiveDevicesForHouseholdUser(householdId, userId);
   result.targeted = devices.length;
   if (devices.length === 0) return result;
 
@@ -391,10 +409,7 @@ export async function sendPushToUser(
   }
 
   if (result.accepted > 0) {
-    await prisma.pushDevice.updateMany({
-      where: { userId, isActive: true },
-      data: { lastPushAt: new Date() },
-    });
+    await markDevicesPushed(householdId, userId);
   }
   return result;
 }

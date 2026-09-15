@@ -22,10 +22,41 @@ import {
   type NotifyMember,
 } from './notifyTarget';
 
-interface AlertTarget {
+export interface AlertTarget {
   item: Item;
   snapshot: StockSnapshot;
   reason: string; // days_threshold | qty_threshold | both
+}
+
+export interface HouseholdUserAlertGroup {
+  householdId: string;
+  userId: string;
+  targets: AlertTarget[];
+}
+
+// 新規アラートを (household, user) 単位でグループ化する。
+// 同一userが複数household所属でも、household境界をまたいで1通のメッセージへ
+// 混ざらないようにする（S007-B01対応。DB非依存の純粋関数）
+export function groupNewAlertsByHouseholdUser(
+  targets: AlertTarget[],
+  membersByHousehold: Map<string, NotifyMember[]>
+): HouseholdUserAlertGroup[] {
+  const groups = new Map<string, HouseholdUserAlertGroup>();
+  for (const target of targets) {
+    const householdMembers = membersByHousehold.get(target.item.householdId) ?? [];
+    const userIds = resolveNotifyTargetUserIds(target.item, householdMembers);
+    for (const userId of userIds) {
+      const key = `${target.item.householdId}:${userId}`;
+      const group = groups.get(key) ?? {
+        householdId: target.item.householdId,
+        userId,
+        targets: [],
+      };
+      group.targets.push(target);
+      groups.set(key, group);
+    }
+  }
+  return [...groups.values()];
 }
 
 function resolveReason(s: StockSnapshot): string {
@@ -263,24 +294,15 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
           membersByHousehold.set(member.householdId, list);
         }
 
-        const targetsByUser = new Map<string, AlertTarget[]>();
-        for (const target of newTargets) {
-          const householdMembers = membersByHousehold.get(target.item.householdId) ?? [];
-          const userIds = resolveNotifyTargetUserIds(target.item, householdMembers);
-          for (const userId of userIds) {
-            const list = targetsByUser.get(userId) ?? [];
-            list.push(target);
-            targetsByUser.set(userId, list);
-          }
-        }
+        const groups = groupNewAlertsByHouseholdUser(newTargets, membersByHousehold);
 
-        for (const [userId, list] of targetsByUser) {
+        for (const { householdId, userId, targets: list } of groups) {
           const title = `そろそろ切れそう（${list.length}件）`;
           const body = list
             .map((t) => buildItemSummaryLine(t.item, t.snapshot, t.reason))
             .join('\n');
           try {
-            const push = await sendPushToUser(userId, title, body, logger);
+            const push = await sendPushToUser(householdId, userId, title, body, logger);
             result.pushTargeted += push.targeted;
             result.pushAccepted += push.accepted;
             logger.info({
