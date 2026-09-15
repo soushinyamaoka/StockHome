@@ -12,21 +12,26 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 4105725a39b40f92c05957f004cc0e36a8e44b78
+source_commit: 038e173199ad8daee3ed3fd268673c8642976eb7
 
 production_baseline_commit: 117e41d3c12153f9594f0d8bc8cd78098ba9b4bf
 
-release_commits: `117e41d`（baseline）→ `40c7947`（task `20260915-001`、notice
-`20260915-STOCKHOME-007`対象の通知先修正。**build inputに影響**）→ `1122158`/`5f36e55`/`cb7e194`
-（notice `20260915-STOCKHOME-007`の作成・改訂3件。いずれも`ops/**`のみでbuild inputに
-影響しない）→ `4105725`（task `20260915-002`、本notice対象の取り消し・復元機能追加。
+release_commits: `117e41d`（baseline）→ `52c5a7c`/`d909c9f`/`f14b97f`/`b0007b4`（notice
+`20260907-STOCKHOME-006`の事後記録4件。`ops/**`のみ）→ `40c7947`（task `20260915-001`、
+notice `007`対象の通知先修正。**build inputに影響**）→ `1122158`/`5f36e55`/`cb7e194`
+（notice `007`の作成・改訂3件。`ops/**`のみ）→ `4105725`（task `20260915-002`、
+本notice当初対象の取り消し・復元機能追加。**build inputに影響**）→ `c4954ee`/`d7a1f7d`
+（本notice自体の作成・改訂2件。`ops/**`のみ）→ `5699b30`（task `20260915-003`、
+notice `007`のS007-B01修正。**build inputに影響**）→ `038e173`（task `20260915-004`、
+本notice対象のS008-B02〜B04修正（transaction統合・HTTP認可テスト）。
 **build inputに影響**）。
 
-**重要: 本noticeのsource commitには、notice `20260915-STOCKHOME-007`（通知先フィルタ修正、
-未production反映）の変更が不可分に含まれる。** 両noticeはlinear historyで連続しており、
-`4105725`のAPI containerイメージには自動的に`40c7947`のコードも含まれる。
-production反映は本notice単独では行えず、**`20260915-STOCKHOME-007`のS007-B01修正・
-S007再レビュー完了とあわせて1つのdeployとして扱う必要がある**（下記「production変更」参照）。
+**S008-B01対応（解消済み）**: 初版source`4105725`にはnotice`007`のS007-B01
+（household境界の欠落）が未解消のまま含まれており、VPS管理側は単独でのdeploy対象外と
+判定していた。`5699b30`でS007-B01を解消し、続く`038e173`でS008-B02〜B04を解消した結果、
+**本notice`008`とnotice`007`は同一の最終source commit`038e173`を共有する**。
+両noticeを分けてdeployすることはなく、`038e173`から作る1つのAPI artifactとして
+review・承認・deployする（下記「production変更」参照）。
 
 impact_level: L3
 
@@ -62,6 +67,19 @@ mobile側は、確定済み/無視済みの取込候補カードへ「確定を�
 （ai-watch経由、task `20260915-002`）が行い、Claudeがコードレビューと
 DB依存回帰テスト5件の実行確認を行った。
 
+**S008-B02〜B04対応（VPS管理レビュー、2026-09-15、task `20260915-004`）**: 初版の
+`unconfirmImportCandidate`は購入削除・積み上げ差し戻しだけがtransaction内で、候補
+ステータス更新・snapshot再計算が別処理だったため、途中失敗で中途半端な状態が残りうる
+欠陥（S008-B02）、`restore`も品目更新とsnapshot再計算が別処理で同様の欠陥（S008-B03）、
+3新規write APIにHTTPレベルの認可・境界テストが無い欠陥（S008-B04）をVPS管理側が指摘した。
+`unconfirmImportCandidate`は候補行ロック（`import_order_candidates`への
+`SELECT ... FOR UPDATE`、新設）→再取得・状態再確認→購入削除→積み上げ差し戻し→
+snapshot再計算→候補更新までを単一transactionへ統合し、同時取消（二重クリック等）を
+安全に直列化した。`restore`も既存の`lockItemForAccumulation`で品目行をロックしたうえで
+単一transaction化した。JWT認証を実際に通すHTTPレベルテストを新規作成し、他household・
+他ownerの操作拒否、404/409とDB不変更、成功時の変更範囲、再実行時の冪等性を検証した
+（詳細は下記「現在と変更後」表・「Health・テスト」参照）。
+
 ## 変更理由
 
 ユーザーから、2026-09-03の全体点検所見のうち4件（通知先フィルタ・取り消せない操作・
@@ -91,6 +109,9 @@ port/bind/URL変更・認証境界の変更はいずれも無い。一方、`unc
 | `purchase_log`の削除経路 | 手動購入の取消（`DELETE /purchases/:id`）のみ | Gmail自動取込確定の取消（`unconfirm`）でも同じ`reverseAccumulatedPurchase`パスを通って削除されるようになる |
 | mobile: 候補一覧（確定/無視済み表示時） | ボタンなし | 「確定を取り消す」「無視を取り消す」ボタン（確認ダイアログ付き） |
 | mobile: 品目一覧（非アクティブ表示時） | ボタンなし | 「元に戻す」ボタン（確認ダイアログ付き） |
+| `unconfirmImportCandidate`のtransaction範囲（S008-B02対応） | 購入削除・積み上げ差し戻しのみtransaction内。候補更新・snapshot再計算は別処理 | 候補行ロック・再取得・状態再確認・購入削除・積み上げ差し戻し・snapshot再計算・候補更新を単一transactionへ統合。同時取消は一方だけが成功し他方は409 |
+| `restore`のtransaction範囲（S008-B03対応） | 品目更新とsnapshot再計算が別処理 | 品目行ロック（既存`lockItemForAccumulation`再利用）・状態確認・更新・snapshot再計算を単一transaction化。失敗時は品目もsnapshotも変更されず再試行が安全 |
+| 新規write APIのHTTPレベルテスト（S008-B04対応） | 無し（サービス層の正常系テストのみ） | JWT認証込みの`undoActions.http.test.ts`（10シナリオ）を新規作成。他household/他owner拒否、404/409とDB不変更、成功時の変更範囲、再実行時の冪等性を検証 |
 
 ## 影響対象
 
@@ -108,11 +129,13 @@ port/bind/URL変更・認証境界の変更はいずれも無い。一方、`unc
 
 - 必要性: あり（コンテナ再ビルド・入れ替えのみ。migration不要）
 - 想定作業: 既存の`scripts/deploy.ps1`（`npm run deploy`）による通常のcontainer rebuild・入れ替え
-- **前提条件**: 上記のとおり、本sourceにはnotice `20260915-STOCKHOME-007`
-  （S007-B01修正待ち、再レビュー未完了）のコードが不可分に含まれる。したがって
-  本notice単独でのproduction承認・deployは行わず、`20260915-STOCKHOME-007`の
-  再レビュー完了（S007-B01修正・境界test・app owner承認記録済み、VPS管理側の
-  再accepted）を待ってから、両notice分を1回のdeployとしてまとめて承認・実施する
+- **前提条件**: 上記のとおり、本source（`038e173`）はnotice `20260915-STOCKHOME-007`の
+  全内容（S007-B01修正込み）を不可分に含む。両notice分を1回のdeployとしてまとめて
+  承認・実施する（S007-B01・S008-B02〜B04いずれも解消済み。下記「Health・テスト」参照）
+- client配信の順序: API先行→別承認でclient配信（`ops/client-releases/
+  20260915-STOCKHOME-004-plan.md`参照。新規3エンドポイントは追加のみのため旧clientは
+  影響を受けない。新UIは新APIが無いとエラーになるため、client配信はAPI反映
+  `verified`後に限る）
 - downtime: brief-restart（apiコンテナのみ再起動。postgresコンテナ・DBデータは変更しない）
 - maintenance window: 未定。VPS管理側レビュー後に判断
 
@@ -125,9 +148,14 @@ port/bind/URL変更・認証境界の変更はいずれも無い。一方、`unc
   （誤操作時の回復手段が増えるため、基本的には利用者に有利な変更）
 - 機能面: デプロイ後、確定済み/無視済みの候補、削除済みの品目それぞれに取り消し・復元の
   ボタンが表示されるようになる。既存の確定・無視・削除操作自体の挙動は変更しない
-- 注意点: `unconfirm`による積み上げ差し戻しは、`reverseAccumulatedPurchase`の既知の制約
-  （その後の別の積み上げ・補正で上書き済みの場合は完全には一致しない、近似的な巻き戻し）を
-  引き継ぐ。これはnotice `20260904-STOCKHOME-005`で既にapp owner承認済みの制約と同じもの
+- 注意点1（S008-B06承認済み）: `unconfirm`による積み上げ差し戻しは、
+  `reverseAccumulatedPurchase`の既知の制約（その後の別の積み上げ・補正で上書き済みの
+  場合は完全には一致しない、近似的な巻き戻し）を引き継ぐ。これはnotice
+  `20260904-STOCKHOME-005`で既にapp owner承認済みの制約と同じもの
+- 注意点2（S008-B03/B06、利用者影響の明記）: `restore`は削除前の`notificationEnabled`
+  （通知ON/OFF）・snooze状態等をそのまま維持する（初期化しない）。したがって復元した
+  品目が既に在庫アラート条件を満たしていれば、次回19:55の`daily_batch`で通知対象に
+  なり得る。復元操作自体が即座に通知を送るわけではない
 - 通知方法: 機能追加であり、利用者（家族）への事前告知は本noticeでは必須としない
 
 ## env・secret contract
@@ -176,14 +204,22 @@ secret値は記載しない。
     `src/**/*`の型検査も含めて成功。Codexが実施）
   - `npx tsc --noEmit -p apps/mobile/tsconfig.json`: 成功（Codexが実施）
   - `apps/api/src/services/candidateIntake.reversal.test.ts`（`unconfirmImportCandidate`の
-    DB依存回帰テスト）5件: 全件成功。Claudeが対話セッションでローカル開発用Postgres
+    DB依存回帰テスト）当初5件: 全件成功。Claudeが対話セッションでローカル開発用Postgres
     （`localhost:5434`）に対して実行し確認した（2026-09-15）。内容: counted確定の取り消し
     （積み上げ差し戻し確認）、未counted確定の取り消し（積み上げ不変確認）、`legacyId`経由の
     紐付け、購入履歴が見つからない場合の非エラー処理、取り消し後の再確定（回帰防止）
-- 未実施テストと理由: `unconfirm`/`unignore`/`restore`各ルートのHTTPレベル結合テスト
-  （認証込み）は作成していない（サービス層の`unconfirmImportCandidate`はDB依存テストで
-  検証済みだが、ルート層の404/409判定・`ownerFilter`適用は静的レビューのみ）。
-  mobile UIの実機（Expo Go/内部配布APK）での見た目・操作確認は未実施
+- **S008-B02〜B04対応の追加テスト（2026-09-15、task `20260915-004`）**:
+  - `candidateIntake.reversal.test.ts`へ2シナリオ追加（既存5件は呼び出しシグネチャ更新の
+    み、検証内容は不変）: 同一候補への同時取消（一方だけが成功し他方はnullを返す。
+    購入・積み上げとも二重処理にならないこと）、既に取消済みの候補への再取消（nullを返し
+    DB状態が変化しないこと）。計7件
+  - `undoActions.http.test.ts`（JWT認証を実際に通すHTTPレベル境界テスト、新規）10件:
+    `unconfirm`（他household拒否・他owner拒否・対象なし404・状態不一致409・成功時の
+    変更範囲限定の5件）、`unignore`（他household拒否・成功後再実行409の2件）、
+    `restore`（他household拒否・404/409・成功後再実行409の3件）
+  - 結果: 上記7件＋10件＝**17件すべて成功**（失敗0件）。Claudeが対話セッションで
+    ローカル開発用Postgres（`localhost:5434`）に対して実行し確認した（2026-09-15）
+- 未実施テストと理由: mobile UIの実機（Expo Go/内部配布APK）での見た目・操作確認は未実施
 
 ## Log・監視
 
@@ -197,20 +233,23 @@ secret値は記載しない。
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
 - [x] production baselineとrelease全commit・build入力差分を確認した（baseline`117e41d`から
-      HEAD`4105725`までの全5commitをbuild input該当有無で区別した。上記`release_commits`参照。
-      notice`20260915-STOCKHOME-007`のsource`40c7947`が不可分に含まれる点を明記した）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`4105725`はCodexが
-      `git push origin main`済み・確認済み。本notice文書のcommitはこの後に作成する）
-- [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（`unconfirmImportCandidate`は
-      `purchase_log`削除と積み上げ差し戻しを同一`$transaction`内で実行し、既存の
-      `reverseAccumulatedPurchase`・品目ロック機構をそのまま再利用している。同時実行時の
-      挙動はnotice`20260904-STOCKHOME-005`で検証済みの既存機構に依存するため、本notice単独の
-      追加検証は行っていない）
+      最終source`038e173`までの全11commitをbuild input該当有無で区別した。上記
+      `release_commits`参照。notice`20260915-STOCKHOME-007`と同一の最終sourceを共有する
+      点を明記した）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`4105725`・`5699b30`・
+      `038e173`はいずれもCodexが`git push origin main`済み・確認済み。本notice文書の
+      改訂commitはこの後に作成する）
+- [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（S008-B02対応により、
+      `unconfirmImportCandidate`は候補行ロック・再取得・状態再確認を含めて購入削除・
+      積み上げ差し戻し・snapshot再計算・候補更新のすべてを単一`$transaction`内で実行する
+      よう修正した。同一候補への同時取消が安全に直列化されることをtestで確認済み
+      （上記「Health・テスト」参照）。`restore`も同様にS008-B03対応で単一transaction化した）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（上記「Deploy・rollback」参照。
       データの削除・書き換えを伴うためimage rollbackだけでは戻らない点を明記した）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した（job/logは
-      該当なし。runtime/dependencyは該当なし。client配信は本notice単独では未確定、
-      APIデプロイ後に別途判断する）
+      該当なし。runtime/dependencyは該当なし。client配信は`ops/client-releases/
+      20260915-STOCKHOME-004-plan.md`（S008-B05対応）として計画を作成した。
+      配信自体はAPI反映`verified`後、別承認で実施する）
 - [ ] app owner、VPS review、production承認、client配信承認を分離した（**app owner承認・
       VPS review・production承認はいずれも未実施**。client配信も未確定）
 - [x] secret非混入とtracked working tree cleanを確認した（`git status`で未追跡fileは
@@ -223,18 +262,15 @@ secret値は記載しない。
 
 ## 未解決事項
 
-- 本source commitにはnotice`20260915-STOCKHOME-007`（S007-B01修正待ち）の内容が
-  不可分に含まれるため、本notice単独でのproduction承認は成立しない。両notice分を
-  まとめて1回のdeployとして扱う前提でVPS管理側レビューを受ける必要がある
-- `unconfirm`/`unignore`/`restore`各ルートのHTTPレベル結合テストは未作成（上記
-  「Health・テスト」参照）。production反映前に追加するか、既存の静的レビュー＋
-  サービス層テストで十分と判断するかは未確定
-- mobile UIの実機確認は未実施
+- mobile UIの実機（Expo Go/内部配布APK）確認は未実施。`ops/client-releases/
+  20260915-STOCKHOME-004-plan.md`に記載のとおり、client配信はAPI反映`verified`後の
+  別承認で実施し、配信後にapp ownerが実機で確認する
+- 2026-09-15時点で確定済み/無視済み候補、削除済み品目が実際に何件あるかは未確認
+  （production DBを確認していない）
 
 ## 希望時期
 
-指定なし。notice`20260915-STOCKHOME-007`の再レビュー完了、VPS管理側レビューの結果を
-踏まえて判断する。
+指定なし。VPS管理側レビューの結果を踏まえて判断する。
 
 ## VPS管理チャットへの引き継ぎ
 
@@ -260,9 +296,13 @@ secret値は記載しない。
     上記は取り消し・復元機能の設計そのものへの承認であり、production deployの
     実施承認ではない
 - VPS management review: 初回2026-09-15実施・`blocked`（S008-B01〜B06、正本上記参照）。
-  S008-B01（007のS007-B01解消と最終source確定が前提）・S008-B02〜B04（transaction化・
-  同時実行対応・HTTP認可テスト）は修正中（task `20260915-004`）。S008-B05（client配信計画）は
-  作成中。S008-B06は上記のとおりapp owner承認済み
+  **S008-B01（007のS007-B01解消と最終source確定）はcommit `5699b30`・`038e173`で解消**
+  （両notice`007`/`008`が最終source`038e173`を共有）。**S008-B02〜B04（transaction化・
+  同時実行対応・HTTP認可テスト）はtask `20260915-004`（commit `038e173`）で解消**し、
+  追加テスト17件（上記「Health・テスト」参照）すべて成功を確認済み。**S008-B05
+  （client配信計画）は`ops/client-releases/20260915-STOCKHOME-004-plan.md`として作成済み**
+  （計画のみ、配信は未実施）。S008-B06は上記のとおりapp owner承認済み。
+  **本改訂により007/008とも全blocker解消、最終source`038e173`で再レビューへ回す**
 - production approval: 未実施
 - source task_id（app/ai-watch）: 20260915-002（初版）, 20260915-004（S008-B02〜B04修正）
 - related VPS task_id: 未採番
