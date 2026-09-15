@@ -14,7 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigation } from '@react-navigation/native';
 
-import { deleteItem, fetchItems, toggleItemNotification } from '../../api/items';
+import { deleteItem, fetchItems, restoreItem, toggleItemNotification } from '../../api/items';
 import type { ItemWithStock } from '../../api/types';
 import { DaysCounter } from '../../components/DaysCounter';
 import { StampBadge } from '../../components/StampBadge';
@@ -61,6 +61,18 @@ export default function ItemListScreen() {
     mutationFn: deleteItem,
     onSuccess: invalidate,
   });
+
+  const restoreMutation = useMutation({
+    mutationFn: restoreItem,
+    onSuccess: invalidate,
+  });
+
+  const confirmRestore = (item: ItemWithStock) => {
+    Alert.alert('復元確認', `「${item.itemName}」を元に戻しますか？`, [
+      { text: 'やめる', style: 'cancel' },
+      { text: '元に戻す', onPress: () => restoreMutation.mutate(item.id) },
+    ]);
+  };
 
   const confirmDelete = (item: ItemWithStock) => {
     Alert.alert('削除確認', `「${item.itemName}」をずかんから外しますか？\n（過去の記録は残ります）`, [
@@ -149,7 +161,12 @@ export default function ItemListScreen() {
               <Ionicons name="trash-outline" size={15} color={COLORS.accentDeep} />
             </TouchableOpacity>
           </>
-        ) : null}
+        ) : (
+          <TouchableOpacity style={styles.tool} onPress={() => confirmRestore(item)}>
+            <Ionicons name="arrow-undo-outline" size={15} color={COLORS.ok} />
+            <Text style={[styles.toolText, { color: COLORS.ok }]}>元に戻す</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );

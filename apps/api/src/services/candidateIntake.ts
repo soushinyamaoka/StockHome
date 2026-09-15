@@ -9,7 +9,12 @@ import type { ImportOrderCandidate, Prisma } from '@prisma/client';
 import { APP_CONFIG_KEYS, DEFAULTS, type BridgeCandidate } from '@stockhome/shared';
 import { appLogger, ERROR_KINDS, LOG_EVENTS, safeErr } from '../lib/logger';
 import { prisma } from '../lib/prisma';
-import { refreshStockSnapshotForItem, todayDateOnly, accumulatePurchaseIntoStock } from './stockCalc';
+import {
+  refreshStockSnapshotForItem,
+  todayDateOnly,
+  accumulatePurchaseIntoStock,
+  reverseAccumulatedPurchase,
+} from './stockCalc';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
@@ -290,6 +295,38 @@ export async function createPurchaseLogFromCandidate(
     await refreshStockSnapshotForItem(matchedItemId);
   }
   return log;
+}
+
+// 候補確定の取り消し（GAS版には無い新機能。所見B-3対応）。
+// 紐づくpurchase_logを削除し、countedInInventoryだった場合は積み上げ分を差し戻す。
+// 差し戻しはreverseAccumulatedPurchaseと同じ「近似的な巻き戻し」であり、
+// その後の別の積み上げ・補正で上書き済みの場合は完全には一致しない（既知の制約）。
+// 対象のpurchase_logが既に手動削除済み等で見つからない場合は、ステータスの
+// 差し戻しのみ行う（エラーにはしない）
+export async function unconfirmImportCandidate(
+  candidate: ImportOrderCandidate
+): Promise<{ candidate: ImportOrderCandidate; reversedPurchaseId: string | null }> {
+  const lookupIds = [candidate.id, ...(candidate.legacyId ? [candidate.legacyId] : [])];
+  const purchase = await prisma.purchaseLog.findFirst({
+    where: { importCandidateId: { in: lookupIds } },
+  });
+
+  if (purchase) {
+    await prisma.$transaction(async (tx) => {
+      await tx.purchaseLog.delete({ where: { id: purchase.id } });
+      if (purchase.countedInInventory) {
+        await reverseAccumulatedPurchase(tx, purchase.itemId, purchase.qty);
+      }
+    });
+    await refreshStockSnapshotForItem(purchase.itemId);
+  }
+
+  const updated = await prisma.importOrderCandidate.update({
+    where: { id: candidate.id },
+    data: { candidateStatus: 'detected', matchedItemId: null },
+  });
+
+  return { candidate: updated, reversedPurchaseId: purchase?.id ?? null };
 }
 
 // 商品名/品名の正規化（小文字化・連続空白の圧縮・前後空白除去）

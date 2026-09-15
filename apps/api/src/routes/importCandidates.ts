@@ -4,7 +4,10 @@ import { candidateConfirmSchema } from '@stockhome/shared';
 import { prisma } from '../lib/prisma';
 import { parseBody } from '../utils/validate';
 import { serializeCandidate, serializePurchase } from '../utils/serialize';
-import { createPurchaseLogFromCandidate } from '../services/candidateIntake';
+import {
+  createPurchaseLogFromCandidate,
+  unconfirmImportCandidate,
+} from '../services/candidateIntake';
 
 // 取込候補の可視範囲（GAS 版 getImportCandidatesForView 準拠）:
 //   自分が取り込んだ候補（メール or 旧user_id一致） + 所有者不明の旧データ のみ。
@@ -128,6 +131,41 @@ const importCandidateRoutes: FastifyPluginAsync = async (app) => {
     const updated = await prisma.importOrderCandidate.update({
       where: { id },
       data: { candidateStatus: 'ignored' },
+    });
+    return { candidate: serializeCandidate(updated) };
+  });
+
+  // 候補確定の取り消し
+  app.post('/:id/unconfirm', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const ownerFilter = await candidateOwnerFilter(req.auth.userId);
+    const candidate = await prisma.importOrderCandidate.findFirst({
+      where: { id, householdId: req.auth.householdId, ...ownerFilter },
+    });
+    if (!candidate) return reply.code(404).send({ message: '取込候補が見つかりません' });
+    if (candidate.candidateStatus !== 'confirmed' && candidate.candidateStatus !== 'auto_confirmed') {
+      return reply.code(409).send({ message: 'この候補は確定済みではありません' });
+    }
+
+    const { candidate: updated } = await unconfirmImportCandidate(candidate);
+    return { candidate: serializeCandidate(updated) };
+  });
+
+  // 候補の無視の取り消し
+  app.post('/:id/unignore', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const ownerFilter = await candidateOwnerFilter(req.auth.userId);
+    const candidate = await prisma.importOrderCandidate.findFirst({
+      where: { id, householdId: req.auth.householdId, ...ownerFilter },
+    });
+    if (!candidate) return reply.code(404).send({ message: '取込候補が見つかりません' });
+    if (candidate.candidateStatus !== 'ignored') {
+      return reply.code(409).send({ message: 'この候補は無視されていません' });
+    }
+
+    const updated = await prisma.importOrderCandidate.update({
+      where: { id },
+      data: { candidateStatus: 'detected' },
     });
     return { candidate: serializeCandidate(updated) };
   });

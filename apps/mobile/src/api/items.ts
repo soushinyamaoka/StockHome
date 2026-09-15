@@ -39,6 +39,11 @@ export async function deleteItem(id: string): Promise<void> {
   await api.delete(`/api/items/${id}`);
 }
 
+export async function restoreItem(id: string): Promise<{ item: ItemDto }> {
+  const res = await api.post(`/api/items/${id}/restore`, {});
+  return res.data;
+}
+
 // --- 購入履歴 ---
 export async function fetchPurchases(
   itemId: string

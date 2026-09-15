@@ -18,7 +18,13 @@ import {
   type ExternalVendor,
 } from '@stockhome/shared';
 
-import { confirmCandidate, fetchCandidates, ignoreCandidate } from '../../api/misc';
+import {
+  confirmCandidate,
+  fetchCandidates,
+  ignoreCandidate,
+  unconfirmCandidate,
+  unignoreCandidate,
+} from '../../api/misc';
 import { fetchItems } from '../../api/items';
 import type { CandidateDto } from '../../api/types';
 import { Card } from '../../components/Card';
@@ -68,6 +74,19 @@ export default function CandidateListScreen() {
 
   const ignoreMutation = useMutation({
     mutationFn: ignoreCandidate,
+    onSuccess: invalidate,
+  });
+
+  const unconfirmMutation = useMutation({
+    mutationFn: unconfirmCandidate,
+    onSuccess: invalidate,
+    onError: (e: any) => {
+      Alert.alert('エラー', e?.response?.data?.message ?? '取り消しに失敗しました');
+    },
+  });
+
+  const unignoreMutation = useMutation({
+    mutationFn: unignoreCandidate,
     onSuccess: invalidate,
   });
 
@@ -130,6 +149,41 @@ export default function CandidateListScreen() {
           </View>
         ) : matchedItem ? (
           <Text style={styles.matched}>→ {matchedItem.itemName}</Text>
+        ) : null}
+
+        {resolved && (c.candidateStatus === 'confirmed' || c.candidateStatus === 'auto_confirmed') ? (
+          <View style={styles.actions}>
+            <Button
+              title="確定を取り消す"
+              variant="secondary"
+              loading={unconfirmMutation.isPending}
+              onPress={() =>
+                Alert.alert(
+                  '取り消し確認',
+                  'この候補の確定を取り消しますか？\n紐づく購入履歴も削除され、在庫の積み上げも差し戻されます（完全に元通りにならない場合があります）。',
+                  [
+                    { text: 'キャンセル', style: 'cancel' },
+                    { text: '取り消す', style: 'destructive', onPress: () => unconfirmMutation.mutate(c.id) },
+                  ]
+                )
+              }
+            />
+          </View>
+        ) : null}
+        {resolved && c.candidateStatus === 'ignored' ? (
+          <View style={styles.actions}>
+            <Button
+              title="無視を取り消す"
+              variant="secondary"
+              loading={unignoreMutation.isPending}
+              onPress={() =>
+                Alert.alert('取り消し確認', 'この候補の無視を取り消しますか？', [
+                  { text: 'キャンセル', style: 'cancel' },
+                  { text: '取り消す', onPress: () => unignoreMutation.mutate(c.id) },
+                ])
+              }
+            />
+          </View>
         ) : null}
 
         {!resolved ? (

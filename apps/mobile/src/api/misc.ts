@@ -37,6 +37,16 @@ export async function ignoreCandidate(id: string): Promise<{ candidate: Candidat
   return res.data;
 }
 
+export async function unconfirmCandidate(id: string): Promise<{ candidate: CandidateDto }> {
+  const res = await api.post(`/api/import-candidates/${id}/unconfirm`, {});
+  return res.data;
+}
+
+export async function unignoreCandidate(id: string): Promise<{ candidate: CandidateDto }> {
+  const res = await api.post(`/api/import-candidates/${id}/unignore`, {});
+  return res.data;
+}
+
 // --- 通知履歴 ---
 export async function fetchNotifications(limit = 50): Promise<{ notifications: NotificationDto[] }> {
   const res = await api.get('/api/notifications', { params: { limit } });

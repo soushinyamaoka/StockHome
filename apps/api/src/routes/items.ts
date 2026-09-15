@@ -151,6 +151,27 @@ const itemRoutes: FastifyPluginAsync = async (app) => {
     });
     return { ok: true };
   });
+
+  // 論理削除の復元
+  app.post('/:id/restore', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const exists = await prisma.item.findFirst({
+      where: { id, householdId: req.auth.householdId },
+    });
+    if (!exists) return reply.code(404).send({ message: '品目が見つかりません' });
+    if (exists.isActive) {
+      return reply.code(409).send({ message: 'この品目は削除されていません' });
+    }
+
+    const item = await prisma.item.update({
+      where: { id },
+      data: { isActive: true, deletedAt: null, deletedBy: null },
+    });
+
+    // 削除中は夜間バッチの対象外だったため、復元時点の状態で再計算する
+    await refreshStockSnapshotForItem(id);
+    return { item: serializeItem(item) };
+  });
 };
 
 export default itemRoutes;
