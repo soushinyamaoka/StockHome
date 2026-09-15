@@ -247,8 +247,21 @@ VPS management review・production承認は、本notice提出後にVPS管理チ�
 
 ## Approval
 
-- app owner: 未実施（本notice記載の利用者影響についての明示承認はこれから）
-- VPS management review: 未実施
+- app owner: **2026-09-15、ユーザー（app owner）がS007-B04記載の4点を明示承認**
+  （VPS管理レビュー正本
+  `C:\work\PRG\Sakura\Dev\vps-server-management\docs\operations\stockhome_notification_target_review_20260915.md`
+  §2 S007-B04）。承認範囲は次の4点。
+  1. LINEは引き続き`all`の品目だけで、`representative` / `specific_user`はプッシュだけに載る
+  2. プッシュはアラートが`false`→`true`へ変わった日に1回だけで、毎晩の再通知ではない
+  3. deploy時点ですでにalert中の品目へ、修正適用を理由とした遡及プッシュは送られない
+  4. 無効ユーザーと、対象householdに所属しない指定ユーザーへは送らない
+  - **production反映の承認・S007-B01修正内容の承認は、上記4点とは別に必要**。上記は
+    通知挙動の設計そのものへの承認であり、production deployの実施承認ではない
+- VPS management review: 初回2026-09-15実施・`blocked`（S007-B01〜B04、正本上記参照）。
+  S007-B02（task_id名前空間分離）・S007-B03（rollback/メタデータ記述訂正）はVPS管理側が
+  noticeへ直接反映し、アプリ側で確認・commit済み（commit `5f36e55`）。S007-B04は
+  上記のとおりapp owner承認済み。**S007-B01（household境界）は修正中**
+  （task `20260915-003`、本改訂時点で未完了）。全4点の解消確認後、再レビューへ回す
 - production approval: 未実施
-- source task_id（app/ai-watch）: 20260915-001
+- source task_id（app/ai-watch）: 20260915-001（初版）, 20260915-003（S007-B01修正）
 - related VPS task_id: 未採番（`20260915-001`はVPS2管理画面レイアウト作業で使用済み）
