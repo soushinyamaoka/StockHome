@@ -36,7 +36,7 @@ S007-B01・S008-B02〜B04の修正を重ねた結果、**本notice `007` と not
 
 impact_level: L2
 
-status: ready_for_review
+status: accepted
 
 created_by: Claude
 
@@ -111,7 +111,7 @@ port/bind/URL変更・認証境界の変更はいずれも無い。品目・在�
 | `job_end`/`batch_step(alert_evaluation)`の`line_alerts`（新規） | 存在しない | LINE本文へ実際に載せた件数（`all`のアラート品目数）。旧`alerts`と同じ算出根拠 |
 | `READYGO_QUEUED.alerts` | LINEキューに積んだ件数（`targets.length`、当時から実質`all`限定） | 同じ意味（LINEキューに積んだ件数）。算出元が`result.lineAlerts`に変わっただけで値の意味は不変 |
 | `PUSH_DISPATCHED`ログ | 夜間バッチ1回あたり世帯単位で最大1行 | 夜間バッチ1回あたりユーザー単位で複数行になりうる。既存フィールド（`items`/`targeted`/`accepted`/`failed`/`deactivated`）は不変、`user_id`等の個人識別子は追加していない |
-| `pushNotify.ts`の関数 | `sendPushToHousehold(householdId, ...)` | `sendPushToUser(userId, ...)`（旧関数は削除。呼び出し元は`batch.ts`の1箇所のみだったため未使用のまま残していない） |
+| `pushNotify.ts`の関数 | `sendPushToHousehold(householdId, ...)` | `sendPushToUser(householdId, userId, ...)`（旧関数は削除。呼び出し元は`batch.ts`の1箇所のみだったため未使用のまま残していない） |
 | プッシュ端末検索・`lastPushAt`更新（S007-B01対応） | `sendPushToUser(userId, ...)`が`userId`のみで絞る | `sendPushToUser(householdId, userId, ...)`へ変更。`findActiveDevicesForHouseholdUser`・`markDevicesPushed`が`householdId + userId + isActive`で絞る |
 | 新規アラートの集約単位（S007-B01対応） | `userId`のみ（同一userが複数household所属だと本文が混ざりうる） | `groupNewAlertsByHouseholdUser`で`(householdId, userId)`単位に変更。household境界をまたいで1通に混ざらない |
 
@@ -244,15 +244,14 @@ secret値は記載しない。
       参照。データ書き込みが無いためimage rollbackのみで完結する）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した
       （job/logは該当あり・上記に詳述。runtime/dependency/client配信は該当なし）
-- [ ] app owner、VPS review、production承認、client配信承認を分離した（**app owner承認・
-      VPS review・production承認はいずれも未実施**。client配信は非該当）
+- [x] app owner、VPS review、production承認、client配信承認を分離した（app owner承認済み、
+      VPS reviewは2026-09-15に`accepted`。production承認は未実施。client配信は非該当）
 - [x] secret非混入とtracked working tree cleanを確認した（`git status`で未追跡fileは
       本notice作成前から存在する無関係な2件（`ops/investigations/OPS-P1-08-npm-audit-findings.md`、
       `ops/production-db-operations/`）のみで、本commitには含まれていないことを確認した）
 
-未確認・該当なしの理由: app owner承認（本notice記載の利用者影響の追加確認）・
-VPS management review・production承認は、本notice提出後にVPS管理チャットへ引き継いで
-初めて得られるものであり、本セルフチェック時点では未実施が正しい状態。
+未確認・該当なしの理由: production承認はVPS management reviewとは分離し、結合releaseの
+実施計画提示後に得るため未実施。client配信はnotice 007単独では非該当。
 
 ## 未解決事項
 

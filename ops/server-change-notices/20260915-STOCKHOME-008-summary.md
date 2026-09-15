@@ -35,7 +35,7 @@ review・承認・deployする（下記「production変更」参照）。
 
 impact_level: L3
 
-status: ready_for_review
+status: accepted
 
 created_by: Claude
 
@@ -250,15 +250,14 @@ secret値は記載しない。
       該当なし。runtime/dependencyは該当なし。client配信は`ops/client-releases/
       20260915-STOCKHOME-004-plan.md`（S008-B05対応）として計画を作成した。
       配信自体はAPI反映`verified`後、別承認で実施する）
-- [ ] app owner、VPS review、production承認、client配信承認を分離した（**app owner承認・
-      VPS review・production承認はいずれも未実施**。client配信も未確定）
+- [x] app owner、VPS review、production承認、client配信承認を分離した（app owner承認済み、
+      VPS reviewは2026-09-15に`accepted`。production承認・client配信承認は未実施）
 - [x] secret非混入とtracked working tree cleanを確認した（`git status`で未追跡fileは
       本notice作成前から存在する無関係な2件（`ops/investigations/OPS-P1-08-npm-audit-findings.md`、
       `ops/production-db-operations/`）のみで、本commitには含まれていないことを確認した）
 
-未確認・該当なしの理由: app owner承認・VPS management review・production承認は、
-本notice提出後にVPS管理チャットへ引き継いで初めて得られるものであり、本セルフチェック
-時点では未実施が正しい状態。
+未確認・該当なしの理由: production承認とclient配信承認は、それぞれVPS management review・
+APIのproduction検証とは分離して後続の明示承認を得るため未実施。
 
 ## 未解決事項
 
