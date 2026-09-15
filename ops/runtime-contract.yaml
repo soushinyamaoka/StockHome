@@ -199,9 +199,8 @@ app: stockhome
 
 canonical_repo: https://github.com/soushinyamaoka/StockHome.git
 canonical_ref: main
-updated_at: 2026-09-14
-verified_against_runtime: 2026-09-14  # VPS task 20260914-002 verified。17:26:27 JST技術検証完了、本人画面確認OKを17:33:20 JSTに記録。
-                                       # 19:55定期jobの実時刻確認はこのtask範囲外（既存job・route自体は無変更）
+updated_at: 2026-09-15
+verified_against_runtime: 2026-09-15  # VPS task 20260915-002。結合API反映後の即時検証と19:55/20:10自然実行確認を完了。
 
 runtime:
   type: docker-compose
@@ -636,6 +635,15 @@ known_gaps:
 
 # 2026-08-31〜09-02 時点で解消済みの事項
 resolved_gaps:
+  - >-
+    2026-09-15、VPS task 20260915-002でnotice 007・008の固定source 038e173を
+    1つのAPI artifactとしてproduction反映。隔離restore・対象test29/29、health200/200、
+    認証境界401/401/401、DB image/container/volume・10 migration・業務data不変、JSON log正常を確認。
+    19:55 daily_batchと20:10 push_receipt_check_and_cleanupは各1組のstart/end・同一run_id・
+    status successで、API/DB restart0・health200/200を維持したためAPI releaseをverifiedとした。
+    API反映時点ではclient release 20260915-STOCKHOME-004と実データ取消・復元は未実施・別承認。
+    client releaseはその後の個別承認でdefault/android-internalへ配信し、iOS・Android本人確認後にverified。
+    実データの取消・復元は引き続き未実施。
   - >-
     2026-09-14、VPS task 20260914-002は今回の妻通知・不使用確認とユーザー個別承認後、
     新backup/隔離write検証・限定2run/旧snapshotコピー・既存HTTP canary/chunkで

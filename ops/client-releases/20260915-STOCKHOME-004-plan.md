@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: draft（配信の承認ではない。計画のみ）
+status: verified
 
 created_by: Claude
 
@@ -43,9 +43,9 @@ VPS管理レビュー（`stockhome_undo_actions_review_20260915.md` S008-B05）�
 
 - **実施順序: API先行 → client配信は別承認**。本noticeの新規3エンドポイント
   （`unconfirm`/`unignore`/`restore`）はAPI側にすでに実装・テスト済みだが、
-  production未反映（`deployment_status: not_started`）。API側のproduction反映
-  （VPS管理側の`approval_required`承認・deploy・`verified`確認）が完了するまで、
-  本client配信は実施しない。
+  2026-09-15、VPS task `20260915-002`でproduction反映し、即時検証と19:55/20:10の
+  最初の自然実行確認まで正常だったため、VPS管理側で`verified`となった。
+  本client配信のAPI前提条件は満たしている。
 - **旧client互換性**: 新規3エンドポイントは既存の`confirm`/`ignore`/`DELETE /:id`の
   挙動を一切変更しない**追加のみ**のAPI変更。したがって、
   - client先行時（本UIが先、APIがまだ旧版）: 新しい取り消し/復元ボタンをタップすると
@@ -55,7 +55,7 @@ VPS管理レビュー（`stockhome_undo_actions_review_20260915.md` S008-B05）�
     単に呼ばない。新規UIが無いだけで、既存機能（確定・無視・削除）は変わらず動作する。
     **安全な順序はこちらのみ**。
 - 上記のとおり、client配信の前提条件は「notice `20260915-STOCKHOME-007`/`008`の
-  production反映が`verified`になっていること」とする。
+  production反映が`verified`になっていること」とする。2026-09-15 20:18 JSTに確認済み。
 
 ## 直前の安定版（rollback先）
 
@@ -74,14 +74,45 @@ VPS管理レビュー（`stockhome_undo_actions_review_20260915.md` S008-B05）�
 
 ## Approval
 
-- app owner: 未実施（配信そのものの承認はこれから。上記「対象」節の機能内容自体は
-  notice `20260915-STOCKHOME-008`のS008-B06としてapp ownerが2026-09-15に承認済みだが、
-  それは配信承認ではない）
+- app owner: **2026-09-15、client release `20260915-STOCKHOME-004`、固定source `038e173`、
+  `default` / `android-internal`、EAS `preview`環境を特定して配信を明示承認。実データの
+  取消・復元操作は承認対象外**
 - 配信実施条件: notice `20260915-STOCKHOME-007`/`008`のproduction反映が`verified`に
   なった後、対象branch・update groupを特定したapp ownerの明示承認を得てから
   `eas update`を実行する（README記載の配信前チェックリスト・環境変数対応表
   （`--environment preview`を使用し`production`は使わない）に従うこと）
 
+## 配信前確認（VPS管理側、2026-09-15）
+
+- notice 007・008の結合API releaseはVPS task `20260915-002`で`verified`
+- app repositoryのHEADと`origin/main`は`f59ec4754ab45c05356772756e6d8eb3b9e6355b`で一致
+- 固定source `038e173`以降、mobile/shared build入力のcommit差分はなく、未commitのsource差分もない
+- mobile TypeScript検査はexit 0
+- EAS `preview`環境に`EXPO_PUBLIC_API_BASE_URL`と`GOOGLE_SERVICES_JSON`が存在することを、値を表示せず確認
+- `default`の現latest groupは`e3be66fb-c24a-4e9f-8ea9-b8641f4b78d8`、
+  `android-internal`は`287eb475-8535-4287-b34d-f05fe5076a64`。いずれもruntime `exposdk:57.0.0`で計画記載と一致
+- 配信対象は2branch、environmentは両方`preview`、messageにはsource `038e173`を記録する
+- ここまでの確認は配信承認ではなく、EAS Updateは未実施
+
 ## 実施結果
 
-未実施。
+2026-09-15、承認範囲どおりEAS Updateを実施した。
+
+- `default`最新group: `66a49f60-3998-48b2-9979-4efc8469ff67`
+- `default`同一内容の先行group: `b29b6dda-4df6-464d-8d62-6a033bbe90b4`
+- `android-internal` group: `12baf554-2fd1-4a9e-83b3-f90332ce477f`
+- message: `取消・復元UIを追加 (source: 038e173, client_release: 20260915-STOCKHOME-004)`
+- runtime: 全group `exposdk:57.0.0`
+- platform: 全group `android, ios`
+- environment: 両branchとも`preview`
+- 配信後bundleの2fileで`stockhome.homehub-tools.dedyn.io`を確認し、公開healthは200
+- VPS操作、API再deploy、DB/GAS変更、実データの取消・復元は実施していない
+
+`default`は最初のEASコマンドがbundle開始までしか端末出力されず、直後の`update:list`にも
+新groupが現れなかったため未成立と判断して再実行した。しかしEAS一覧の反映が遅れていただけで、
+結果として同一source・message・environment・runtimeのgroupが2件作成された。最新group
+`66a49f60-3998-48b2-9979-4efc8469ff67`が有効で、内容差・rollback・利用者影響はない。
+
+2026-09-15 21:09 JST、ユーザー本人からiOS・Androidとも確認OKの報告を受領した。
+更新取得後の既存画面と取消・復元UIは正常。確認目的の実データ操作は行っていない。
+これによりclient release `20260915-STOCKHOME-004`を`verified`とする。

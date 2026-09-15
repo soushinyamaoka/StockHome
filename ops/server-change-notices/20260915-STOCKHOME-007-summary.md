@@ -44,7 +44,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_started
+deployment_status: verified
 
 ## 変更概要
 
@@ -274,6 +274,21 @@ secret値は記載しない。
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20260915-STOCKHOME-007-summary.md`
 
+## Production実施結果（VPS task `20260915-002`）
+
+- 2026-09-15、妻への通知・不使用確認とユーザーの個別承認後、notice 008と結合し、
+  固定source `038e173199ad8daee3ed3fd268673c8642976eb7`をAPIだけに反映した
+- artifact SHA-256 `3625d3692c91bd6309c9b3221c8ac78da1ff60c7c595600b64a2623b501b4075`、
+  API image `sha256:277d276f6e7ebf4265f7391a79c08912225f9d26f291fb87d1049aeefd82af2e`
+- 隔離restore・対象test 29/29、internal/public health 200/200、認証境界401/401/401、
+  DB image/container/volume・10 migration・業務data不変、JSON log正常を確認した
+- 19:55 `daily_batch`と20:10 `push_receipt_check_and_cleanup`は各1組のstart/endが一致し、
+  status success。API/DB restart 0、health 200/200を維持したためAPI releaseは`verified`
+- API反映時点ではclient release `20260915-STOCKHOME-004`と実データの取消・復元は未実施・別承認
+- client releaseはその後の個別承認により`default` / `android-internal`へ配信し、
+  2026-09-15 21:09 JSTにiOS・Androidの本人確認OKを受領して`verified`。実データ操作は未実施
+- 詳細正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\operations\stockhome_notification_and_undo_deployment_plan_20260915.md`
+
 ## Approval
 
 - app owner: **2026-09-15、ユーザー（app owner）がS007-B04記載の4点を明示承認**
@@ -298,7 +313,7 @@ secret値は記載しない。
   `ops/client-releases/20260915-STOCKHOME-004-plan.md`として作成済み。S008-B06は
   notice `008`でapp owner承認済み。**本改訂により007/008とも全blocker解消、
   最終source `038e173`で再レビューへ回す**
-- production approval: 未実施
+- production approval: **2026-09-15、ユーザーがVPS task `20260915-002`としてAPI結合releaseを個別承認。反映・自然実行確認まで完了し`verified`。このAPI承認ではclient配信と実データ操作は対象外。client配信は後続の別承認で実施・verified、実データ操作は未実施**
 - source task_id（app/ai-watch）: 20260915-001（初版）, 20260915-003（S007-B01修正）,
   20260915-004（S008-B02〜B04修正。007自体の変更は無いが最終sourceを共有するため記載）
-- related VPS task_id: 未採番（`20260915-001`はVPS2管理画面レイアウト作業で使用済み）
+- related VPS task_id: `20260915-002`
