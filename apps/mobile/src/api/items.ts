@@ -1,4 +1,10 @@
-import type { ItemInput, PurchaseInput, CorrectionInput, SnoozeAction } from '@stockhome/shared';
+import type {
+  ItemInput,
+  PurchaseEdit,
+  PurchaseInput,
+  CorrectionInput,
+  SnoozeAction,
+} from '@stockhome/shared';
 import { api } from './client';
 import type {
   ItemDto,
@@ -58,6 +64,14 @@ export async function fetchPurchases(
 
 export async function createPurchase(input: PurchaseInput): Promise<{ purchase: PurchaseDto }> {
   const res = await api.post('/api/purchases', input);
+  return res.data;
+}
+
+export async function updatePurchase(
+  id: string,
+  input: PurchaseEdit
+): Promise<{ purchase: PurchaseDto }> {
+  const res = await api.patch(`/api/purchases/${id}`, input);
   return res.data;
 }
 

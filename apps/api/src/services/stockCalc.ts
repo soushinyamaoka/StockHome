@@ -274,6 +274,25 @@ export function isAccumulatedOverrideReason(reason: string | null | undefined): 
   return !!reason && reason.startsWith('purchase_accumulated');
 }
 
+// 積み上げ由来の補正値を deltaQty だけ増減する（購入数量の訂正用）。
+// 積み上げ由来（manual_override_reason が purchase_accumulated 系）の場合だけ調整し、
+// 手動の在庫補正で設定された値には触れない。manual_override_at は更新しない
+// （訂正であって新しい買い足しではないため、消費の起算日を動かさない）。
+// 行ロックは取らないため、直列化が必要な呼び出し元は先に lockItemForAccumulation を呼ぶこと
+export async function adjustAccumulatedPurchaseQty(
+  tx: Prisma.TransactionClient,
+  itemId: string,
+  deltaQty: number
+): Promise<void> {
+  const state = await tx.itemRuntimeState.findUnique({ where: { itemId } });
+  if (state?.manualOverrideQty != null && isAccumulatedOverrideReason(state.manualOverrideReason)) {
+    await tx.itemRuntimeState.update({
+      where: { itemId },
+      data: { manualOverrideQty: Math.max(0, state.manualOverrideQty + deltaQty) },
+    });
+  }
+}
+
 // 積み上げ由来の補正値から、指定品目の購入取消分を差し引く（購入取消の差し戻し用）。
 // 完全に正確な巻き戻しではない（その後の別の積み上げ・補正で上書きされていればズレうる）が、
 // 直近の誤登録取り消しという想定用途では妥当な範囲。品目行をロックしてから読み書きするため、
@@ -284,13 +303,7 @@ export async function reverseAccumulatedPurchase(
   qty: number
 ): Promise<void> {
   await lockItemForAccumulation(tx, itemId);
-  const state = await tx.itemRuntimeState.findUnique({ where: { itemId } });
-  if (state?.manualOverrideQty != null && isAccumulatedOverrideReason(state.manualOverrideReason)) {
-    await tx.itemRuntimeState.update({
-      where: { itemId },
-      data: { manualOverrideQty: Math.max(0, state.manualOverrideQty - qty) },
-    });
-  }
+  await adjustAccumulatedPurchaseQty(tx, itemId, -qty);
 }
 
 // 品目単位の直列化ロック（VPS管理レビューB01対応）。

@@ -12,3 +12,13 @@ export const purchaseInputSchema = z.object({
 });
 
 export type PurchaseInput = z.infer<typeof purchaseInputSchema>;
+
+// 購入履歴の編集（数量・単価・備考のみ。購入日・品目・購入元は変更できない）。
+// 画面のフォームは常に3項目すべてを送るため、price/noteの未指定は「値なし」を意味する
+export const purchaseEditSchema = z.object({
+  qty: z.coerce.number().min(1, '購入数は1以上で入力してください'),
+  price: optionalNonNegativeNumber, // 1箱（1セット）の単価。未指定は単価なしとして保存
+  note: optionalString,
+});
+
+export type PurchaseEdit = z.infer<typeof purchaseEditSchema>;

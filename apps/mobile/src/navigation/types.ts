@@ -12,14 +12,14 @@ export type HomeStackParamList = {
 export type StocksStackParamList = {
   StockList: { highlightItemId?: string } | undefined;
   StockCorrection: { itemId: string };
-  PurchaseForm: { itemId?: string } | undefined;
+  PurchaseForm: { itemId?: string; purchaseId?: string } | undefined;
 };
 
 export type ItemsStackParamList = {
   ItemList: undefined;
   ItemForm: { itemId?: string; prefillName?: string } | undefined;
   PurchaseHistory: { itemId: string };
-  PurchaseForm: { itemId?: string } | undefined;
+  PurchaseForm: { itemId?: string; purchaseId?: string } | undefined;
 };
 
 export type CandidatesStackParamList = {

@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { prisma } from '../lib/prisma';
 import {
   accumulatePurchaseIntoStock,
+  adjustAccumulatedPurchaseQty,
   processPendingPurchasesForItem,
   reverseAccumulatedPurchase,
   getCurrentEstimatedRemainingQty,
@@ -461,4 +462,60 @@ test('B08-2: 翌JST日になれば正しく1日分減衰する（固定日時、
   const result = calculateStock(item, null, today);
 
   assert.equal(result.estimatedRemainingQty, 4.9, '翌日には1/daysPerUnitぶん正しく減衰するべき');
+});
+
+test('購入数量訂正: 正の差分で積み上げ補正値を増やし、補正日時を変更しない', async () => {
+  const scope = await createTestScope(10);
+  try {
+    await registerAccumulatedPurchase(scope, 2, todayDateOnly());
+    const before = await prisma.itemRuntimeState.findUniqueOrThrow({ where: { itemId: scope.itemId } });
+
+    await prisma.$transaction((tx) => adjustAccumulatedPurchaseQty(tx, scope.itemId, 3));
+
+    const after = await prisma.itemRuntimeState.findUniqueOrThrow({ where: { itemId: scope.itemId } });
+    assert.equal(after.manualOverrideQty, 5);
+    assert.equal(after.manualOverrideAt?.getTime(), before.manualOverrideAt?.getTime());
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('購入数量訂正: 負の差分で積み上げ補正値を減らし、0未満にはしない', async () => {
+  const scope = await createTestScope(10);
+  try {
+    await registerAccumulatedPurchase(scope, 5, todayDateOnly());
+
+    await prisma.$transaction((tx) => adjustAccumulatedPurchaseQty(tx, scope.itemId, -2));
+    let state = await prisma.itemRuntimeState.findUniqueOrThrow({ where: { itemId: scope.itemId } });
+    assert.equal(state.manualOverrideQty, 3);
+
+    await prisma.$transaction((tx) => adjustAccumulatedPurchaseQty(tx, scope.itemId, -10));
+    state = await prisma.itemRuntimeState.findUniqueOrThrow({ where: { itemId: scope.itemId } });
+    assert.equal(state.manualOverrideQty, 0);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('購入数量訂正: 積み上げ由来でない手動補正値は変更しない', async () => {
+  const scope = await createTestScope(10);
+  try {
+    const manualOverrideAt = new Date('2026-09-01T00:00:00.000Z');
+    await prisma.itemRuntimeState.update({
+      where: { itemId: scope.itemId },
+      data: {
+        manualOverrideQty: 10,
+        manualOverrideAt,
+        manualOverrideReason: 'counted_actual_stock',
+      },
+    });
+
+    await prisma.$transaction((tx) => adjustAccumulatedPurchaseQty(tx, scope.itemId, 4));
+
+    const state = await prisma.itemRuntimeState.findUniqueOrThrow({ where: { itemId: scope.itemId } });
+    assert.equal(state.manualOverrideQty, 10);
+    assert.equal(state.manualOverrideAt?.getTime(), manualOverrideAt.getTime());
+  } finally {
+    await scope.cleanup();
+  }
 });

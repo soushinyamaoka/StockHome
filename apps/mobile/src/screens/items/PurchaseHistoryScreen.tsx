@@ -125,6 +125,12 @@ export default function PurchaseHistoryScreen() {
             </Text>
             {p.note ? <Text style={styles.rowNote}>{p.note}</Text> : null}
           </View>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('PurchaseForm', { itemId, purchaseId: p.id })}
+            style={{ marginRight: SPACING.md }}
+          >
+            <Ionicons name="pencil-outline" size={18} color={COLORS.inkSub} />
+          </TouchableOpacity>
           <TouchableOpacity onPress={() => confirmDelete(p)}>
             <Ionicons name="trash-outline" size={18} color={COLORS.inkFaint} />
           </TouchableOpacity>

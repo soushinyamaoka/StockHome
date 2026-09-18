@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { purchaseInputSchema } from '@stockhome/shared';
+import { purchaseEditSchema, purchaseInputSchema } from '@stockhome/shared';
 import { prisma } from '../lib/prisma';
 import { parseBody } from '../utils/validate';
 import { parseDateOnly } from '../utils/date';
@@ -9,6 +9,8 @@ import {
   todayDateOnly,
   accumulatePurchaseIntoStock,
   reverseAccumulatedPurchase,
+  lockItemForAccumulation,
+  adjustAccumulatedPurchaseQty,
 } from '../services/stockCalc';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -126,6 +128,54 @@ const purchaseRoutes: FastifyPluginAsync = async (app) => {
 
     await refreshStockSnapshotForItem(data.itemId);
     return reply.code(201).send({ purchase: serializePurchase(log) });
+  });
+
+  // 購入履歴の編集（数量・単価・備考の訂正用）。
+  // 購入日・品目・購入元は変更しない（変更が必要なら削除して登録し直す）。
+  // 数量を変えた場合、その購入が counted 済みなら積み上げ補正値も差分だけ調整する。
+  // 品目行ロック→再取得→調整→更新→snapshot再計算を単一transactionで行い、
+  // 途中失敗で「購入だけ更新され在庫が合わない」状態を残さない
+  app.patch('/purchases/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const data = parseBody(purchaseEditSchema, req.body, reply);
+    if (!data) return;
+
+    const outcome = await prisma.$transaction(async (tx) => {
+      const target = await tx.purchaseLog.findFirst({
+        where: { id, householdId: req.auth.householdId },
+      });
+      if (!target) return { kind: 'not_found' as const };
+
+      await lockItemForAccumulation(tx, target.itemId);
+
+      // ロック取得までの間に削除・変更されていないか、ロック後に読み直して確認する
+      const current = await tx.purchaseLog.findFirst({
+        where: { id, householdId: req.auth.householdId },
+      });
+      if (!current) return { kind: 'not_found' as const };
+
+      const deltaQty = data.qty - current.qty;
+      if (deltaQty !== 0 && current.countedInInventory) {
+        await adjustAccumulatedPurchaseQty(tx, current.itemId, deltaQty);
+      }
+
+      const updated = await tx.purchaseLog.update({
+        where: { id },
+        data: {
+          qty: data.qty,
+          price: data.price ?? null,
+          note: data.note ?? null,
+        },
+      });
+
+      await refreshStockSnapshotForItem(current.itemId, tx);
+      return { kind: 'ok' as const, purchase: updated };
+    });
+
+    if (outcome.kind === 'not_found') {
+      return reply.code(404).send({ message: '購入履歴が見つかりません' });
+    }
+    return { purchase: serializePurchase(outcome.purchase) };
   });
 
   // 購入履歴の削除（誤登録の取り消し用）
