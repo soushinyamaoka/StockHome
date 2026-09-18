@@ -14,12 +14,13 @@ related_notice_id: 20260918-STOCKHOME-009
 
 ## 対象
 
-- **source commit**: `e903e813b91a07d6ef8e35022fb44383cec96cdb`（notice
-  `20260918-STOCKHOME-009`の最終source。VPS管理初回レビューでの`PATCH`/`DELETE`間
-  lock順序不一致の指摘をtask `20260919-001`で解消した後のcommit。詳細はnoticeの
-  `release_commits`参照。**mobileファイル自体はtask `20260919-001`で変更していない**
-  （API側`apps/api/src/routes/purchases.ts`のみの修正）ため、下記の配信対象機能は
-  変わらない）
+- **source commit**: `ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad`（notice
+  `20260918-STOCKHOME-009`の最終source。VPS管理レビューで2回指摘された
+  lock順序不一致（1回目: `PATCH`/`DELETE`間、2回目: `unconfirmImportCandidate`と
+  `PATCH`/`DELETE`間）をいずれも解消した後のcommit。詳細はnoticeの`release_commits`
+  参照。**mobileファイル自体はlock順序修正2回（commit`e903e81`・`ec6e541`）では
+  変更していない**（いずれもAPI側`apps/api/src/`配下のみの修正）ため、下記の
+  配信対象機能は変わらない）
 - **配信対象機能**（mobileのUI変更のみ。すべてnotice`20260918-STOCKHOME-009`対象、
   task `20260918-001`のcommit `7c1c347`由来）:
   1. `PurchaseHistoryScreen`: 各行への編集ボタン（鉛筆アイコン）追加
@@ -40,9 +41,11 @@ related_notice_id: 20260918-STOCKHOME-009
 
 ## server/APIとの互換性・実施順序
 
-- **実施順序: API先行 → client配信は別承認**。新規`PATCH /api/purchases/:id`は
-  API側にすでに実装・テスト済み（2026-09-18、DB依存テスト27件全件成功をClaudeが
-  対話セッションで確認済み）だが、production未反映（`deployment_status: not_started`）。
+- **実施順序: API先行 → client配信は別承認**。新規`PATCH /api/purchases/:id`と、
+  VPS管理レビューで指摘された2件のlock順序修正はAPI側にすでに実装・テスト済み
+  （2026-09-18、DB依存テスト計48件全件成功をClaudeが対話セッションで確認済み。
+  内訳はnotice`20260918-STOCKHOME-009`の「Health・テスト」参照）だが、
+  production未反映（`deployment_status: not_started`）。
   API側のproduction反映（VPS管理側の`approval_required`承認・deploy・`verified`確認）が
   完了するまで、本client配信は実施しない。
 - **旧client互換性**: 新規`PATCH`は既存の`POST /purchases`・`DELETE /purchases/:id`の
