@@ -419,3 +419,182 @@ test('数量0と負数は400で拒否され購入履歴を変更しない', asyn
     await scope.cleanup();
   }
 });
+
+test('削除済みの購入履歴への再DELETEとPATCHは404となりDBを変更しない', async () => {
+  const scope = await createTestScope();
+  const app = await buildAuthedApp();
+  try {
+    const item = await createItem(scope, scope.householdAId, 'deleted-missing');
+    const purchase = await createPurchase({
+      householdId: scope.householdAId,
+      itemId: item.id,
+      qty: 2,
+      countedInInventory: true,
+    });
+    await setAccumulatedState(item.id, 10);
+    const headers = bearerToken(app, scope.userA.id);
+
+    const firstDeleteResponse = await app.inject({
+      method: 'DELETE',
+      url: `/api/purchases/${purchase.id}`,
+      headers,
+    });
+    assert.equal(firstDeleteResponse.statusCode, 200);
+    assert.equal(await prisma.purchaseLog.findUnique({ where: { id: purchase.id } }), null);
+    const stateAfterDelete = await prisma.itemRuntimeState.findUniqueOrThrow({ where: { itemId: item.id } });
+    assert.equal(stateAfterDelete.manualOverrideQty, 8);
+
+    const secondDeleteResponse = await app.inject({
+      method: 'DELETE',
+      url: `/api/purchases/${purchase.id}`,
+      headers,
+    });
+    const patchResponse = await app.inject({
+      method: 'PATCH',
+      url: `/api/purchases/${purchase.id}`,
+      headers,
+      payload: { qty: 5 },
+    });
+
+    assert.equal(secondDeleteResponse.statusCode, 404);
+    assert.equal(patchResponse.statusCode, 404);
+    assert.equal(await prisma.purchaseLog.findUnique({ where: { id: purchase.id } }), null);
+    assert.deepEqual(
+      await prisma.itemRuntimeState.findUniqueOrThrow({ where: { itemId: item.id } }),
+      stateAfterDelete
+    );
+  } finally {
+    await app.close();
+    await scope.cleanup();
+  }
+});
+
+test('数量を2から5へ編集してから削除すると削除時点の数量5で積み上げを差し戻す', async () => {
+  const scope = await createTestScope();
+  const app = await buildAuthedApp();
+  try {
+    const item = await createItem(scope, scope.householdAId, 'edit-then-delete');
+    const purchase = await createPurchase({
+      householdId: scope.householdAId,
+      itemId: item.id,
+      qty: 2,
+      countedInInventory: true,
+    });
+    await setAccumulatedState(item.id, 10);
+    const headers = bearerToken(app, scope.userA.id);
+
+    const patchResponse = await app.inject({
+      method: 'PATCH',
+      url: `/api/purchases/${purchase.id}`,
+      headers,
+      payload: { qty: 5 },
+    });
+
+    assert.equal(patchResponse.statusCode, 200);
+    assert.equal((await prisma.purchaseLog.findUniqueOrThrow({ where: { id: purchase.id } })).qty, 5);
+    assert.equal(
+      (await prisma.itemRuntimeState.findUniqueOrThrow({ where: { itemId: item.id } })).manualOverrideQty,
+      13
+    );
+
+    const deleteResponse = await app.inject({
+      method: 'DELETE',
+      url: `/api/purchases/${purchase.id}`,
+      headers,
+    });
+
+    assert.equal(deleteResponse.statusCode, 200);
+    assert.equal(await prisma.purchaseLog.findUnique({ where: { id: purchase.id } }), null);
+    assert.equal(
+      (await prisma.itemRuntimeState.findUniqueOrThrow({ where: { itemId: item.id } })).manualOverrideQty,
+      8
+    );
+  } finally {
+    await app.close();
+    await scope.cleanup();
+  }
+});
+
+test('同一購入への同時PATCHはdeadlockせず最終数量と積み上げ差分が一致する', async () => {
+  const scope = await createTestScope();
+  const app = await buildAuthedApp();
+  try {
+    const item = await createItem(scope, scope.householdAId, 'concurrent-patch');
+    const purchase = await createPurchase({
+      householdId: scope.householdAId,
+      itemId: item.id,
+      qty: 2,
+      countedInInventory: true,
+    });
+    await setAccumulatedState(item.id, 10);
+    const headers = bearerToken(app, scope.userA.id);
+
+    const [firstResponse, secondResponse] = await Promise.all([
+      app.inject({
+        method: 'PATCH',
+        url: `/api/purchases/${purchase.id}`,
+        headers,
+        payload: { qty: 5 },
+      }),
+      app.inject({
+        method: 'PATCH',
+        url: `/api/purchases/${purchase.id}`,
+        headers,
+        payload: { qty: 8 },
+      }),
+    ]);
+
+    assert.equal(firstResponse.statusCode, 200);
+    assert.equal(secondResponse.statusCode, 200);
+    const finalPurchase = await prisma.purchaseLog.findUniqueOrThrow({ where: { id: purchase.id } });
+    const finalState = await prisma.itemRuntimeState.findUniqueOrThrow({ where: { itemId: item.id } });
+    assert.ok([5, 8].includes(finalPurchase.qty));
+    assert.notEqual(finalState.manualOverrideQty, null);
+    assert.equal(finalState.manualOverrideQty! - 10, finalPurchase.qty - 2);
+  } finally {
+    await app.close();
+    await scope.cleanup();
+  }
+});
+
+test('同一購入への同時PATCHとDELETEはdeadlockせず購入を削除して積み上げを8に収束させる', async () => {
+  const scope = await createTestScope();
+  const app = await buildAuthedApp();
+  try {
+    const item = await createItem(scope, scope.householdAId, 'concurrent-patch-delete');
+    const purchase = await createPurchase({
+      householdId: scope.householdAId,
+      itemId: item.id,
+      qty: 2,
+      countedInInventory: true,
+    });
+    await setAccumulatedState(item.id, 10);
+    const headers = bearerToken(app, scope.userA.id);
+
+    const [patchResponse, deleteResponse] = await Promise.all([
+      app.inject({
+        method: 'PATCH',
+        url: `/api/purchases/${purchase.id}`,
+        headers,
+        payload: { qty: 5 },
+      }),
+      app.inject({
+        method: 'DELETE',
+        url: `/api/purchases/${purchase.id}`,
+        headers,
+      }),
+    ]);
+
+    const statuses = [patchResponse.statusCode, deleteResponse.statusCode];
+    assert.ok(statuses.every((status) => status === 200 || status === 404));
+    assert.ok(statuses.includes(200));
+    assert.equal(await prisma.purchaseLog.findUnique({ where: { id: purchase.id } }), null);
+    assert.equal(
+      (await prisma.itemRuntimeState.findUniqueOrThrow({ where: { itemId: item.id } })).manualOverrideQty,
+      8
+    );
+  } finally {
+    await app.close();
+    await scope.cleanup();
+  }
+});
