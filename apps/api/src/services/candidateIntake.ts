@@ -13,7 +13,8 @@ import {
   refreshStockSnapshotForItem,
   todayDateOnly,
   accumulatePurchaseIntoStock,
-  reverseAccumulatedPurchase,
+  lockItemForAccumulation,
+  adjustAccumulatedPurchaseQty,
 } from './stockCalc';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -330,18 +331,29 @@ export async function unconfirmImportCandidate(
     }
 
     const lookupIds = [candidate.id, ...(candidate.legacyId ? [candidate.legacyId] : [])];
-    const purchase = await tx.purchaseLog.findFirst({
+    const linkedPurchase = await tx.purchaseLog.findFirst({
       where: { importCandidateId: { in: lookupIds } },
     });
 
     let reversedPurchaseId: string | null = null;
-    if (purchase) {
-      await tx.purchaseLog.delete({ where: { id: purchase.id } });
-      if (purchase.countedInInventory) {
-        await reverseAccumulatedPurchase(tx, purchase.itemId, purchase.qty);
+    if (linkedPurchase) {
+      // purchases.tsのPATCH/DELETEと同じ順序（品目行ロック→購入行再取得）で
+      // 直列化し、lock順序不一致によるdeadlockと、旧数量での補正不整合を防ぐ
+      // （VPS管理レビュー対応、notice 20260918-STOCKHOME-009）
+      await lockItemForAccumulation(tx, linkedPurchase.itemId);
+
+      const currentPurchase = await tx.purchaseLog.findFirst({
+        where: { id: linkedPurchase.id, householdId },
+      });
+
+      if (currentPurchase) {
+        await tx.purchaseLog.delete({ where: { id: currentPurchase.id } });
+        if (currentPurchase.countedInInventory) {
+          await adjustAccumulatedPurchaseQty(tx, currentPurchase.itemId, -currentPurchase.qty);
+        }
+        await refreshStockSnapshotForItem(currentPurchase.itemId, tx);
+        reversedPurchaseId = currentPurchase.id;
       }
-      await refreshStockSnapshotForItem(purchase.itemId, tx);
-      reversedPurchaseId = purchase.id;
     }
 
     const updated = await tx.importOrderCandidate.update({
