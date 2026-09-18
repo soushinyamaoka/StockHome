@@ -6,7 +6,10 @@ record_type: client_release
 
 app: stockhome
 
-status: draft（配信の承認ではない。計画のみ）
+status: draft（配信の承認ではない。計画のみ。**実際の配信は`20260918-STOCKHOME-006`
+（品目検索・絞り込み、`ops/client-releases/20260918-STOCKHOME-006-plan.md`）へ
+一本化する。理由はJSバンドルが同一sourceを共有し分離配信できないため、同ファイルの
+「他の未配信変更との関係」節参照。本fileは対象機能・互換性の記録として残す**）
 
 created_by: Claude
 
