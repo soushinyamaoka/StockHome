@@ -14,8 +14,12 @@ related_notice_id: 20260918-STOCKHOME-009
 
 ## 対象
 
-- **source commit**: `7c1c347dd62e1aa8fa17167441b2de6a10369c5f`（notice
-  `20260918-STOCKHOME-009`のsource。詳細はnoticeの`release_commits`参照）
+- **source commit**: `e903e813b91a07d6ef8e35022fb44383cec96cdb`（notice
+  `20260918-STOCKHOME-009`の最終source。VPS管理初回レビューでの`PATCH`/`DELETE`間
+  lock順序不一致の指摘をtask `20260919-001`で解消した後のcommit。詳細はnoticeの
+  `release_commits`参照。**mobileファイル自体はtask `20260919-001`で変更していない**
+  （API側`apps/api/src/routes/purchases.ts`のみの修正）ため、下記の配信対象機能は
+  変わらない）
 - **配信対象機能**（mobileのUI変更のみ。すべてnotice`20260918-STOCKHOME-009`対象、
   task `20260918-001`のcommit `7c1c347`由来）:
   1. `PurchaseHistoryScreen`: 各行への編集ボタン（鉛筆アイコン）追加

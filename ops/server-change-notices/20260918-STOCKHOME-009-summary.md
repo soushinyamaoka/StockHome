@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 7c1c347dd62e1aa8fa17167441b2de6a10369c5f
+source_commit: e903e813b91a07d6ef8e35022fb44383cec96cdb
 
 production_baseline_commit: 038e173199ad8daee3ed3fd268673c8642976eb7
 
@@ -20,7 +20,10 @@ release_commits: `038e173`（baseline。notice `20260915-STOCKHOME-007`/`008`の
 `20260915-002`でproduction反映・`verified`済み）→ `71e375f`/`a1ea7e7`/`f59ec47`/`8116d6e`
 （notice `007`/`008`のVPS再レビュー同期・client release計画作成・クローズ処理4件。
 いずれも`ops/**`のみでbuild inputに影響しない）→ `7c1c347`（task `20260918-001`、
-本notice対象の購入履歴編集機能。**baseline以降で唯一build inputに影響するcommit**）。
+購入履歴編集機能の初版実装。**build inputに影響**）→ `0671c62`（本notice・
+client release計画の初版作成。`ops/**`のみ）→ `e903e81`（task `20260919-001`、
+VPS管理初回レビューblocker対応。`DELETE /purchases/:id`のlock順序をPATCHへ統一。
+**本notice対象の最終source。build inputに影響**）。
 
 impact_level: L3
 
@@ -62,6 +65,17 @@ mobile側は、購入履歴画面の各行に編集ボタンを追加し、既�
 （ai-watch経由、task `20260918-001`）が行い、Claudeがコードレビューと
 DB依存テスト（新規11件＋既存16件の回帰確認、計27件）の実行確認を行った。
 
+**lock順序修正（VPS管理初回レビュー、2026-09-19、task `20260919-001`）**: 初版の
+`DELETE /purchases/:id`（既存route、本機能追加前から存在）は、購入行の情報を
+transaction開始前・ノーロックで読み取り、transaction内では購入行削除→品目行ロックの
+順で処理していた。一方、新設した`PATCH`は品目行ロック→購入行の順。この**lock順序の
+不一致**により、同一購入への同時`PATCH`・`DELETE`が循環待機（deadlock）を起こしうること、
+また`DELETE`がtransaction開始前の**古い数量**で積み上げ補正を行いうることをVPS管理側が
+指摘した。`DELETE`を`PATCH`と同じ順序（品目行ロック→購入行再取得→削除→積み上げ調整→
+snapshot再計算、すべて単一transaction）へ揃え、`reverseAccumulatedPurchase`の呼び出しを
+`adjustAccumulatedPurchaseQty`（ロックしない版）へ統一した。詳細は下記
+「現在と変更後」表・「Health・テスト」参照。
+
 ## 変更理由
 
 ユーザーから、2026-09-03の全体点検所見のうち4件（通知先フィルタ・取り消せない操作・
@@ -90,6 +104,7 @@ port/bind/URL変更・認証境界の変更はいずれも無い。一方、新�
 | `reverseAccumulatedPurchase`の内部実装 | 直接`manual_override_qty`を減算 | `adjustAccumulatedPurchaseQty(tx, itemId, -qty)`へ委譲（外部から見た挙動は不変） |
 | mobile: 購入履歴画面の各行 | 削除ボタンのみ | 編集ボタン（鉛筆アイコン）を追加 |
 | mobile: 購入登録フォーム（`PurchaseFormScreen`） | 新規登録専用 | `purchaseId`パラメータで編集モードに切替。品目・購入日・購入元は読み取り専用表示 |
+| `DELETE /purchases/:id`のlock順序（VPS指摘対応） | transaction開始前・ノーロックで購入情報を読み取り、購入行削除→品目行ロックの順（`PATCH`と逆順） | `PATCH`と同じ品目行ロック→購入行再取得→削除→積み上げ調整→snapshot再計算を単一transactionで実行。`reverseAccumulatedPurchase`呼び出しを`adjustAccumulatedPurchaseQty`へ統一 |
 
 ## 影響対象
 
@@ -183,6 +198,22 @@ secret値は記載しない。
     数量0/負数が400で拒否されDBが変化しないこと
   - 結果: 上記合計**27件すべて成功**（失敗0件）。Claudeが対話セッションで
     ローカル開発用Postgres（`localhost:5434`）に対して実行し確認した（2026-09-18）
+- **lock順序修正の追加テスト（2026-09-19、task `20260919-001`）**:
+  `apps/api/src/routes/purchaseEdit.http.test.ts`へ4シナリオを追加（既存8件は無変更）。
+  - 削除済み購入への再`DELETE`・`PATCH`が404となりDBを変更しないこと
+  - **編集後に削除すると、削除時点の数量（編集後の値）で積み上げが差し戻されること**
+    （transaction開始前の古い数量を使っていた旧バグを直接再現する回帰test。
+    qty=2→5に編集後、削除すると補正値が13→8になる＝5が引かれることを確認。
+    旧バグなら編集前の2が引かれ11になっていたはずの箇所）
+  - **同一購入への同時`PATCH`×`PATCH`**（`Promise.all`による実並行実行）:
+    例外（deadlock）なく両方成功し、最終的な積み上げ補正値の差分が最終数量の
+    差分と一致すること（実行順序に依存しない不変条件で検証）
+  - **同一購入への同時`PATCH`×`DELETE`**（`Promise.all`による実並行実行）:
+    例外（deadlock）なく完了し、実行順序によらず必ず「購入削除・補正値8」という
+    同じ最終状態に収束すること
+  - 結果: 上記4件を含む`purchaseEdit.http.test.ts`全12件が成功。**deadlockの
+    再現性が無いことを確認するため、Claudeが対話セッションで計4回連続実行し、
+    いずれも12/12成功**（2026-09-19、ローカル開発用Postgres`localhost:5434`）
 - 未実施テストと理由: `unconfirm`/`restore`等と同様、mobile UIの実機（Expo Go/
   内部配布APK）での見た目・操作確認は未実施。client配信の別承認後に実施する
 
@@ -199,39 +230,35 @@ secret値は記載しない。
 
 - [x] production baselineとrelease全commit・build入力差分を確認した
       （`production_deployments.yaml`のStockHome baseline`038e173`を基準に、
-      baseline以降の全5commitをbuild input該当有無で区別した。上記`release_commits`参照）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`7c1c347`はCodexが
-      `git push origin main`済み・確認済み。本notice文書のcommitはこの後に作成する）
-- [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（品目行ロック→
-      購入行再取得→積み上げ差分調整→購入行更新→snapshot再計算を単一`$transaction`内で
-      実行する設計。ロック取得までの間に対象が削除・変更されていないかをロック後に
-      読み直して確認する構造も、notice `008`のS008-B02対応と同じパターンで実装済み。
-      同時実行を模した専用testは本notice単独では追加していない
-      （既存の`lockItemForAccumulation`の直列化保証に依拠するため。品目単位ロックの
-      同時実行耐性自体はnotice `20260904-STOCKHOME-005`のB02-1〜B02-4で検証済み）
+      baseline以降の全7commitをbuild input該当有無で区別した。上記`release_commits`参照）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`7c1c347`・`e903e81`は
+      いずれもCodexが`git push origin main`済み・確認済み。本notice文書の改訂commitは
+      この後に作成する）
+- [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した（**VPS管理初回
+      レビューでPATCH/DELETE間のlock順序不一致を指摘され、task `20260919-001`で
+      `DELETE`を`PATCH`と同じ品目行ロック→購入行再取得の順へ修正した。同一購入への
+      同時`PATCH`×`PATCH`・`PATCH`×`DELETE`を実際に`Promise.all`で並行実行するtestを
+      追加し、deadlockが発生しないこと、実行順序によらず最終状態が一致することを
+      4回連続実行で確認済み**。上記「Health・テスト」参照）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（上記「Deploy・rollback」
       参照。データの書き換えを伴うためimage rollbackだけでは戻らない点を明記した）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した（job/logは
       該当なし。runtime/dependencyは該当なし。client配信は必要と判定し、別途
       client release計画を作成する）
-- [x] app owner、VPS review、production承認、client配信承認を分離した（app owner承認は
-      本notice作成前に確認済み〔下記Approval参照〕。VPS review・production承認・
-      client配信承認はいずれも未実施）
+- [x] app owner、VPS review、production承認、client配信承認を分離した（app owner承認・
+      VPS review・production承認・client配信承認はいずれも未実施。下記Approval参照）
 - [x] secret非混入とtracked working tree cleanを確認した（`git status`で未追跡fileは
       本notice作成前から存在する無関係な2件（`ops/investigations/OPS-P1-08-npm-audit-findings.md`、
       `ops/production-db-operations/`）のみで、本commitには含まれていないことを確認した）
 
-未確認・該当なしの理由: VPS management review・production承認・client配信承認は、
-本notice提出後にVPS管理チャットへ引き継いで初めて得られるものであり、本セルフチェック
-時点では未実施が正しい状態。
+未確認・該当なしの理由: app owner承認・VPS management review・production承認・
+client配信承認は、本notice提出後にVPS管理チャットへ引き継いで初めて得られるものであり、
+本セルフチェック時点では未実施が正しい状態。
 
 ## 未解決事項
 
 - mobile UIの実機（Expo Go/内部配布APK）確認は未実施。client配信計画作成後、
   配信・別承認を経てapp ownerが実機で確認する想定
-- 同一購入への同時編集（二重送信等）を明示的に検証するtestは本notice単独では
-  追加していない（上記セルフチェック3番の理由と同じ。`lockItemForAccumulation`の
-  直列化保証に依拠）
 
 ## 希望時期
 
@@ -247,7 +274,10 @@ secret値は記載しない。
 ## Approval
 
 - app owner: 未実施（本notice記載の利用者影響についての明示承認はこれから）
-- VPS management review: 未実施
+- VPS management review: 初回2026-09-18実施・`blocked`（`PATCH`/`DELETE`間のlock順序
+  不一致によるdeadlock・旧数量での補正不整合の懸念）。task `20260919-001`（commit
+  `e903e81`）で`DELETE`のlock順序を`PATCH`と統一し、同時実行test 4件（4回連続実行で
+  安定）を追加して解消した。本改訂で再レビューへ回す
 - production approval: 未実施
-- source task_id（app/ai-watch）: 20260918-001
+- source task_id（app/ai-watch）: 20260918-001（初版）, 20260919-001（lock順序修正）
 - related VPS task_id: 未採番
