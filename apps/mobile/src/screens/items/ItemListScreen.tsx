@@ -17,14 +17,18 @@ import { useNavigation } from '@react-navigation/native';
 import { deleteItem, fetchItems, restoreItem, toggleItemNotification } from '../../api/items';
 import type { ItemWithStock } from '../../api/types';
 import { DaysCounter } from '../../components/DaysCounter';
+import { ItemSearchBar } from '../../components/ItemSearchBar';
 import { StampBadge } from '../../components/StampBadge';
 import { TapeMemo } from '../../components/TapeMemo';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../../theme';
+import { collectItemCategories, matchesItemFilter } from '../../lib/itemFilter';
 import { remainQtyLabel, shortDate } from '../../lib/stockUtils';
 
 export default function ItemListScreen() {
   const navigation = useNavigation<any>();
   const [showInactive, setShowInactive] = useState(false);
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
@@ -80,6 +84,10 @@ export default function ItemListScreen() {
       { text: '外す', style: 'destructive', onPress: () => deleteMutation.mutate(item.id) },
     ]);
   };
+
+  const allItems = data?.items ?? [];
+  const categories = collectItemCategories(allItems);
+  const items = allItems.filter((item) => matchesItemFilter(item, query, category));
 
   const renderItem = ({ item }: { item: ItemWithStock }) => (
     <View style={[styles.card, !item.isActive && { opacity: 0.55 }]}>
@@ -173,6 +181,13 @@ export default function ItemListScreen() {
 
   return (
     <View style={styles.container}>
+      <ItemSearchBar
+        query={query}
+        onQueryChange={setQuery}
+        categories={categories}
+        category={category}
+        onCategoryChange={setCategory}
+      />
       <View style={styles.toolbar}>
         <TouchableOpacity
           style={[styles.filterChip, showInactive && styles.filterChipActive]}
@@ -185,14 +200,18 @@ export default function ItemListScreen() {
         </TouchableOpacity>
       </View>
       <FlatList
-        data={data?.items ?? []}
+        data={items}
         keyExtractor={(i) => i.id}
         renderItem={renderItem}
         contentContainerStyle={{ padding: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: SPACING.xxl }}
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={COLORS.accent} />}
         ListEmptyComponent={
           <Text style={styles.empty}>
-            {isLoading ? '読み込み中…' : 'まだ何もありません。右上の＋から最初の消耗品を登録しましょう。'}
+            {isLoading
+              ? '読み込み中…'
+              : allItems.length === 0
+                ? 'まだ何もありません。右上の＋から最初の消耗品を登録しましょう。'
+                : '条件に合う品目がありません'}
           </Text>
         }
       />

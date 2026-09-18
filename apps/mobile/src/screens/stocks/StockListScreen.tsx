@@ -15,8 +15,10 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { fetchStocks, setSnooze } from '../../api/items';
 import type { StockEntry } from '../../api/types';
 import { DaysCounter } from '../../components/DaysCounter';
+import { ItemSearchBar } from '../../components/ItemSearchBar';
 import { StampBadge } from '../../components/StampBadge';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../../theme';
+import { collectItemCategories, matchesItemFilter } from '../../lib/itemFilter';
 import { remainQtyLabel, isSnoozed, shortDate, showSnoozeSheet } from '../../lib/stockUtils';
 
 export default function StockListScreen() {
@@ -24,6 +26,8 @@ export default function StockListScreen() {
   const route = useRoute<any>();
   const highlightItemId: string | undefined = route.params?.highlightItemId;
   const [alertOnly, setAlertOnly] = useState(false);
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState<string | null>(null);
   const listRef = useRef<FlatList<StockEntry>>(null);
   const queryClient = useQueryClient();
 
@@ -40,7 +44,20 @@ export default function StockListScreen() {
     },
   });
 
-  const stocks = (data?.stocks ?? []).filter((s) => !alertOnly || s.snapshot?.alertNeeded);
+  const allStocks = data?.stocks ?? [];
+  const categories = collectItemCategories(allStocks.map((s) => s.item));
+  const stocks = allStocks.filter(
+    (s) =>
+      (!alertOnly || s.snapshot?.alertNeeded) && matchesItemFilter(s.item, query, category)
+  );
+
+  // 通知タップ・ホーム画面からの遷移で特定品目へ飛ぶときは、
+  // 検索・カテゴリ絞り込みで対象が隠れないようにクリアする
+  useEffect(() => {
+    if (!highlightItemId) return;
+    setQuery('');
+    setCategory(null);
+  }, [highlightItemId]);
 
   // ハイライト指定があれば該当位置までスクロール
   useEffect(() => {
@@ -147,6 +164,13 @@ export default function StockListScreen() {
 
   return (
     <View style={styles.container}>
+      <ItemSearchBar
+        query={query}
+        onQueryChange={setQuery}
+        categories={categories}
+        category={category}
+        onCategoryChange={setCategory}
+      />
       {/* 絞り込みトグル（ハンコ風チップ） */}
       <View style={styles.toolbar}>
         <TouchableOpacity
@@ -173,7 +197,13 @@ export default function StockListScreen() {
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={COLORS.accent} />}
         onScrollToIndexFailed={() => {}}
         ListEmptyComponent={
-          <Text style={styles.empty}>{isLoading ? '読み込み中…' : '品目がありません'}</Text>
+          <Text style={styles.empty}>
+            {isLoading
+              ? '読み込み中…'
+              : allStocks.length === 0
+                ? '品目がありません'
+                : '条件に合う品目がありません'}
+          </Text>
         }
       />
     </View>
