@@ -43,9 +43,9 @@ related_notice_id: 20260918-STOCKHOME-009
 
 - **実施順序: API先行 → client配信は別承認**。新規`PATCH /api/purchases/:id`と、
   VPS管理レビューで指摘された2件のlock順序修正はAPI側にすでに実装・テスト済み
-  （2026-09-18、DB依存テスト計48件全件成功をClaudeが対話セッションで確認済み。
-  内訳はnotice`20260918-STOCKHOME-009`の「Health・テスト」参照）だが、
-  production未反映（`deployment_status: not_started`）。
+  （2026-09-18、cross-route新規1件＋関連回帰48件、合計49件をClaudeが対話セッションで
+  実行し全件成功を確認済み。内訳はnotice`20260918-STOCKHOME-009`の「Health・テスト」
+  参照）だが、production未反映（`deployment_status: not_started`）。
   API側のproduction反映（VPS管理側の`approval_required`承認・deploy・`verified`確認）が
   完了するまで、本client配信は実施しない。
 - **旧client互換性**: 新規`PATCH`は既存の`POST /purchases`・`DELETE /purchases/:id`の
