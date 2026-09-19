@@ -49,7 +49,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # apps/api/package.json's test script (tsx --test "src/**/*.test.ts") relies on
+          # Node.js interpreting the glob. node:test glob support arrived in Node.js v21,
+          # so this test job uses Node 22 LTS while build-and-typecheck remains on Node 20.
+          node-version: '22'
           cache: 'npm'
       - run: npm ci
       - run: npm run build --workspace=@stockhome/shared
