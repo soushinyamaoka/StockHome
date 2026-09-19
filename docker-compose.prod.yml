@@ -26,6 +26,9 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+    # commit固定tag（rollback方針、C-5対応）。API_IMAGE_TAG未指定時はlatestのまま
+    # 従来どおり動作する。scripts/deploy.ps1がdeploy時に git-<40桁commit> を設定する
+    image: stockhome-api:${API_IMAGE_TAG:-latest}
     container_name: stockhome-api-prod
     restart: unless-stopped
     depends_on:
