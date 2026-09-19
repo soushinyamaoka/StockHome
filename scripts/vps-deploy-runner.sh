@@ -1,67 +1,78 @@
 #!/bin/bash
-# StockHome API deploy/rollback本体（VPS上で実行する）。
-# scripts/deploy.ps1がgit archiveで固めたtarballと一緒に転送し、展開後に呼び出す。
+# StockHome API deploy/rollback本体（VPS上、vps-bootstrap.shからexecで呼ばれる）。
 #
-# 責務:
-#   - 同一service単位のdeploy排他lock（flock、非blocking。競合時は何もせず安全停止）
-#   - 切替前に現行imageへimmutable tagを確定・保全する（自動rollback先）
-#   - 通常時: build → up -d → health matrix → 成功ならcleanup / 失敗なら自動rollback
-#   - --rollback-only時: buildせず指定tagへup -d → health matrix
-#   - health matrixはinternal/public health(200)とinternal/public bridge(401)の4点
+# lock取得と展開先の準備はvps-bootstrap.shが担当済み（本scriptが起動した時点で
+# fd 200のlockは既に保持されている）。本scriptの責務は:
+#   - 切替前に現行imageへimmutable tagを確定・保全する。保全できなければ
+#     build・切替のどちらも行わずここで停止する
+#   - --no-build指定時はbuildをskipし、対象tagのimageが既に存在するか確認するだけ
+#   - build（skip時を除く） → up -d → health matrix確認
+#   - 成功: health成功後だけcleanup（古いimage tagと対応するreleaseディレクトリを
+#     直近KEEP_GENERATIONS世代を残して削除。running/previousは世代数に関係なく除外）
+#   - 失敗: 保全したprevious tagへ同一処理内で自動rollbackし、health matrixを再確認
 #
-# 意図的に`set -e`を使わない。health失敗後の自動rollback処理へ確実に到達させるため、
+# health matrixはinternal/public の /health(200) と /api/bridge/health(401) の4点。
+#
+# 通常deployと明示rollback（deploy.ps1の-RollbackTo）は同じ経路を通る。両者の違いは
+# --no-buildの有無だけ（rollback時は対象commitのソースを再展開するがbuildはskipし、
+# 既存imageへ切り替えるだけ）。
+#
+# 意図的に`set -e`は使わない。health失敗後の自動rollback処理へ確実に到達させるため、
 # 各コマンドの成否は個別にifで判定する。
 set -u
 set -o pipefail
 
 # 既定値はproduction。環境変数で上書きできるのは、productionと分離した環境で
 # 正常deploy・health失敗からの自動復旧・明示rollback・世代保持・lock競合を
-# 検証するため（VPS管理レビューの再レビュー条件2）。production実行時は
-# deploy.ps1がこれらを設定しないので、常に下記の既定値が使われる。
-REMOTE_DIR="${SH_DEPLOY_DIR:-$HOME/stockhome}"
-COMPOSE="${SH_COMPOSE_FILE:-docker-compose.prod.yml}"
+# 検証するため。production実行時はdeploy.ps1がこれらを設定しないので、
+# 常に下記の既定値が使われる。
 PUBLIC_URL="${SH_PUBLIC_URL:-https://stockhome.homehub-tools.dedyn.io}"
 INTERNAL_URL="${SH_INTERNAL_URL:-http://127.0.0.1:4002}"
 CONTAINER="${SH_CONTAINER:-stockhome-api-prod}"
 IMAGE_REPO="${SH_IMAGE_REPO:-stockhome-api}"
-LOCKFILE="$REMOTE_DIR/.deploy.lock"
+COMPOSE_PROJECT="${SH_COMPOSE_PROJECT:-stockhome}"
 
 NEW_TAG=""
+RELEASE_DIR=""
 KEEP_GENERATIONS=3
 NO_CACHE=""
-ROLLBACK_ONLY=""
+NO_BUILD=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --tag) NEW_TAG="${2:-}"; shift 2 ;;
+    --release-dir) RELEASE_DIR="${2:-}"; shift 2 ;;
     --keep) KEEP_GENERATIONS="${2:-3}"; shift 2 ;;
     --no-cache) NO_CACHE="1"; shift ;;
-    --rollback-only) ROLLBACK_ONLY="1"; shift ;;
+    --no-build) NO_BUILD="1"; shift ;;
     *) echo "DEPLOY_RESULT=unknown_arg:$1"; exit 2 ;;
   esac
 done
 
-if [ -z "$NEW_TAG" ]; then
-  echo "DEPLOY_RESULT=missing_tag"
+if [ -z "$NEW_TAG" ] || [ -z "$RELEASE_DIR" ]; then
+  echo "DEPLOY_RESULT=missing_required_arg"
+  exit 2
+fi
+if [ ! -d "$RELEASE_DIR" ]; then
+  echo "DEPLOY_RESULT=release_dir_missing"
+  exit 2
+fi
+COMPOSE_FILE="$RELEASE_DIR/docker-compose.prod.yml"
+if [ ! -f "$COMPOSE_FILE" ]; then
+  echo "DEPLOY_RESULT=compose_file_missing"
   exit 2
 fi
 
-cd "$REMOTE_DIR" || { echo "DEPLOY_RESULT=chdir_failed"; exit 3; }
+# project名を明示固定する（重要）: releases/<tag>という毎回異なるdirectoryから
+# buildするため、docker composeの既定project名（directory名由来）に任せると
+# deployのたびにproject/networkが変わってしまい、同一compose fileで定義されている
+# postgres serviceとの内部DNS解決（サービス名postgres）が壊れる。既存運用の
+# project名（~/stockhome由来の"stockhome"）と一致させることで、build元の
+# directoryが変わってもnetwork/連携は不変に保つ
+dc() {
+  docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" --project-directory "$RELEASE_DIR" "$@"
+}
 
-# --- 排他lock（非blocking。取得できなければ何も変更せず即停止） ---------------
-# flock自体が無い環境では排他を保証できないため、lock競合と区別して明示的に停止する
-# （「他のdeploy進行中」と誤報告しないため）。
-if ! command -v flock >/dev/null 2>&1; then
-  echo "DEPLOY_RESULT=flock_unavailable"
-  exit 11
-fi
-exec 200>"$LOCKFILE"
-if ! flock -n 200; then
-  echo "DEPLOY_RESULT=lock_failed"
-  exit 10
-fi
-
-# --- health matrix。起動直後は未応答なのでinternal healthだけリトライする -----
 wait_health_matrix() {
   local tries=0
   local max_tries=30
@@ -80,31 +91,16 @@ wait_health_matrix() {
   [ "$ih" = "200" ] && [ "$ib" = "401" ] && [ "$ph" = "200" ] && [ "$pb" = "401" ]
 }
 
-# --- rollback専用: buildせず既存tagへ切り替えてhealth確認するだけ -------------
-if [ -n "$ROLLBACK_ONLY" ]; then
-  if ! docker image inspect "$IMAGE_REPO:$NEW_TAG" >/dev/null 2>&1; then
-    echo "DEPLOY_RESULT=rollback_target_missing"
-    exit 22
-  fi
-  export API_IMAGE_TAG="$NEW_TAG"
-  if ! docker compose -f "$COMPOSE" up -d --no-build api; then
-    echo "DEPLOY_RESULT=rollback_up_failed"
-    exit 21
-  fi
-  if wait_health_matrix; then
-    echo "DEPLOY_RESULT=rollback_success"
-    exit 0
-  fi
-  echo "DEPLOY_RESULT=rollback_health_failed"
-  exit 34
-fi
-
 # --- 切替前に、現行imageのimmutable tagを確定・保全する ----------------------
-# 目的: health失敗時の自動rollback先を、切替前に必ず1つ固定しておく。
-# 旧方式でbuildされたcontainerはcompose自動命名（stockhome-api:latest等）のため、
-# tag名の文字列加工では安全に取り出せない。repo:tag形式でなければ、この時点で
-# 一度だけ pre-v2-<timestamp> というimmutable tagを付けて保全する
-# （可変tagをrollback根拠にしない、という方針に沿う）。
+# 現行方式のimage（repo:tag形式）ならそのtagをそのまま使う。旧方式（Compose
+# 自動命名でrepo:tag形式でない）imageの場合はimage IDから一度だけ
+# pre-v2-<timestamp>というimmutable tagを付与して保全する（可変tagをrollback
+# 根拠にしない、という方針に沿う）。
+#
+# **現行containerが存在するのに保全できなかった場合は、build・切替のどちらも
+# 行わずここで停止する**（VPS管理レビュー再指摘: previous imageを保全できない
+# 場合はbuild・切替前に停止する）。現行containerが存在しない（初回deploy）場合は
+# 保全対象が無いので、そのまま進んでよい。
 PREVIOUS_IMAGE=$(docker inspect --format '{{.Config.Image}}' "$CONTAINER" 2>/dev/null || echo "")
 PREVIOUS_IMAGE_ID=$(docker inspect --format '{{.Image}}' "$CONTAINER" 2>/dev/null || echo "")
 ROLLBACK_TAG=""
@@ -115,44 +111,51 @@ if [ -n "$PREVIOUS_IMAGE" ]; then
       ROLLBACK_TAG="${PREVIOUS_IMAGE#$IMAGE_REPO:}"
       ;;
     *)
-      # 旧方式のimage。image IDから一度だけimmutable tagを作って保全する
       if [ -n "$PREVIOUS_IMAGE_ID" ]; then
-        ROLLBACK_TAG="pre-v2-$(date +%Y%m%d%H%M%S)"
-        if docker tag "$PREVIOUS_IMAGE_ID" "$IMAGE_REPO:$ROLLBACK_TAG"; then
+        CANDIDATE="pre-v2-$(date +%Y%m%d%H%M%S)"
+        if docker tag "$PREVIOUS_IMAGE_ID" "$IMAGE_REPO:$CANDIDATE"; then
+          ROLLBACK_TAG="$CANDIDATE"
           echo "PRESERVED_PREVIOUS_AS=$IMAGE_REPO:$ROLLBACK_TAG"
-        else
-          ROLLBACK_TAG=""
         fi
       fi
       ;;
   esac
+  # tag付け自体が成功していても、実際にimageとして引けるかを最終確認する
+  if [ -n "$ROLLBACK_TAG" ] && ! docker image inspect "$IMAGE_REPO:$ROLLBACK_TAG" >/dev/null 2>&1; then
+    ROLLBACK_TAG=""
+  fi
+  if [ -z "$ROLLBACK_TAG" ]; then
+    echo "DEPLOY_RESULT=previous_image_preserve_failed"
+    exit 12
+  fi
 fi
-
-# 保全したrollback先が実在することを、切替前に必ず確認する
-if [ -n "$ROLLBACK_TAG" ] && ! docker image inspect "$IMAGE_REPO:$ROLLBACK_TAG" >/dev/null 2>&1; then
-  ROLLBACK_TAG=""
-fi
-
 echo "PREVIOUS_IMAGE=$PREVIOUS_IMAGE"
 echo "ROLLBACK_TAG=$ROLLBACK_TAG"
 echo "NEW_TAG=$NEW_TAG"
 
-# --- build（この時点ではまだ切り替えない。build失敗時は現行が動き続ける） -----
-export API_IMAGE_TAG="$NEW_TAG"
-BUILD_ARGS=""
-if [ -n "$NO_CACHE" ]; then BUILD_ARGS="--no-cache"; fi
-
-if ! docker compose -f "$COMPOSE" build $BUILD_ARGS api; then
-  echo "DEPLOY_RESULT=build_failed"
-  exit 20
+# --- build（--no-build時はskipし、対象imageが既に存在するかだけ確認する） -----
+if [ -n "$NO_BUILD" ]; then
+  if ! docker image inspect "$IMAGE_REPO:$NEW_TAG" >/dev/null 2>&1; then
+    echo "DEPLOY_RESULT=rollback_target_missing"
+    exit 22
+  fi
+else
+  export API_IMAGE_TAG="$NEW_TAG"
+  BUILD_ARGS=""
+  if [ -n "$NO_CACHE" ]; then BUILD_ARGS="--no-cache"; fi
+  if ! dc build $BUILD_ARGS api; then
+    echo "DEPLOY_RESULT=build_failed"
+    exit 20
+  fi
 fi
 
 # --- 切替 --------------------------------------------------------------------
-if ! docker compose -f "$COMPOSE" up -d --no-build api; then
+export API_IMAGE_TAG="$NEW_TAG"
+if ! dc up -d --no-build api; then
   echo "DEPLOY_RESULT=up_failed_attempting_rollback"
   if [ -n "$ROLLBACK_TAG" ]; then
     export API_IMAGE_TAG="$ROLLBACK_TAG"
-    if docker compose -f "$COMPOSE" up -d --no-build api && wait_health_matrix; then
+    if dc up -d --no-build api && wait_health_matrix; then
       echo "DEPLOY_RESULT=rolled_back_to_previous"
       exit 32
     fi
@@ -166,11 +169,13 @@ fi
 if wait_health_matrix; then
   echo "DEPLOY_RESULT=success"
   # --- cleanup: health成功後だけ実行する ------------------------------------
-  # 直近KEEP_GENERATIONS世代を保持し、それより古いgit-*を削除する。
-  # running（=NEW_TAG）と直前の成功image（=ROLLBACK_TAG）は世代数に関係なく必ず除外する。
+  # 直近KEEP_GENERATIONS世代を保持し、それより古いgit-*を削除する（対応する
+  # releases/<tag>ディレクトリも一緒に削除する）。running（=NEW_TAG）とprevious
+  # （=ROLLBACK_TAG）は世代数に関係なく必ず除外する。
   # LastTagTimeでソートする理由: docker images --format '{{.CreatedAt}}'は
   # スペース区切りの複合値で、単純sortだと同日中の複数世代を誤順序付けする。
   # BuildKitでbuildしたimageはdocker inspectの.Createdが空になるため使わない。
+  BASE_DIR=$(dirname "$RELEASE_DIR")
   old=$(
     for t in $(docker images "$IMAGE_REPO" --format '{{.Tag}}' | grep '^git-'); do
       lt=$(docker inspect -f '{{.Metadata.LastTagTime}}' "$IMAGE_REPO:$t" 2>/dev/null || echo "")
@@ -184,6 +189,10 @@ if wait_health_matrix; then
     fi
     echo "removing $IMAGE_REPO:$tag"
     docker rmi "$IMAGE_REPO:$tag" || echo "  (skip: in use or already removed)"
+    if [ -d "$BASE_DIR/$tag" ]; then
+      rm -rf "$BASE_DIR/$tag"
+      echo "removed release dir $BASE_DIR/$tag"
+    fi
   done
   exit 0
 fi
@@ -196,7 +205,7 @@ if [ -z "$ROLLBACK_TAG" ]; then
 fi
 
 export API_IMAGE_TAG="$ROLLBACK_TAG"
-if ! docker compose -f "$COMPOSE" up -d --no-build api; then
+if ! dc up -d --no-build api; then
   echo "DEPLOY_RESULT=rollback_up_failed"
   exit 31
 fi
