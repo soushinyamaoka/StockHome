@@ -193,6 +193,12 @@
 #     手動dry-run範囲の固定、backup・通知・個別production承認）が次の段階。
 #     本レビューでもVPS・production DB・実Gmail・実Apps Scriptへの接続・
 #     変更は行っていない。
+#   2026-09-19: 所見C-2（DBバックアップの仕組みが未記録）への対応として、VPS管理側が
+#     バックアップ方針を決定・実施した（所有はVPS管理側、VPS内pg_dump日次14世代、
+#     UGREEN NASへread-only pull・snapshot日次7/週次4/月次12世代、復元試験実施済み）。
+#     詳細はdata.persistent_paths.backup_policyを参照。Claudeが本ファイルへ反映し、
+#     VPS管理側へ再レビュー提出する。本commitはドキュメント更新のみで、
+#     production API/DB・runtime・deployには一切変更なし。
 
 schema_version: 1
 app: stockhome
@@ -261,6 +267,15 @@ data:
     - path: /var/lib/postgresql/data  # container内のmount先。実機named volumeはstockhome_stockhome_pgdata
       backup_required: true
       regenerable: false
+      backup_policy: >-
+        2026-09-19、VPS管理側が方針決定・実施。所有（日次取得・世代管理・復元手順）は
+        VPS管理側。VPS内: 毎日03:00にpg_dump、14世代保持。外部: 毎日03:30に
+        UGREEN NASへread-only pull。NAS側snapshot: 04:00取得、日次7・週次4・月次12世代。
+        復元試験: 2026-09-19 03:00時点の最新dumpを隔離PostgreSQL 16へ復元し、19テーブル・
+        invalid index 0・試験用container/volume/network残存0を確認済み（production
+        API/DBはrestart 0・health 200のまま、production側への影響なし）。
+        記録先はVPS管理側の受理台帳・VPS管理レビュー。NAS側snapshot設定自体の実機確認は
+        2026-09-19時点で未完了（VPS管理側で別途実施）。
   migrations: automatic            # entrypointが起動の都度 `prisma migrate deploy` を実行する。
                                     # 2026-09-05のproduction実機では5 migration適用済み・up to date。
                                     # task 20260905-001はschema/migration変更なし。
