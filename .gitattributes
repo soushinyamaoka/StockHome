@@ -1,0 +1,3 @@
+# VPS(Linux)上でbashが実行するscriptは必ずLFにする。
+# CRLFが混ざると `\r: command not found` 等で起動に失敗する。
+*.sh text eol=lf
