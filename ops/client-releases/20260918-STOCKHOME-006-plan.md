@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: draft（配信の承認ではない。計画のみ）
+status: published（2026-09-19、両branch・両platformへ配信済み。利用者端末での確認待ち）
 
 created_by: Claude
 
@@ -76,7 +76,7 @@ production未反映のままclientだけ先行すると404エラーになるた�
 
 ## Approval
 
-- app owner: 未実施（配信そのものの承認はこれから）
+- app owner: 2026-09-19、client release `20260918-STOCKHOME-006`、購入履歴編集UIと品目検索・絞り込みの同時配信、`default` / `android-internal`両branchを特定した明示承認を受領
 - 配信実施条件: notice `20260918-STOCKHOME-009`のproduction反映が`verified`になった後、
   対象branch・update groupを特定したapp ownerの明示承認を得てから`eas update`を
   実行する（`20260918-STOCKHOME-005`の購入履歴編集UIも同時配信されることを含めて
@@ -85,4 +85,18 @@ production未反映のままclientだけ先行すると404エラーになるた�
 
 ## 実施結果
 
-未実施。
+2026-09-19、明示承認後に`preview`環境から両branchへ`eas update --platform all`を実施した。
+
+- `default` group: `f71148a1-d3e6-4f43-a8a4-8283a2da73d0`
+- `android-internal` group: `ac93a404-e98f-432d-9209-71c6c222880d`
+- 両groupのruntime: `exposdk:57.0.0`
+- 両groupのplatform: `android, ios`
+- message: `購入履歴編集＋品目検索・絞り込み (source: 0a6e781, client releases: 20260918-STOCKHOME-005+006)`
+- EAS記録のgit commit: `3e4be9969c73ee7cd45771586c6c004a28e1733c`。計画固定source `0a6e781`以降の差分はclient計画文書2件のみで、mobile/build入力のコード差分はない。
+- 配信前rollback group: `default`=`66a49f60-3998-48b2-9979-4efc8469ff67`、`android-internal`=`12baf554-2fd1-4a9e-83b3-f90332ce477f`。配信直前の最新groupと一致し、どちらもruntime `exposdk:57.0.0`。
+- `preview`環境の`EXPO_PUBLIC_API_BASE_URL`存在を値を表示せず確認。EASは`EXPO_OWNER`と`EXPO_PUBLIC_API_BASE_URL`をpreviewから読込。
+- iOS・Android bundleの両方に`stockhome.homehub-tools.dedyn.io`が含まれることを確認。
+- 2026-09-19 07:23 JSTにdefault、07:25 JSTにandroid-internalへ公開（EAS UTC時刻をJST換算）。配信後の一覧で両groupが各branchの最新であることを確認した。
+- 対象機能: 購入履歴編集UI（client release 005の機能を含む）と品目検索・カテゴリ絞り込み。
+- 利用者端末でのiOS・Android表示確認: 未実施、本人確認報告待ち。報告受領後に`verified`へ更新する。
+- production API、DB、GAS、VPS設定の変更はなし。production business dataの編集・削除・候補取消もなし。
