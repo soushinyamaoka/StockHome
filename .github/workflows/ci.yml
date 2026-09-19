@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build --workspace=@stockhome/shared
+      - run: npm run build --workspace=@stockhome/api
+      - run: npx tsc --noEmit -p apps/mobile/tsconfig.json
+
+  api-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: stockhome
+          POSTGRES_PASSWORD: stockhome_ci_password
+          POSTGRES_DB: stockhome
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stockhome"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://stockhome:stockhome_ci_password@localhost:5432/stockhome?schema=public
+      JWT_SECRET: ci-test-secret-not-for-production
+      BRIDGE_TOKEN: ci-test-token-not-for-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build --workspace=@stockhome/shared
+      - run: npm run build --workspace=@stockhome/api
+      - run: npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
+      - run: npm test --workspace=@stockhome/api
