@@ -379,13 +379,15 @@ export async function sendPushToUser(
     }
 
     // レスポンス: { data: [{ status: 'ok' | 'error', id?: string, details?: { error?: string } }, ...] }
-    const data = (sent.body as {
+    // 引数の`data`（通知payload用）と名前が衝突しないよう`tickets`とする
+    // （同名constで内側をshadowするとTDZでReferenceErrorになる）
+    const tickets = (sent.body as {
       data?: { status?: string; id?: string; details?: { error?: string } }[];
     })?.data;
     const ticketRows: { pushDeviceId: string; expoTicketId: string }[] = [];
     const deadTokenIds: string[] = [];
     group.forEach((device, i) => {
-      const ticket = data?.[i];
+      const ticket = tickets?.[i];
       if (ticket?.status === 'ok') {
         result.accepted++;
         // receipt を後から引くための ID。端末識別子ではない

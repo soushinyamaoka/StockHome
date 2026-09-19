@@ -30,6 +30,7 @@ export default function StockListScreen() {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<string | null>(null);
   const listRef = useRef<FlatList<StockEntry>>(null);
+  const scrollRetriedRef = useRef(false);
   const queryClient = useQueryClient();
 
   const { data, isLoading, isError, refetch, isRefetching } = useQuery({
@@ -58,6 +59,7 @@ export default function StockListScreen() {
     if (!highlightItemId) return;
     setQuery('');
     setCategory(null);
+    scrollRetriedRef.current = false;
   }, [highlightItemId]);
 
   // ハイライト指定があれば該当位置までスクロール
@@ -196,7 +198,19 @@ export default function StockListScreen() {
         renderItem={renderItem}
         contentContainerStyle={{ padding: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: SPACING.xxl }}
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={COLORS.accent} />}
-        onScrollToIndexFailed={() => {}}
+        onScrollToIndexFailed={(info) => {
+          // FlatListの仮想化で対象indexがまだ計測されていないと失敗する。
+          // 近似位置へ移動してから1回だけ再試行する（highlightItemId変更時にリセット）
+          if (scrollRetriedRef.current) return;
+          scrollRetriedRef.current = true;
+          listRef.current?.scrollToOffset({
+            offset: info.averageItemLength * info.index,
+            animated: false,
+          });
+          setTimeout(() => {
+            listRef.current?.scrollToIndex({ index: info.index, animated: true });
+          }, 100);
+        }}
         ListEmptyComponent={
           isError ? <ErrorState onRetry={refetch} /> : <Text style={styles.empty}>
             {isLoading

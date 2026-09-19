@@ -3,6 +3,7 @@ import * as Notifications from 'expo-notifications';
 import { fetchMe, loginRequest, registerRequest, type AuthUser } from '../api/auth';
 import { getStoredToken, setStoredToken, setUnauthorizedHandler } from '../api/client';
 import { navigateToStockItem, registerForPushNotifications } from '../lib/push';
+import { navigationRef, onNavigationReady } from '../navigation/navigationRef';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -56,13 +57,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const lastNotificationResponse = Notifications.useLastNotificationResponse();
 
+  // NavigationContainerがまだ準備できていない間（アプリ起動直後、kill状態から
+  // 通知タップで起動された直後など）はnavReadyがfalseのまま。準備完了を
+  // onNavigationReadyで待ち、readyになった時点でこのuseEffectを再実行させる
+  const [navReady, setNavReady] = useState(navigationRef.isReady());
+  useEffect(() => onNavigationReady(() => setNavReady(true)), []);
+
   useEffect(() => {
-    if (!user || !lastNotificationResponse) return;
+    if (!user || !lastNotificationResponse || !navReady) return;
     const itemId = lastNotificationResponse.notification.request.content.data
       ?.itemId as string | undefined;
-    navigateToStockItem(itemId);
-    Notifications.clearLastNotificationResponse();
-  }, [user?.id, lastNotificationResponse]);
+    // navigation未準備で遷移できなかった場合はresponseを消さない。
+    // 消してしまうと、準備が整っても二度と遷移できなくなる
+    const navigated = navigateToStockItem(itemId);
+    if (navigated) {
+      Notifications.clearLastNotificationResponse();
+    }
+  }, [user?.id, lastNotificationResponse, navReady]);
 
   const login = useCallback(async (email: string, password: string) => {
     const res = await loginRequest(email, password);

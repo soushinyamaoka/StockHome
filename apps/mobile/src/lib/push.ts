@@ -6,15 +6,19 @@ import * as Notifications from 'expo-notifications';
 import { registerPushDevice } from '../api/misc';
 import { navigationRef } from '../navigation/navigationRef';
 
-export function navigateToStockItem(itemId?: string) {
-  if (!navigationRef.isReady()) return;
+// 遷移できたかを呼び出し元へ伝える。呼び出し元はtrueのときだけ
+// 通知responseをクリアすること（navigation未準備で消してしまうと復旧できない）
+export function navigateToStockItem(itemId?: string): boolean {
+  if (!navigationRef.isReady()) return false;
   try {
     navigationRef.navigate('StocksTab', {
       screen: 'StockList',
       params: itemId ? { highlightItemId: itemId } : {},
     });
+    return true;
   } catch {
     // Ignore notification taps while the target navigator is unavailable.
+    return false;
   }
 }
 
