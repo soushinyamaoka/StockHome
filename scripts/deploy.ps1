@@ -152,7 +152,9 @@ try {
   Write-Host ('  {0} を作成 ({1:N0} bytes)' -f $Tarball, (Get-Item $Tarball).Length) -ForegroundColor Green
 
   # runner が artifact に含まれていること（= 対象 commit にコミット済みであること）を確認する
-  $entries = tar --force-local -tzf $Tarball
+  # Windows標準のtar.exe(bsdtar)はGNU tar固有の--force-localを受け付けない。
+  # $Tarballはリポジトリルート直下の相対パスなので指定不要
+  $entries = tar -tzf $Tarball
   if ($entries -notcontains $RunnerPath) {
     throw "$RunnerPath が commit $CommitHash に含まれていません。runner を commit してから再実行してください。"
   }
