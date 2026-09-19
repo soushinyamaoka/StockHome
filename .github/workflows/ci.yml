@@ -35,6 +35,13 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
+      # 在庫計算の「今日」は実行環境のローカル時刻に依存しており
+      # （apps/api/src/services/stockCalc.ts）、productionコンテナはTZ=Asia/Tokyoで
+      # 動作している。runnerの既定(UTC)のままだとJST日付境界の回帰test
+      # （stockCalc.accumulation.test.tsのB08/B08-2）が日付ずれで失敗するため、
+      # productionと同じ条件に揃える。
+      # 所見A-10（日付生成のJST固定・TZ非依存化）の対応後に、この設定の要否を見直す。
+      TZ: Asia/Tokyo
       DATABASE_URL: postgresql://stockhome:stockhome_ci_password@localhost:5432/stockhome?schema=public
       JWT_SECRET: ci-test-secret-not-for-production
       BRIDGE_TOKEN: ci-test-token-not-for-production
