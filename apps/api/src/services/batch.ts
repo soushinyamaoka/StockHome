@@ -302,7 +302,14 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
             .map((t) => buildItemSummaryLine(t.item, t.snapshot, t.reason))
             .join('\n');
           try {
-            const push = await sendPushToUser(householdId, userId, title, body, logger);
+            const push = await sendPushToUser(
+              householdId,
+              userId,
+              title,
+              body,
+              list.length === 1 ? { itemId: list[0].item.id } : undefined,
+              logger
+            );
             result.pushTargeted += push.targeted;
             result.pushAccepted += push.accepted;
             logger.info({

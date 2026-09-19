@@ -15,6 +15,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { fetchStocks, setSnooze } from '../../api/items';
 import type { StockEntry } from '../../api/types';
 import { DaysCounter } from '../../components/DaysCounter';
+import { ErrorState } from '../../components/ErrorState';
 import { ItemSearchBar } from '../../components/ItemSearchBar';
 import { StampBadge } from '../../components/StampBadge';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../../theme';
@@ -31,7 +32,7 @@ export default function StockListScreen() {
   const listRef = useRef<FlatList<StockEntry>>(null);
   const queryClient = useQueryClient();
 
-  const { data, isLoading, refetch, isRefetching } = useQuery({
+  const { data, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['stocks'],
     queryFn: fetchStocks,
   });
@@ -197,7 +198,7 @@ export default function StockListScreen() {
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={COLORS.accent} />}
         onScrollToIndexFailed={() => {}}
         ListEmptyComponent={
-          <Text style={styles.empty}>
+          isError ? <ErrorState onRetry={refetch} /> : <Text style={styles.empty}>
             {isLoading
               ? '読み込み中…'
               : allStocks.length === 0

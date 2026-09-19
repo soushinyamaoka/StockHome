@@ -17,6 +17,7 @@ import { useNavigation } from '@react-navigation/native';
 import { deleteItem, fetchItems, restoreItem, toggleItemNotification } from '../../api/items';
 import type { ItemWithStock } from '../../api/types';
 import { DaysCounter } from '../../components/DaysCounter';
+import { ErrorState } from '../../components/ErrorState';
 import { ItemSearchBar } from '../../components/ItemSearchBar';
 import { StampBadge } from '../../components/StampBadge';
 import { TapeMemo } from '../../components/TapeMemo';
@@ -31,7 +32,7 @@ export default function ItemListScreen() {
   const [category, setCategory] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
-  const { data, isLoading, refetch, isRefetching } = useQuery({
+  const { data, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['items', showInactive],
     queryFn: () => fetchItems(showInactive),
   });
@@ -206,7 +207,7 @@ export default function ItemListScreen() {
         contentContainerStyle={{ padding: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: SPACING.xxl }}
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={COLORS.accent} />}
         ListEmptyComponent={
-          <Text style={styles.empty}>
+          isError ? <ErrorState onRetry={refetch} /> : <Text style={styles.empty}>
             {isLoading
               ? '読み込み中…'
               : allItems.length === 0

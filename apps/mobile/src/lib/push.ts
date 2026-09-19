@@ -4,6 +4,19 @@ import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { registerPushDevice } from '../api/misc';
+import { navigationRef } from '../navigation/navigationRef';
+
+export function navigateToStockItem(itemId?: string) {
+  if (!navigationRef.isReady()) return;
+  try {
+    navigationRef.navigate('StocksTab', {
+      screen: 'StockList',
+      params: itemId ? { highlightItemId: itemId } : {},
+    });
+  } catch {
+    // Ignore notification taps while the target navigator is unavailable.
+  }
+}
 
 export async function registerForPushNotifications(): Promise<boolean> {
   // 通知の表示方法（アプリ起動中でもバナーを出す）

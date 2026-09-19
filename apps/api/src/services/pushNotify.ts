@@ -344,6 +344,7 @@ export async function sendPushToUser(
   userId: string,
   title: string,
   body: string,
+  data?: Record<string, unknown>,
   logger: AppLogger = appLogger
 ): Promise<PushResult> {
   const result: PushResult = { targeted: 0, accepted: 0, failed: 0, deactivated: 0 };
@@ -360,6 +361,7 @@ export async function sendPushToUser(
         title,
         body,
         sound: 'default',
+        ...(data ? { data } : {}),
       })),
       logger
     );

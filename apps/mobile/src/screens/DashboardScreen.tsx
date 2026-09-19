@@ -16,6 +16,7 @@ import { fetchDashboard } from '../api/misc';
 import { Section } from '../components/Section';
 import { Button } from '../components/Button';
 import { DaysCounter } from '../components/DaysCounter';
+import { ErrorState } from '../components/ErrorState';
 import { useAuth } from '../hooks/useAuth';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../theme';
 import { remainQtyLabel, isSnoozed } from '../lib/stockUtils';
@@ -30,7 +31,7 @@ export default function DashboardScreen() {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const { data, isLoading, refetch, isRefetching } = useQuery({
+  const { data, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['dashboard'],
     queryFn: fetchDashboard,
   });
@@ -89,7 +90,9 @@ export default function DashboardScreen() {
 
       {/* きれそうな消耗品（上位5件。総数は alertTotal） */}
       <Section title="そろそろ切れそう" count={alertTotal}>
-        {isLoading ? (
+        {isError ? (
+          <ErrorState onRetry={refetch} />
+        ) : isLoading ? (
           <Text style={styles.muted}>読み込み中…</Text>
         ) : alerts.length === 0 ? (
           <View style={styles.okBox}>

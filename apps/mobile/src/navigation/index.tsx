@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '../hooks/useAuth';
 import { COLORS, FONTS, HEADER_OPTIONS, SPACING } from '../theme';
+import { navigationRef } from './navigationRef';
 
 import LoginScreen from '../screens/auth/LoginScreen';
 import RegisterScreen from '../screens/auth/RegisterScreen';
@@ -217,7 +218,7 @@ export const RootNavigator: React.FC = () => {
     );
   }
   return (
-    <NavigationContainer theme={paperTheme}>
+    <NavigationContainer ref={navigationRef} theme={paperTheme}>
       {user ? <MainNavigator /> : <AuthNavigator />}
     </NavigationContainer>
   );

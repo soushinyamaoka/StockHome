@@ -83,6 +83,13 @@ export async function getStoredToken(): Promise<string | null> {
   return readToken();
 }
 
+type UnauthorizedHandler = () => void;
+let onUnauthorized: UnauthorizedHandler | null = null;
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null) {
+  onUnauthorized = handler;
+}
+
 api.interceptors.request.use(async (config) => {
   const token = await getStoredToken();
   if (token) {
@@ -90,3 +97,19 @@ api.interceptors.request.use(async (config) => {
   }
   return config;
 });
+
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const hadAuthHeader = Boolean(error?.config?.headers?.Authorization);
+    if (error?.response?.status === 401 && hadAuthHeader) {
+      try {
+        await setStoredToken(null);
+        onUnauthorized?.();
+      } catch {
+        // Keep the original 401 available to the caller if token removal fails.
+      }
+    }
+    return Promise.reject(error);
+  }
+);
