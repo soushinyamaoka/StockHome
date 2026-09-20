@@ -22,10 +22,21 @@ import { appLogger, LOG_EVENTS, type AppLogger } from './lib/logger';
 import { runDailyBatch } from './services/batch';
 import { runPushReceiptMaintenance } from './services/pushNotify';
 
+function resolveTrustedProxies(): string[] {
+  const raw = process.env.TRUSTED_PROXY_IPS;
+  if (!raw || raw.trim() === '') return ['127.0.0.1', '::1'];
+  return raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
 async function buildServer(logger: AppLogger) {
   const app = Fastify({
     loggerInstance: logger,
     disableRequestLogging: true,
+    // Trust only the immediately preceding nginx proxy, never all forwarded hops.
+    trustProxy: resolveTrustedProxies(),
   });
 
   registerHttpErrorHandling(app);

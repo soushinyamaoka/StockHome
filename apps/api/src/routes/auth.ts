@@ -1,13 +1,41 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import bcrypt from 'bcryptjs';
 import { changePasswordSchema, loginSchema, registerSchema } from '@stockhome/shared';
+import { createAccountRateLimitPreHandler } from '../lib/accountRateLimit';
 import { prisma } from '../lib/prisma';
 import { parseBody } from '../utils/validate';
 
 const authRoutes: FastifyPluginAsync = async (app) => {
+  await app.register(rateLimit, { global: false });
+
   // 新規登録：ユーザー作成と同時に家庭(household)も作成し admin として紐づける
   // ※ 通常の家族メンバーはデータ移行 or 管理者による追加で作成する想定
-  app.post('/register', async (req, reply) => {
+  app.post(
+    '/register',
+    {
+      config: {
+        rateLimit: {
+          max: 20,
+          timeWindow: '1 minute',
+          keyGenerator: (req: FastifyRequest) => req.ip,
+          errorResponseBuilder: () => ({
+            statusCode: 429,
+            error: 'Too Many Requests',
+            message: 'しばらくしてから再度お試しください',
+          }),
+        },
+      },
+      preHandler: [
+        createAccountRateLimitPreHandler({
+          namespace: 'register',
+          max: 5,
+          windowMs: 15 * 60 * 1000,
+          extractEmail: (body) => (body as { email?: string } | null)?.email,
+        }),
+      ],
+    },
+    async (req, reply) => {
     const data = parseBody(registerSchema, req.body, reply);
     if (!data) return;
 
@@ -43,10 +71,35 @@ const authRoutes: FastifyPluginAsync = async (app) => {
         role: member.role,
       },
     });
-  });
+    }
+  );
 
   // ログイン
-  app.post('/login', async (req, reply) => {
+  app.post(
+    '/login',
+    {
+      config: {
+        rateLimit: {
+          max: 20,
+          timeWindow: '1 minute',
+          keyGenerator: (req: FastifyRequest) => req.ip,
+          errorResponseBuilder: () => ({
+            statusCode: 429,
+            error: 'Too Many Requests',
+            message: 'しばらくしてから再度お試しください',
+          }),
+        },
+      },
+      preHandler: [
+        createAccountRateLimitPreHandler({
+          namespace: 'login',
+          max: 5,
+          windowMs: 15 * 60 * 1000,
+          extractEmail: (body) => (body as { email?: string } | null)?.email,
+        }),
+      ],
+    },
+    async (req, reply) => {
     const data = parseBody(loginSchema, req.body, reply);
     if (!data) return;
 
@@ -80,7 +133,8 @@ const authRoutes: FastifyPluginAsync = async (app) => {
         role: member.role,
       },
     };
-  });
+    }
+  );
 
   // ログアウト（JWTはクライアント側で破棄するだけ）
   app.post('/logout', async () => ({ ok: true }));
