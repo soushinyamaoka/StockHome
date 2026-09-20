@@ -171,3 +171,32 @@ test('pending ReadyGo rows cannot be acknowledged before claim', async () => {
     }
   });
 });
+
+test('concurrent GET /readygo-pending calls never claim the same row twice', async () => {
+  await withEnv({ BRIDGE_TOKEN }, async () => {
+    const scopes = await Promise.all([createAlertScope(), createAlertScope(), createAlertScope(), createAlertScope()]);
+    const app = await createReadyGoApp();
+    try {
+      for (const scope of scopes) {
+        await runDailyBatch(undefined, { householdId: scope.householdId });
+      }
+      const [res1, res2] = await Promise.all([
+        app.inject({ method: 'GET', url: '/api/bridge/readygo-pending', headers: { 'x-bridge-token': BRIDGE_TOKEN } }),
+        app.inject({ method: 'GET', url: '/api/bridge/readygo-pending', headers: { 'x-bridge-token': BRIDGE_TOKEN } }),
+      ]);
+      const ids1 = res1.json<{ pending: { id: string }[] }>().pending.map((r) => r.id);
+      const ids2 = res2.json<{ pending: { id: string }[] }>().pending.map((r) => r.id);
+      assert.deepEqual(ids1.filter((id) => ids2.includes(id)), []);
+
+      for (const scope of scopes) {
+        const claimedCount = await prisma.readyGoOutbox.count({
+          where: { householdId: scope.householdId, status: 'claimed' },
+        });
+        assert.equal(claimedCount, 1);
+      }
+    } finally {
+      await app.close();
+      await Promise.all(scopes.map((s) => s.cleanup()));
+    }
+  });
+});

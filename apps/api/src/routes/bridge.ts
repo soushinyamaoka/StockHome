@@ -14,6 +14,8 @@ import {
 
 // GAS ブリッジ用ルート（JWT ではなく共有トークンで認証）
 // GAS の Gmail 取込（各ユーザーの個人トリガー）が解析済み候補を POST してくる
+const RECLAIM_LEASE_MS = 30 * 60 * 1000;
+
 const bridgeRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', async (req, reply) => {
     const expected = process.env.BRIDGE_TOKEN;
@@ -125,6 +127,22 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
 
   // ReadyGo 配信待ちキューの取得（GAS の夜間トリガーが呼ぶ）
   app.get('/readygo-pending', async () => {
+    const leaseThreshold = new Date(Date.now() - RECLAIM_LEASE_MS);
+    await prisma.$executeRaw`
+      DELETE FROM readygo_outbox stale
+      WHERE stale.status = 'claimed'
+        AND stale.claimed_at < ${leaseThreshold}
+        AND EXISTS (
+          SELECT 1 FROM readygo_outbox fresh
+          WHERE fresh.household_id = stale.household_id
+            AND fresh.status = 'pending'
+        )
+    `;
+    await prisma.readyGoOutbox.updateMany({
+      where: { status: 'claimed', claimedAt: { lt: leaseThreshold } },
+      data: { status: 'pending', claimedAt: null },
+    });
+
     const claimed = await prisma.$queryRaw<{ id: string; body: string }[]>`
       WITH claimed_rows AS (
         UPDATE readygo_outbox
@@ -134,7 +152,9 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
           WHERE status = 'pending'
           ORDER BY created_at ASC
           LIMIT 20
+          FOR UPDATE SKIP LOCKED
         )
+        AND status = 'pending'
         RETURNING id, body, created_at
       )
       SELECT id, body FROM claimed_rows ORDER BY created_at ASC
