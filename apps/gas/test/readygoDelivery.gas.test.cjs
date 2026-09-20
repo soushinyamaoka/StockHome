@@ -1,12 +1,6 @@
 /**
  * このfileはGASへdeployされない。ローカル検証専用。
- *
- * ApiBridge.js を node:vm へ読み込み、Apps Script API（PropertiesService・
- * Logger）を合成mockへ置き換えて、ReadyGo配信の冪等化ロジック
- * （notice 20260920-STOCKHOME-014、第3回VPS管理レビュー対応）を検証する。
- * ApiBridge.fetchReadyGoPending / ackReadyGoDelivered と ReadyGoBotService は
- * このfile側の合成mockへ差し替え、UrlFetchApp・SpreadsheetAppは呼ばれない
- * 前提（呼ばれたら例外を投げて検知する）。
+ * ReadyGoのInbox行へのoutbox id同時書き込みと、LockServiceによる並行実行対策を検証する。
  */
 'use strict';
 
@@ -17,159 +11,162 @@ const vm = require('node:vm');
 
 const SRC_DIR = path.resolve(__dirname, '..', 'src');
 const apiBridgeSource = fs.readFileSync(path.join(SRC_DIR, 'ApiBridge.js'), 'utf8');
+const readyGoBotServiceSource = fs.readFileSync(path.join(SRC_DIR, 'ReadyGoBotService.js'), 'utf8');
 
 const tests = [];
-function test(name, fn) {
-  tests.push({ name, fn });
+function test(name, fn) { tests.push({ name, fn }); }
+
+/** Inboxシートの最小限の振る舞いをin-memory配列で再現する。 */
+function createFakeSheet(initialRows) {
+  const data = (initialRows || []).map((row) => row.slice());
+  return {
+    data,
+    getLastRow: () => data.length,
+    getRange: (row, column, numRows, numColumns) => ({
+      getValues: () => {
+        const out = [];
+        for (let r = 0; r < numRows; r++) {
+          const sourceRow = data[row - 1 + r] || [];
+          const line = [];
+          for (let c = 0; c < numColumns; c++) line.push(sourceRow[column - 1 + c] ?? '');
+          out.push(line);
+        }
+        return out;
+      },
+    }),
+    appendRow: (values) => { data.push(Array.from(values)); },
+  };
 }
 
 function createHarness(options = {}) {
-  const initialProperties = { ...(options.properties || {}) };
-  const properties = new Map(Object.entries(initialProperties).filter(([, value]) => value != null));
-  const logs = [];
+  const properties = new Map(Object.entries(options.properties || {}).filter(([, value]) => value != null));
   const propertyApi = {
     getProperty: (key) => properties.get(key) ?? null,
     setProperty: (key, value) => { properties.set(key, String(value)); return propertyApi; },
     deleteProperty: (key) => { properties.delete(key); return propertyApi; },
   };
-
+  const logs = [];
+  let lockHeld = false;
+  const lockCalls = { tryLock: 0, released: 0 };
+  const lock = {
+    tryLock: () => {
+      lockCalls.tryLock += 1;
+      if (options.lockUnavailable || lockHeld) return false;
+      lockHeld = true;
+      return true;
+    },
+    releaseLock: () => { lockHeld = false; lockCalls.released += 1; },
+  };
+  const sheet = options.sheet || createFakeSheet();
   const context = {
     console,
     PropertiesService: { getScriptProperties: () => propertyApi },
-    UrlFetchApp: {
-      fetch: () => { throw new Error('unexpected UrlFetchApp.fetch call in this test'); },
-    },
+    LockService: { getScriptLock: () => lock },
+    UrlFetchApp: { fetch: () => { throw new Error('unexpected UrlFetchApp.fetch call in this test'); } },
     Logger: { log: (...args) => { logs.push(args.map(String).join(' ')); } },
+    SpreadsheetApp: {
+      openById: () => {
+        if (options.spreadsheetOpenFails) throw new Error('synthetic open failure');
+        return { getSheetByName: (name) => (name === 'Inbox' ? sheet : null) };
+      },
+    },
+    getReadyGoSpreadsheetId: () => (options.spreadsheetIdMissing ? null : 'fake-spreadsheet-id'),
+    toStr: (value) => (value == null ? '' : String(value).trim()),
   };
-
   vm.createContext(context);
+  vm.runInContext(readyGoBotServiceSource, context, { filename: 'ReadyGoBotService.js' });
   vm.runInContext(apiBridgeSource, context, { filename: 'ApiBridge.js' });
-
-  return { context, properties, propertyApi, logs };
+  return { context, properties, propertyApi, logs, sheet, lockCalls };
 }
 
-/**
- * ApiBridge.fetchReadyGoPending / ackReadyGoDelivered と ReadyGoBotService を
- * mockへ差し替える。
- * @param {ReturnType<typeof createHarness>} harness
- * @param {Object} [options]
- * @param {{id:string, body:string}[]} [options.pending] 初期pending一覧
- * @param {boolean} [options.appendFails] appendToInboxを常に失敗させる
- * @param {boolean} [options.ackFails] ackReadyGoDeliveredを常に失敗（null）させる
- */
-function installMocks(harness, options = {}) {
-  const appendCalls = [];
+/** ApiBridgeのキュー取得・ACKだけをmockへ差し替える。 */
+function installApiMocks(harness, options = {}) {
   const ackCalls = [];
   let pendingQueue = options.pending || [];
-
   harness.context.ApiBridge = {
     fetchReadyGoPending: () => pendingQueue,
     ackReadyGoDelivered: (ids) => {
-      // Array.from (this file's own realm) rather than ids.slice() (the vm
-      // context's Array.prototype.slice), so the stored copy is a plain
-      // outer-realm array and compares equal to literal arrays in assertions.
       ackCalls.push(Array.from(ids));
-      if (options.ackFails) return null;
       return { ok: true, notified: ids.length };
     },
   };
-  harness.context.ReadyGoBotService = {
-    appendToInbox: (body) => {
-      appendCalls.push(body);
-      return !options.appendFails;
-    },
-  };
-
-  return {
-    appendCalls,
-    ackCalls,
-    setPending: (p) => { pendingQueue = p; },
-  };
+  return { ackCalls, setPending: (pending) => { pendingQueue = pending; } };
 }
 
-test('01 normal delivery: append once, ack once', () => {
+// ---- ReadyGoBotService.appendToInbox 単体テスト ----
+
+test('01 appendToInbox writes a row with the outbox id in column E', () => {
   const h = createHarness();
-  const mocks = installMocks(h, { pending: [{ id: 'a', body: 'body-a' }] });
-  h.context.deliverStockHomeNotifications();
-  assert.deepEqual(mocks.appendCalls, ['body-a']);
-  assert.deepEqual(mocks.ackCalls, [['a']]);
-  assert.equal(h.context.isRecordedAsDelivered_('a'), true);
+  assert.equal(h.context.ReadyGoBotService.appendToInbox('hello', 'id-1'), true);
+  assert.equal(h.sheet.data.length, 1);
+  assert.deepEqual(h.sheet.data[0].slice(1), ['StockHome', 'hello', false, 'id-1']);
 });
 
-test('02 ACK failure records local delivery, next run skips re-append but retries ack', () => {
+test('02 appendToInbox skips re-appending a duplicate outbox id and still returns true', () => {
   const h = createHarness();
-  const mocks = installMocks(h, { pending: [{ id: 'x', body: 'body-x' }], ackFails: true });
+  h.context.ReadyGoBotService.appendToInbox('hello', 'id-1');
+  assert.equal(h.context.ReadyGoBotService.appendToInbox('hello (retry)', 'id-1'), true);
+  assert.equal(h.sheet.data.length, 1, 'must not add a second row for the same id');
+});
 
+test('03 appendToInbox with a missing outboxId returns false and does not append', () => {
+  const h = createHarness();
+  assert.equal(h.context.ReadyGoBotService.appendToInbox('hello', ''), false);
+  assert.equal(h.sheet.data.length, 0);
+});
+
+test('04 appendToInbox with no configured spreadsheet id returns false', () => {
+  const h = createHarness({ spreadsheetIdMissing: true });
+  assert.equal(h.context.ReadyGoBotService.appendToInbox('hello', 'id-1'), false);
+});
+
+test('05 appendToInbox when the sheet cannot be opened returns false', () => {
+  const h = createHarness({ spreadsheetOpenFails: true });
+  assert.equal(h.context.ReadyGoBotService.appendToInbox('hello', 'id-1'), false);
+});
+
+// ---- deliverStockHomeNotifications 統合テスト ----
+
+test('06 normal delivery: one row appended with its id, ack called with that id', () => {
+  const h = createHarness();
+  const mocks = installApiMocks(h, { pending: [{ id: 'a', body: 'body-a' }] });
   h.context.deliverStockHomeNotifications();
-  assert.deepEqual(mocks.appendCalls, ['body-x']);
+  assert.equal(h.sheet.data.length, 1);
+  assert.equal(h.sheet.data[0][4], 'a');
+  assert.deepEqual(mocks.ackCalls, [['a']]);
+});
+
+test('07 ACK failure then re-delivery: same id already in Inbox is not re-appended, ack is retried', () => {
+  const h = createHarness();
+  const mocks = installApiMocks(h, { pending: [{ id: 'x', body: 'body-x' }] });
+  h.context.deliverStockHomeNotifications();
+  assert.equal(h.sheet.data.length, 1);
   assert.deepEqual(mocks.ackCalls, [['x']]);
-  assert.equal(h.context.isRecordedAsDelivered_('x'), true);
-
-  // Simulate the next trigger run: the server-side lease reclaim served the SAME
-  // row again because the previous ACK never landed. ackFails is now false
-  // (simulating the network recovering).
   mocks.ackCalls.length = 0;
-  mocks.appendCalls.length = 0;
-  h.context.ApiBridge.ackReadyGoDelivered = (ids) => {
-    mocks.ackCalls.push(Array.from(ids));
-    return { ok: true, notified: ids.length };
-  };
   h.context.deliverStockHomeNotifications();
-
-  assert.deepEqual(mocks.appendCalls, [], 'must not re-append to Inbox');
+  assert.equal(h.sheet.data.length, 1, 'must not add a second Inbox row');
   assert.deepEqual(mocks.ackCalls, [['x']], 'must still retry ACK');
 });
 
-test('03 Inbox append failure does not record local delivery, and ack is not attempted', () => {
-  const h = createHarness();
-  const mocks = installMocks(h, { pending: [{ id: 'y', body: 'body-y' }], appendFails: true });
+test('08 concurrent execution: a held lock prevents a second delivery run entirely', () => {
+  const h = createHarness({ lockUnavailable: true });
+  const mocks = installApiMocks(h, { pending: [{ id: 'a', body: 'body-a' }] });
   h.context.deliverStockHomeNotifications();
-  assert.deepEqual(mocks.appendCalls, ['body-y']);
-  assert.deepEqual(mocks.ackCalls, []);
-  assert.equal(h.context.isRecordedAsDelivered_('y'), false);
+  assert.equal(h.sheet.data.length, 0, 'must not touch the Inbox while locked');
+  assert.deepEqual(mocks.ackCalls, [], 'must not attempt ACK while locked');
+  assert.equal(h.lockCalls.released, 0, 'a lock that was never acquired must not be released');
 });
 
-test('04 mixed batch: previously-recorded id is skipped, new id is delivered, both are acked', () => {
+test('09 lock is released after a normal run (and after no-pending), allowing the next run to acquire it', () => {
   const h = createHarness();
-  const mocks = installMocks(h, {
-    pending: [
-      { id: 'already', body: 'body-already' },
-      { id: 'fresh', body: 'body-fresh' },
-    ],
-  });
-  h.context.recordAsDelivered_('already');
+  const mocks = installApiMocks(h, { pending: [] });
   h.context.deliverStockHomeNotifications();
-  assert.deepEqual(mocks.appendCalls, ['body-fresh']);
-  assert.equal(mocks.ackCalls.length, 1);
-  assert.deepEqual(mocks.ackCalls[0].sort(), ['already', 'fresh']);
-});
-
-test('05 no pending: neither append, ack, nor prune-triggering property write happens', () => {
-  const h = createHarness();
-  const mocks = installMocks(h, { pending: [] });
+  assert.equal(h.lockCalls.tryLock, 1);
+  assert.equal(h.lockCalls.released, 1);
+  mocks.setPending([{ id: 'b', body: 'body-b' }]);
   h.context.deliverStockHomeNotifications();
-  assert.deepEqual(mocks.appendCalls, []);
-  assert.deepEqual(mocks.ackCalls, []);
-});
-
-test('06 pruneDeliveredRecord_ removes entries older than the TTL and keeps fresh ones', () => {
-  const h = createHarness();
-  const now = Date.now();
-  const record = {
-    stale: now - (8 * 24 * 60 * 60 * 1000),
-    fresh: now - (1 * 24 * 60 * 60 * 1000),
-  };
-  h.propertyApi.setProperty('READYGO_DELIVERED_IDS', JSON.stringify(record));
-  h.context.pruneDeliveredRecord_();
-  assert.equal(h.context.isRecordedAsDelivered_('stale'), false);
-  assert.equal(h.context.isRecordedAsDelivered_('fresh'), true);
-});
-
-test('07 malformed stored record is treated as empty rather than throwing', () => {
-  const h = createHarness({ properties: { READYGO_DELIVERED_IDS: '{not valid json' } });
-  assert.equal(h.context.isRecordedAsDelivered_('anything'), false);
-  h.context.recordAsDelivered_('z');
-  assert.equal(h.context.isRecordedAsDelivered_('z'), true);
+  assert.equal(h.lockCalls.tryLock, 2, 'the lock must be acquirable again for the next run');
+  assert.equal(h.sheet.data.length, 1);
 });
 
 (async () => {
