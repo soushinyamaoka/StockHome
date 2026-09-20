@@ -372,8 +372,88 @@ var ApiBridge = (function() {
 })();
 
 // ============================================================
-// ReadyGo 通知配信（夜間トリガーのハンドラ）
+// ReadyGo 冪等配信管理（notice 20260920-STOCKHOME-014、第3回VPS管理
+// レビュー対応）
+//
+// appendToInbox成功後、ACK（API呼び出し）が失敗・GASの実行タイムアウトで
+// 届かないと、API側は該当行をclaimedのまま保持し、30分のlease回収後に
+// 同じidが再度GET /readygo-pendingで返される。その際に再度appendToInbox
+// すると、ReadyGo Inboxへ同じ内容が二重投入され、LINEへの重複配信になる。
+// これを防ぐため、appendToInbox成功直後（ACK呼び出しより前）に配信済みidを
+// ScriptPropertiesへローカル記録する。同じidを次回以降検出した場合は
+// appendToInboxを呼ばずスキップし、ACKだけ再試行する。
 // ============================================================
+
+/**
+ * appendToInbox成功済みidのローカル記録を保持する期間。30分のlease回収より
+ * 十分長く取ることで、ACK不達が続く間の再投入を防ぐ（Claudeの提案値。
+ * 7日を超えてACKが通らない異常が続く場合のみ、稀に再投入が起こり得る
+ * 既知のトレードオフ）
+ */
+var READYGO_DELIVERED_RECORD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** ローカル配信済み記録を保持するScript Propertiesキー */
+var READYGO_DELIVERED_RECORD_PROPERTY = 'READYGO_DELIVERED_IDS';
+
+/**
+ * ローカル配信済み記録を読み込む
+ * @return {Object} {outboxId: deliveredAtEpochMs}
+ * @private
+ */
+function loadDeliveredRecord_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(READYGO_DELIVERED_RECORD_PROPERTY);
+  if (!raw) return {};
+  try {
+    var parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object') ? parsed : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+/**
+ * @param {Object} record
+ * @private
+ */
+function saveDeliveredRecord_(record) {
+  PropertiesService.getScriptProperties().setProperty(READYGO_DELIVERED_RECORD_PROPERTY, JSON.stringify(record));
+}
+
+/**
+ * TTL（READYGO_DELIVERED_RECORD_TTL_MS）を超えた記録を取り除く
+ * @private
+ */
+function pruneDeliveredRecord_() {
+  var record = loadDeliveredRecord_();
+  var cutoff = Date.now() - READYGO_DELIVERED_RECORD_TTL_MS;
+  var changed = false;
+  for (var id in record) {
+    if (record[id] < cutoff) {
+      delete record[id];
+      changed = true;
+    }
+  }
+  if (changed) saveDeliveredRecord_(record);
+}
+
+/**
+ * @param {string} id outbox行id
+ * @return {boolean}
+ * @private
+ */
+function isRecordedAsDelivered_(id) {
+  return Object.prototype.hasOwnProperty.call(loadDeliveredRecord_(), id);
+}
+
+/**
+ * @param {string} id outbox行id
+ * @private
+ */
+function recordAsDelivered_(id) {
+  var record = loadDeliveredRecord_();
+  record[id] = Date.now();
+  saveDeliveredRecord_(record);
+}
 
 /**
  * API の配信待ちキューを取得し、ReadyGo Inbox に投入して ACK する
@@ -389,13 +469,27 @@ function deliverStockHomeNotifications() {
     return;
   }
 
+  pruneDeliveredRecord_();
+
   var deliveredIds = [];
   for (var i = 0; i < pending.length; i++) {
+    var id = pending[i].id;
+    if (isRecordedAsDelivered_(id)) {
+      // 前回Inbox投入は成功したがACKが届かず、サーバ側でlease回収後に
+      // 再取得された行。二重投入を避けて再投入をスキップし、ACKだけ再試行する。
+      Logger.log('[Deliver] 配信済み記録ありのため再投入をスキップ: id=' + id);
+      deliveredIds.push(id);
+      continue;
+    }
     var ok = ReadyGoBotService.appendToInbox(pending[i].body);
     if (ok) {
-      deliveredIds.push(pending[i].id);
+      // ACK呼び出し（ネットワーク往復）より前に必ずローカルへ記録する。
+      // この順序を守ることで、直後にACKが失敗・タイムアウトしても
+      // 次回実行時の二重投入を防げる。
+      recordAsDelivered_(id);
+      deliveredIds.push(id);
     } else {
-      Logger.log('[Deliver] Inbox 投入失敗: id=' + pending[i].id);
+      Logger.log('[Deliver] Inbox 投入失敗: id=' + id);
     }
   }
 
