@@ -12,6 +12,8 @@ export const LOG_EVENTS = {
   UNCAUGHT_EXCEPTION: 'uncaught_exception',
   BATCH_STEP: 'batch_step',
   READYGO_QUEUED: 'readygo_queued',
+  READYGO_QUEUE_SUPERSEDED: 'readygo_queue_superseded',
+  READYGO_OUTBOX_CLEANED: 'readygo_outbox_cleaned',
   READYGO_ACK_FAILED: 'readygo_ack_failed',
   CANDIDATE_INTAKE_FAILED: 'candidate_intake_failed',
   DB_CLIENT_LOG: 'db_client_log',

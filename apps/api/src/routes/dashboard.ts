@@ -77,7 +77,7 @@ const dashboardRoutes: FastifyPluginAsync = async (app) => {
     if (req.auth.role !== 'admin') {
       return reply.code(403).send({ message: '管理者のみ実行できます' });
     }
-    const result = await runDailyBatch();
+    const result = await runDailyBatch(undefined, { householdId: req.auth.householdId });
     return result;
   });
 };

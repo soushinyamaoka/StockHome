@@ -107,7 +107,17 @@ export interface BatchResult {
   newAlerts: number;
   pushTargeted: number;
   pushAccepted: number;
+  readygoSuperseded: number;
+  readygoCleaned: number;
+  readygoPending: number;
+  readygoPendingOldestAgeHours: number | null;
 }
+
+export interface RunDailyBatchOptions {
+  householdId?: string;
+}
+
+const READYGO_DELIVERED_RETENTION_DAYS = 30;
 
 function dailyBatchRunId(date = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -128,7 +138,11 @@ function dailyBatchRunId(date = new Date()): string {
   );
 }
 
-export async function runDailyBatch(logger: AppLogger = appLogger): Promise<BatchResult> {
+// A household scope limits alert evaluation and queueing only; inventory recalculation stays global.
+export async function runDailyBatch(
+  logger: AppLogger = appLogger,
+  options: RunDailyBatchOptions = {}
+): Promise<BatchResult> {
   const runId = dailyBatchRunId();
   const startedAt = Date.now();
   const result: BatchResult = {
@@ -141,6 +155,10 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
     newAlerts: 0,
     pushTargeted: 0,
     pushAccepted: 0,
+    readygoSuperseded: 0,
+    readygoCleaned: 0,
+    readygoPending: 0,
+    readygoPendingOldestAgeHours: null,
   };
   let queuedHouseholds = 0;
   let status: 'success' | 'failure' = 'failure';
@@ -177,9 +195,12 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
     // 「新規に」アラートになった品目を出すため、再計算前の状態を控える。
     // stock_snapshot は再計算で上書きされるため、事前に読まないと前回値が失われる
     const previousAlerts = new Map<string, boolean>(
-      (await prisma.stockSnapshot.findMany({ select: { itemId: true, alertNeeded: true } })).map(
-        (s) => [s.itemId, s.alertNeeded]
-      )
+      (
+        await prisma.stockSnapshot.findMany({
+          where: options.householdId ? { householdId: options.householdId } : undefined,
+          select: { itemId: true, alertNeeded: true },
+        })
+      ).map((s) => [s.itemId, s.alertNeeded])
     );
 
     // Step 2-3: 在庫再計算 & snapshot 更新
@@ -199,6 +220,7 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
       where: {
         isActive: true,
         notificationEnabled: true,
+        ...(options.householdId ? { householdId: options.householdId } : {}),
       },
       include: { stockSnapshot: true, runtimeState: true },
     });
@@ -248,6 +270,19 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
       }
 
       for (const [householdId, list] of byHousehold) {
+        // A row fetched by GAS can be superseded before ACK; bridge ACK safely ignores its missing row.
+        const superseded = await prisma.readyGoOutbox.deleteMany({
+          where: { householdId, status: 'pending' },
+        });
+        result.readygoSuperseded += superseded.count;
+        if (superseded.count > 0) {
+          logger.info({
+            event: LOG_EVENTS.READYGO_QUEUE_SUPERSEDED,
+            job: 'daily_batch',
+            run_id: runId,
+            household_superseded: superseded.count,
+          });
+        }
         await prisma.readyGoOutbox.create({
           data: {
             householdId,
@@ -269,6 +304,36 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
         households: queuedHouseholds,
         alerts: result.lineAlerts,
       });
+    }
+
+    if (!options.householdId) {
+      try {
+        const cutoff = new Date(
+          Date.now() - READYGO_DELIVERED_RETENTION_DAYS * 24 * 60 * 60 * 1000
+        );
+        const cleaned = await prisma.readyGoOutbox.deleteMany({
+          where: { status: 'delivered', deliveredAt: { lt: cutoff } },
+        });
+        result.readygoCleaned = cleaned.count;
+        if (cleaned.count > 0) {
+          logger.info({
+            event: LOG_EVENTS.READYGO_OUTBOX_CLEANED,
+            job: 'daily_batch',
+            run_id: runId,
+            deleted: cleaned.count,
+            retention_days: READYGO_DELIVERED_RETENTION_DAYS,
+          });
+        }
+      } catch (e) {
+        logger.warn({
+          event: LOG_EVENTS.BATCH_STEP,
+          error_kind: ERROR_KINDS.INTERNAL,
+          job: 'daily_batch',
+          run_id: runId,
+          step: 'readygo_cleanup_failed',
+          err: safeErr(e),
+        });
+      }
     }
 
     try {
@@ -344,6 +409,21 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
       });
     }
 
+    const pendingRows = await prisma.readyGoOutbox.findMany({
+      where: {
+        status: 'pending',
+        ...(options.householdId ? { householdId: options.householdId } : {}),
+      },
+      select: { createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    result.readygoPending = pendingRows.length;
+    result.readygoPendingOldestAgeHours =
+      pendingRows.length > 0
+        ? Math.round(((Date.now() - pendingRows[0].createdAt.getTime()) / (60 * 60 * 1000)) * 10) /
+          10
+        : null;
+
     status = 'success';
     return result;
   } catch (e) {
@@ -369,6 +449,10 @@ export async function runDailyBatch(logger: AppLogger = appLogger): Promise<Batc
       push_accepted: result.pushAccepted,
       households: queuedHouseholds,
       queued: result.queued,
+      readygo_pending: result.readygoPending,
+      readygo_pending_oldest_age_h: result.readygoPendingOldestAgeHours,
+      readygo_superseded: result.readygoSuperseded,
+      readygo_cleaned: result.readygoCleaned,
       ...(status === 'failure' ? { error_name: failureName, error_code: failureCode } : {}),
     };
     if (status === 'success') logger.info(line);
