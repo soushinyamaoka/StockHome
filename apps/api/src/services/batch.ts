@@ -138,7 +138,7 @@ function dailyBatchRunId(date = new Date()): string {
   );
 }
 
-// A household scope limits alert evaluation and queueing only; inventory recalculation stays global.
+// A household scope limits every step of this batch to that household.
 export async function runDailyBatch(
   logger: AppLogger = appLogger,
   options: RunDailyBatchOptions = {}
@@ -183,7 +183,7 @@ export async function runDailyBatch(
     }
 
     // Step 1: counted_in_inventory 更新
-    result.countedUpdated = await updateCountedInInventory();
+    result.countedUpdated = await updateCountedInInventory(options.householdId);
     logger.info({
       event: LOG_EVENTS.BATCH_STEP,
       job: 'daily_batch',
@@ -204,7 +204,7 @@ export async function runDailyBatch(
     );
 
     // Step 2-3: 在庫再計算 & snapshot 更新
-    const recalculated = await recalculateAllStocks();
+    const recalculated = await recalculateAllStocks(options.householdId);
     result.recalculated = recalculated.length;
     logger.info({
       event: LOG_EVENTS.BATCH_STEP,
@@ -306,34 +306,36 @@ export async function runDailyBatch(
       });
     }
 
-    if (!options.householdId) {
-      try {
-        const cutoff = new Date(
-          Date.now() - READYGO_DELIVERED_RETENTION_DAYS * 24 * 60 * 60 * 1000
-        );
-        const cleaned = await prisma.readyGoOutbox.deleteMany({
-          where: { status: 'delivered', deliveredAt: { lt: cutoff } },
-        });
-        result.readygoCleaned = cleaned.count;
-        if (cleaned.count > 0) {
-          logger.info({
-            event: LOG_EVENTS.READYGO_OUTBOX_CLEANED,
-            job: 'daily_batch',
-            run_id: runId,
-            deleted: cleaned.count,
-            retention_days: READYGO_DELIVERED_RETENTION_DAYS,
-          });
-        }
-      } catch (e) {
-        logger.warn({
-          event: LOG_EVENTS.BATCH_STEP,
-          error_kind: ERROR_KINDS.INTERNAL,
+    try {
+      const cutoff = new Date(
+        Date.now() - READYGO_DELIVERED_RETENTION_DAYS * 24 * 60 * 60 * 1000
+      );
+      const cleaned = await prisma.readyGoOutbox.deleteMany({
+        where: {
+          status: 'delivered',
+          deliveredAt: { lt: cutoff },
+          ...(options.householdId ? { householdId: options.householdId } : {}),
+        },
+      });
+      result.readygoCleaned = cleaned.count;
+      if (cleaned.count > 0) {
+        logger.info({
+          event: LOG_EVENTS.READYGO_OUTBOX_CLEANED,
           job: 'daily_batch',
           run_id: runId,
-          step: 'readygo_cleanup_failed',
-          err: safeErr(e),
+          deleted: cleaned.count,
+          retention_days: READYGO_DELIVERED_RETENTION_DAYS,
         });
       }
+    } catch (e) {
+      logger.warn({
+        event: LOG_EVENTS.BATCH_STEP,
+        error_kind: ERROR_KINDS.INTERNAL,
+        job: 'daily_batch',
+        run_id: runId,
+        step: 'readygo_cleanup_failed',
+        err: safeErr(e),
+      });
     }
 
     try {

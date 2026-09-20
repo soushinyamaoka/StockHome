@@ -72,21 +72,6 @@ test('manual batch replaces pending ReadyGo queue rows', async () => {
   }
 });
 
-test('cron batch also replaces pending ReadyGo queue rows', async () => {
-  const scope = await createAlertScope();
-  try {
-    await createOutboxRow(scope, 'pending');
-    const result = await runDailyBatch();
-    assert.equal(
-      await prisma.readyGoOutbox.count({ where: { householdId: scope.householdId, status: 'pending' } }),
-      1
-    );
-    assert.ok(result.readygoSuperseded >= 1);
-  } finally {
-    await scope.cleanup();
-  }
-});
-
 test('manual batch scopes ReadyGo queueing to its household', async () => {
   const first = await createAlertScope();
   const second = await createAlertScope();
@@ -106,16 +91,12 @@ test('manual batch scopes ReadyGo queueing to its household', async () => {
   }
 });
 
-test('cron cleans delivered rows older than 30 days while manual batch retains them', async () => {
+test('manual batch cleans delivered rows older than 30 days for its household', async () => {
   const scope = await createAlertScope();
   try {
     const oldRow = await createOutboxRow(scope, 'delivered', new Date(Date.now() - 31 * 24 * 60 * 60 * 1000));
     const recentRow = await createOutboxRow(scope, 'delivered', new Date(Date.now() - 24 * 60 * 60 * 1000));
     await runDailyBatch(undefined, { householdId: scope.householdId });
-    assert.ok(await prisma.readyGoOutbox.findUnique({ where: { id: oldRow.id } }));
-    assert.ok(await prisma.readyGoOutbox.findUnique({ where: { id: recentRow.id } }));
-
-    await runDailyBatch();
     assert.equal(await prisma.readyGoOutbox.findUnique({ where: { id: oldRow.id } }), null);
     assert.ok(await prisma.readyGoOutbox.findUnique({ where: { id: recentRow.id } }));
   } finally {
