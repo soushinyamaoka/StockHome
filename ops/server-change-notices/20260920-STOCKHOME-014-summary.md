@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: （本変更の最終commit確定後にClaudeが記入）
+source_commit: f233ed96e03b9693e7839559981f1c590addde67
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
@@ -24,8 +24,10 @@ notice 010・012・013の提出内容を参照）
 - `0f27da3`（notice `20260920-STOCKHOME-013`のsource。**本noticeの対象外**、013で`accepted`済み）
 - `11a9a15`（notice `20260920-STOCKHOME-012`のsource。**本noticeの対象外**、012で`accepted`済み）
 - `115b1ab`（notice 012・013の第2回レビュー反映。`ops/**`のみ）
-- `74cb471`（**本notice対象**。所見A-5・A-6対応の実装。`apps/api`のみ）
-- （追補commit。本taskの修正分。確定後にClaudeが記入）
+- `74cb471`（**本notice対象**。所見A-5・A-6対応の実装。`apps/api`のみ。task `20260920-007`）
+- `f233ed9`（**本notice対象・最終source**。世帯指定時に在庫再計算・counted更新・配信済み
+  cleanupもその世帯だけを対象にする修正と、テストの組み直し。`apps/api`＋本notice。
+  task `20260920-008`）
 
 **本noticeが対象とするのは所見A-5・A-6への対応（夜間バッチのReadyGoキュー重複抑止・
 世帯スコープ・保持期間）。notice 010〜013はいずれも`accepted`済みの別変更のため、
@@ -153,9 +155,26 @@ secret値は記載していない。
 
   **(B) 実DBテスト（ローカルPostgres、Claude実施）**
 
-  （task `20260920-008`完了後にClaudeが記入）
+  - `npx tsx --test apps/api/src/services/batch.readygoQueue.test.ts`: passed
+    （新規4シナリオ。手動実行の二重投入防止／世帯スコープ（他世帯のpendingが増えない）／
+    配信済み30日超の削除と1日前の行の保持／滞留メトリクスの出力）
+  - `npm test --workspace=@stockhome/api`: **148件すべて成功**（3回連続実行して
+    いずれも148/148。下記「テスト分離の修正経緯」参照）
 
-- 結果: （確定後にClaudeが記入）
+  **(C) テスト分離の修正経緯（task `20260920-008`）**
+
+  task `20260920-007`時点の実装では、世帯を指定した実行でも
+  `updateCountedInInventory()`・`recalculateAllStocks()`を引数なし（全世帯対象）で
+  呼んでいた。この状態では新規テストを単体実行すると成功する一方、フルスイートでは
+  4件が失敗した（node:testがテストfileを並列実行するため、全世帯再計算の最中に
+  他のテストfileが自分のhouseholdを削除し、`stock_snapshots_household_id_fkey`の
+  FK違反になる）。`updateCountedInInventory`・`recalculateAllStocks`はいずれも
+  既に`householdId?`のoptional引数を持っていた（`routes/stocks.ts`が使用済み）ため、
+  引数を渡すだけで「世帯を指定した実行はその世帯のデータにしか触らない」という
+  一貫した挙動になり、テスト分離の問題も解消した。**production側の不具合ではなく、
+  task 007の実装が世帯スコープを一部にしか適用していなかったことが原因。**
+
+- 結果: すべて成功
 - 未実施テストと理由: production VPS上での実バッチ実行確認は未実施（production環境への
   接続はVPS管理側の個別承認後に限られるため）。deploy後の初回`daily_batch`で
   `readygo_outbox_cleaned`・`readygo_pending`の値を確認いただくのが実機確認になる。
@@ -172,8 +191,8 @@ secret値は記載していない。
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
-- [ ] production baselineとrelease全commit・build入力差分を確認した — 最終commit確定後にClaudeが記入
-- [ ] source commitとnoticeをremoteの対象branchへpushした — 最終commit確定後にClaudeが記入
+- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`f233ed9`までのcommitを実際の時系列順で確認。上記release_commits参照）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`f233ed9`はpush済み、local/origin一致確認済み。本noticeの確定分はこれからcommit・pushする）
 - [x] data更新のtransaction・同時実行・途中失敗を確認した（キューの置き換え削除→insertは
   同一バッチ内の連続操作。途中失敗時はpendingが0件になり得るが、翌日の実行で最新内容が
   再度積まれるため復旧する。購入履歴等の業務データは一切変更しない）
@@ -182,7 +201,7 @@ secret値は記載していない。
   処理内容変更。log: field追加・新規イベント2種。retention: `readygo_outbox`のdelivered 30日。
   runtime/dependency: 変更なし。client配信: mobile側の変更を含まないため該当なし）
 - [ ] app owner、VPS review、production承認、client配信承認を分離した — いずれも未実施。下記Approval参照
-- [ ] secret非混入とtracked working tree cleanを確認した — 最終commit確定後にClaudeが記入
+- [x] secret非混入とtracked working tree cleanを確認した（`git status --short`で確認。既知の無関係な未追跡ファイルのみ残存）
 
 ## 未解決事項
 

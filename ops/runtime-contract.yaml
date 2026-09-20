@@ -207,6 +207,11 @@
 #     .env.production.exampleへの実際の受け渡し設定もあわせて反映。本commitはドキュメント・
 #     Compose設定のみで、Codex実装分（accountRateLimit.tsの上限付きTTL化等）は別task
 #     20260920-004で対応中。production未反映。
+#   2026-09-20 (task 20260920-007/008): 所見A-5・A-6（手動バッチによるLINE二重配信、
+#     ReadyGoキューの滞留・保持方針未定義）へ対応し、notice 20260920-STOCKHOME-014を作成した。
+#     data.data_retentionへ readygo_outbox の項目を追加（pendingの置き換え、delivered 30日、
+#     滞留メトリクス4field）。jobs.daily_batchの処理内容が変わるが、schedule・schema・
+#     migrationに変更はない。production未反映。
 #   2026-09-20 (第2回VPS管理レビュー): notice 20260920-STOCKHOME-013の第2回レビューで、
 #     コードblockerは解消済み・Nginx変更も不要と判定されたうえで、文書側4点の訂正指示を
 #     受けた。TRUSTED_PROXY_IPSをrequired: falseからrequired: trueへ訂正（productionでは
@@ -558,6 +563,26 @@ data:
         削除対象はExpoのticket ID・状態・エラーコードのみで、利用者データを含まない。
         DB全体backupには削除前の状態が残り得るが、restore後に同じ保持ポリシーが
         適用されるため運用上の問題はない。
+    - table: readygo_outbox
+      policy: >-
+        2026-09-20（notice 20260920-STOCKHOME-014、所見A-5・A-6）追加。2種類の削除がある。
+        (1) 置き換え: daily_batchがキューへ投入する直前に、同一householdの status='pending' 行を
+        削除してから最新1件をinsertする。これによりpendingは常に最大1件・最新内容になり、
+        手動実行(POST /api/dashboard/run-batch)による二重投入も、GAS側の夜間トリガー停止時の
+        積み上がりも発生しない。削除件数は readygo_queue_superseded イベントに出る。
+        (2) 保持期間: status='delivered' かつ delivered_at が30日より古い行を削除する。
+        cron実行(19:55 JST)は全household、世帯を指定した手動実行はその世帯のみが対象。
+        削除件数は readygo_outbox_cleaned イベントに出る。
+        滞留の可視化として、job_end へ readygo_pending（pending件数）・
+        readygo_pending_oldest_age_h（最古pendingの経過時間）・readygo_superseded・
+        readygo_cleaned の4fieldを出す。readygo_pending_oldest_age_h が大きい値を
+        取り続ける場合はGAS側の夜間トリガー停止を示すが、閾値超過時の通知経路は未整備
+        （所見C-3として別途対応予定）。
+      backup_impact: >-
+        削除対象はReadyGoへ投入する集約メッセージ本文と、ACK時のnotification_log記録用の
+        alerts_json（itemId・reason・1行要約）。いずれも在庫状態から翌日の夜間バッチが
+        再生成できる通知キューであり、購入履歴・在庫補正等の業務データは含まない。
+        配信実績そのものは notification_log 側に残る（本テーブルの削除では失われない）。
 
 jobs:
   - name: daily_batch
