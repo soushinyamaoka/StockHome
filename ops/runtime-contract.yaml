@@ -602,21 +602,40 @@ data:
         適用されるため運用上の問題はない。
     - table: readygo_outbox
       policy: >-
-        2026-09-20（notice 20260920-STOCKHOME-014、所見A-5・A-6）追加。2種類の削除がある。
-        (1) 置き換え: daily_batchがキューへ投入する直前に、同一householdの status='pending' 行を
-        削除してから最新1件をinsertする。これによりpendingは常に最大1件・最新内容になり、
-        手動実行(POST /api/dashboard/run-batch)による二重投入も、GAS側の夜間トリガー停止時の
-        積み上がりも発生しない。削除件数は readygo_queue_superseded イベントに出る。
-        (2) 保持期間: status='delivered' かつ delivered_at が30日より古い行を削除する。
+        2026-09-20（notice 20260920-STOCKHOME-014、所見A-5・A-6）追加。2026-09-21の
+        第2回VPS管理レビュー（S014-B03・B04・B05）対応で、以下の内容へ更新した。
+        statusは pending → claimed → delivered の3状態（claimed_at列を追加）。
+        (1) 投入: daily_batchがキューへ投入する際、まず新規insertを試み、同一household
+        の既存pending行と衝突（partial unique index違反）した場合はその行の内容をupdate
+        する（削除してから作り直すのではなく、claimed行には一切触れない設計。並行実行
+        （手動×手動・cron×手動）でも household当たりpending最大1件であることを、
+        migration 20260920222509_readygo_outbox_claim が追加した partial unique index
+        （household_id, status='pending'のみ対象）がDBレベルで保証する。production
+        baselineは重複insertを許していたため、migration自体がhouseholdごとに最新1件を
+        残して既存重複を整理してからindexを作成する）。update件数は
+        readygo_queue_superseded イベントに出る。
+        (2) claim: GET /api/bridge/readygo-pending が、単一SQL文で
+        pending→claimedへ原子的に遷移させて返す（FOR UPDATE SKIP LOCKED＋status再確認
+        により、並行する複数GETが同じ行を二重にclaimすることを防ぐ）。
+        (3) ACK: POST /api/bridge/readygo-ack はclaimed行のみを受理しdeliveredへ遷移
+        させる（pendingのまま・既にdeliveredの行はACK対象外）。
+        (4) lease回収: GET呼び出しの先頭で、claimed_atから30分（GAS単体実行の上限6分に
+        十分な余裕を持たせた値）を超えてclaimされたまま残る行を回収する。同一household
+        に新しいpending行が無ければpendingへ戻し（reclaim直後、同一呼び出し内のclaim
+        処理で即座に再claimされレスポンスにも含まれる。reclaim後にpendingのまま残る
+        中間状態は無い）、新しいpending行が既にあれば古い方をsupersede済みとみなして
+        削除する。これによりGASがReadyGo投入前に停止した場合でも通知が永久に失われない。
+        (5) 保持期間: status='delivered' かつ delivered_at が30日より古い行を削除する。
         cron実行(19:55 JST)は全household、世帯を指定した手動実行はその世帯のみが対象。
         削除件数は readygo_outbox_cleaned イベントに出る。
         滞留の可視化として、job_end へ readygo_pending（pending件数）・
         readygo_pending_oldest_age_h（最古pendingの経過時間）・readygo_superseded・
         readygo_cleaned の4fieldを出す。readygo_pending_oldest_age_h が大きい値を
-        取り続ける場合はGAS側の夜間トリガー停止を示すが、閾値超過時の通知経路は未整備
-        （所見C-3として別途対応予定）。
+        取り続ける場合はGAS側の夜間トリガー停止を示すが、閾値超過時のアプリ内表示は
+        所見C-3（notice 20260920-STOCKHOME-015、batch_run_status経由の別表示）で対応
+        済み。ReadyGoキューの滞留そのものに対する専用の通知経路は無い。
       backup_impact: >-
-        削除対象はReadyGoへ投入する集約メッセージ本文と、ACK時のnotification_log記録用の
+        削除・上書き対象はReadyGoへ投入する集約メッセージ本文と、ACK時のnotification_log記録用の
         alerts_json（itemId・reason・1行要約）。いずれも在庫状態から翌日の夜間バッチが
         再生成できる通知キューであり、購入履歴・在庫補正等の業務データは含まない。
         配信実績そのものは notification_log 側に残る（本テーブルの削除では失われない）。

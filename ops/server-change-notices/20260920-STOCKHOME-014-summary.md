@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 7032b6ab999e816f4cf19fffc1f7c400a8524758
+source_commit: a2233497d3ad6b94ca1b11d23c665ea548fad2e8
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
@@ -28,13 +28,20 @@ notice 010〜019の提出内容を参照）
 - `2de0270`（**S014-B01・B02対応**。`readygo_outbox`へ`claimed_at`列＋partial unique
   index追加（migration）、batch.tsのpending投入を「insert・競合時update」方式へ変更、
   bridge.tsのfetch/ACKをclaim方式へ変更。`apps/api`のみ）
-- `7032b6a`（**本notice対象・最終source**。Claudeが実DBで検証中に見つけたtest自体の
-  不具合を修正（`GET /readygo-pending`が全世帯分を返す仕様に対し、testが配列先頭を
+- `7032b6a`（Claudeが実DBで検証中に見つけたtest自体の不具合を修正
+  （`GET /readygo-pending`が全世帯分を返す仕様に対し、testが配列先頭を
   無条件に自世帯の行と仮定していた）。本番実装への変更なし）
 - `d282137`（notice 015再対応（S015-B01）と合わせて発見した、cron相当テストと他test
   fileの並行実行競合への恒久対策（`apps/api/package.json`の`test`scriptへ
   `--test-concurrency=1`追加）。**notice 014・015共通の対応、本noticeの対象外
   としても記載**）
+- `c59cef9`（notice 018のsource_commit hash訂正。`ops/**`のみ。**本noticeの対象外**）
+- `a223349`（**本notice対象・最終source。S014-B03・B04・B05対応**。claim SQLへ
+  `FOR UPDATE SKIP LOCKED`＋`status`再確認を追加（並行GET二重claim防止）、
+  migrationへ既存pending重複の整理DELETEを追加（重複があってもmigration自体が
+  失敗しないようにする）、`GET /readygo-pending`へ未ACK claimedのlease回収を
+  追加（30分超claimedのまま残った行を、新しいpendingが無ければpendingへ戻し
+  同一呼び出しで再claim、新しいpendingがあれば削除する）。`apps/api`のみ）
 
 **本noticeが対象とするのは所見A-5・A-6への対応（夜間バッチのReadyGoキュー重複抑止・
 世帯スコープ・保持期間・claim方式による二重配信防止）。notice 010〜013・016〜019は
@@ -94,6 +101,43 @@ DB全体のhousehold・itemを処理するため、並行実行中の他test fil
 削除と競合する構造的な問題で、notice 015の再対応とあわせて恒久対策
 （`--test-concurrency=1`、commit `d282137`）を適用した。
 
+## VPS管理レビュー結果への対応（第2回：blocked→再提出）
+
+第2回VPS管理レビューで、S014-B01・B02の解消は確認されたが、新たに3点の
+指摘を受けblockedとなった
+（`stockhome_findings_014_019_review_20260920.md` §6参照）。
+
+- **S014-B03**: claim SQLの内側SELECTに`FOR UPDATE SKIP LOCKED`が無く、
+  外側UPDATE条件にも`status = 'pending'`の再確認が無いため、2つの
+  `GET /readygo-pending`が同じpending行を選ぶと、片方の確定後にもう片方が
+  同じ行を再度claimして二重に返しうる。
+- **S014-B04**: production baselineは同一householdへpendingを複数insert
+  できる実装であり、notice 014はまさにその重複を修正する変更である。
+  migrationが既存の重複を整理せず直ちにpartial unique indexを作るため、
+  重複が1件でもあれば`prisma migrate deploy`が失敗しAPIが起動しない。
+- **S014-B05**: `GET /readygo-pending`がclaimした後、GASがReadyGo投入前に
+  停止すると、その通知は再取得も削除もされず永久に配送されない（第1回の
+  「未解決事項」で開示していたが、第2回レビューで解消が必須と判定された）。
+
+対応:
+
+- claim SQLの内側SELECTへ`FOR UPDATE SKIP LOCKED`を追加し、外側UPDATEへ
+  `AND status = 'pending'`を追加した。Claudeが実DBで並行2GETを実際に
+  再現し、修正前は5回中4回で同一行を二重claimすること、修正後は5回中5回
+  とも正しく1回だけclaimされることを確認済み。
+- migrationへ、partial unique index作成の**前**にhouseholdごとの重複
+  pendingを整理するDELETEを追加した（最新の1件を残す）。一時DBで
+  household当たり3件の重複を作成し、migration適用後に最新1件だけが
+  残りindexが正常に作成されることを確認済み。
+- `GET /readygo-pending`の先頭で、30分（GAS単体実行の上限6分に十分な
+  余裕を持たせた値）を超えてclaimされたまま残る行を回収する処理を追加した。
+  同一世帯に新しいpending行が無ければpendingへ戻し（**reclaim処理の直後、
+  同一呼び出し内のclaim処理で即座に再度claimされ、レスポンスにも含まれる**。
+  reclaim後にpendingのまま残る中間状態は無い）、新しいpending行が既にあれば
+  supersede済みとみなして古いclaimed行を削除する。Claudeが実DBで3シナリオ
+  （新pendingなし→再claim、新pendingあり→stale側削除・fresh側がclaim、
+  lease内→完全に無変更）を確認済み。
+
 ## 変更理由
 
 2026-09-03の全体点検所見への対応（優先度「中」2件）。詳細は
@@ -117,6 +161,9 @@ port/bind/domain/health endpoint/起動command/DB schema/migration/volume/cron s
 | ReadyGoキューの状態 | `pending`・`delivered`の2状態 | `pending`・`claimed`・`delivered`の3状態。`GET /readygo-pending`が単一SQL文でpending→claimedへ原子的に遷移させる |
 | ReadyGoキューへの投入 | 既存pendingの有無を見ず無条件にinsert（実行のたびに増える） | insertを試み、household当たりpending最大1件のpartial unique indexに違反したら既存pending行をupdate（並行実行時もDBが一意性を保証） |
 | GAS取得済み行の扱い | batchの置き換え対象になりうる（二重配信・監査欠落の恐れ） | `claimed`行はbatchの置き換え対象から完全に除外される。新しいアラートは別途新規pending行として積まれる |
+| 並行GETでの二重claim | 防止機構なし | `FOR UPDATE SKIP LOCKED`＋`status`再確認で、同じ行が複数の`GET`に同時に返らないことをDBレベルで保証 |
+| migrationと既存重複の関係 | 考慮なし（重複があればmigration自体が失敗しうる） | migration内でhouseholdごとに最新1件を残し重複を整理してからindexを作成する |
+| 未ACKのまま残ったclaimed行 | 永久に配送されない（回収機構なし） | 30分のlease超過で、`GET /readygo-pending`が自動的に回収する（新pending無し→再claim・再配信、新pending有り→supersede済みとして削除） |
 | ACKの対象 | `delivered`以外なら無条件に受理 | `claimed`の行のみ受理（`pending`のまま・既に`delivered`の行はACKされない） |
 | GAS停止時のキュー滞留 | 毎晩積まれ続け、復旧時に最大20通が一度に流れる | 常に最新1件へ置き換わるため積み上がらない |
 | 配信済み(`delivered`)行の保持 | 無制限に残る | 30日を超えた行を削除（cron実行は全世帯、手動実行は当該世帯のみ） |
@@ -166,10 +213,12 @@ secret値は記載していない。
 - schema/format変更: **あり**。`readygo_outbox`へ`claimed_at`列（nullable、既定値なし）と
   partial unique index（`readygo_outbox_pending_household_unique`、`household_id`に対し
   `status = 'pending'`の行のみ）を追加。既存列の削除・型変更は無い
-- migration: `20260920222509_readygo_outbox_claim`（`ALTER TABLE ADD COLUMN`・
-  `CREATE UNIQUE INDEX`のみ）。Claudeがローカル開発DBで生成・適用し、重複するpending
-  insertが実際に拒否されること（`duplicate key value violates unique constraint`）を
-  確認済み
+- migration: `20260920222509_readygo_outbox_claim`（既存pending重複の整理
+  `DELETE`・`ALTER TABLE ADD COLUMN`・`CREATE UNIQUE INDEX`）。Claudeがローカル
+  開発DBで生成・適用し、重複するpending insertが実際に拒否されること
+  （`duplicate key value violates unique constraint`）を確認済み。さらに、
+  一時DBでhousehold当たり3件の重複pendingを作った状態からこのmigrationを
+  適用し、最新1件だけが残りindexが正常に作成されることも確認済み（S014-B04対応）
 - backup対象: なし（削除対象・追加対象とも配信キューの運用状態であり、購入履歴等の
   業務データではない）
 - restore確認: 該当なし
@@ -198,7 +247,13 @@ secret値は記載していない。
   - `npx tsx --test apps/api/src/services/batch.groupTargets.test.ts apps/api/src/services/notifyTarget.test.ts`: passed (9 tests)
   - `batch.readygoQueue.test.ts` was not run by Codex because it requires a real PostgreSQL database; Claude will run it.
 
-  **(A') Codex実施分（S014-B01・B02再対応、task `20260920-015`）**
+  **(A') Codex実施分（第1回再対応S014-B01・B02、task `20260920-015`）**
+
+  - `npm run build --workspace=@stockhome/shared` / `--workspace=@stockhome/api`
+    （内部で`prisma generate`）: passed
+  - `npx tsc --noEmit -p apps/mobile/tsconfig.json`: passed
+
+  **(A'') Codex実施分（第2回再対応S014-B03・B04・B05、task `20260921-001`）**
 
   - `npm run build --workspace=@stockhome/shared` / `--workspace=@stockhome/api`
     （内部で`prisma generate`）: passed
@@ -206,17 +261,26 @@ secret値は記載していない。
 
   **(B) 実DBテスト（ローカルPostgres、Claude実施）**
 
-  - migration検証: `prisma migrate diff`で差分SQLを生成（`ADD COLUMN`のみ。
+  - migration検証（第1回）: `prisma migrate diff`で差分SQLを生成（`ADD COLUMN`のみ。
     partial unique indexは手書き追加）、ローカル開発DBへ適用し、`INSERT`2件で
     2件目が一意制約違反になることを確認
-  - `npx tsx --test apps/api/src/services/batch.readygoQueue.test.ts
-    apps/api/src/routes/bridge.readygoRace.test.ts`: **8件すべて成功**
-    （既存4シナリオ＋並行batch実行でpending 1件のまま（3並行実行）＋
-    claimed行がbatch置換の対象外＋claimed行のACK成功とpending行不変＋
-    未claimのpending行はACKされない、の4シナリオ追加）
-  - `npm test --workspace=@stockhome/api`: **170件すべて成功**（notice 015・016〜019分を
-    含む最新状態、`--test-concurrency=1`適用後に2回連続で170/170を確認。下記
-    「テスト分離の修正経緯」参照）
+  - migration検証（第2回、S014-B04）: 一時DB（`stockhome_migration_test`）で
+    household当たり3件のpending重複を作成し、重複整理DELETE込みのmigrationを
+    適用。householdごとに最新1件だけが残り、indexも正常に作成されることを確認
+  - 並行claim検証（S014-B03）: 修正前後のSQLをそれぞれ5回、実際に2並行実行で
+    比較。修正前は5回中4回で同一行の二重claimを検出、修正後は5回中5回とも
+    正しく1回だけclaimされることを確認
+  - reclaim検証（S014-B05）: 3シナリオ（新pendingなし・新pendingあり・
+    lease内）を一時household上で直接確認。reclaim直後に同一呼び出しの
+    claim処理で即座に再claimされる（pendingのまま残る中間状態は無い）ことを
+    含めて確認
+  - `npx tsx --test --test-concurrency=1 apps/api/src/services/batch.readygoQueue.test.ts
+    apps/api/src/routes/bridge.readygoRace.test.ts
+    apps/api/src/routes/bridge.readygoReclaim.test.ts`: **12件すべて成功**
+    （既存4シナリオ＋並行batch実行1シナリオ＋claim/ACK関連3シナリオ＋
+    並行GET二重claim防止1シナリオ＋reclaim3シナリオ）
+  - `npm test --workspace=@stockhome/api`: **174件すべて成功**（notice 015・
+    016〜019分を含む最新状態）
 
   **(C) テスト分離の修正経緯（task `20260920-008`、`20260920-018`）**
 
@@ -263,8 +327,8 @@ secret値は記載していない。
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
-- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`7032b6a`までのcommitを実際の時系列順で確認。上記release_commits参照）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`7032b6a`はpush済み、local/origin一致確認済み。本noticeの確定分はこれからcommit・pushする）
+- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`a223349`までのcommitを実際の時系列順で確認。上記release_commits参照）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`a223349`はpush済み、local/origin一致確認済み。本noticeの確定分はこれからcommit・pushする）
 - [x] data更新のtransaction・同時実行・途中失敗を確認した（キューの置き換え削除→insertは
   同一バッチ内の連続操作。途中失敗時はpendingが0件になり得るが、翌日の実行で最新内容が
   再度積まれるため復旧する。購入履歴等の業務データは一切変更しない）
@@ -283,14 +347,13 @@ secret値は記載していない。
   アプリ内表示は所見C-3（notice `20260920-STOCKHOME-015`）で別途対応済み
   （夜間バッチ自体の成否表示であり、ReadyGoキュー滞留そのものの専用表示ではない点に
   留意）。
-- `claimed`のままACKされずに残った行（GASの実行失敗等）を掃除する仕組みは無い
-  （`delivered`の30日保持のみ対象）。検証作業でローカル開発DBに70件以上の
-  claimed残留行が生じたことをClaudeが確認・削除した実績あり。production運用で
-  同様の蓄積が問題になった場合は別途対応が必要。
+- 未ACK claimedのlease回収（30分）はS014-B05対応で解消済み。lease値（30分）は
+  GAS単体実行の上限（6分）を踏まえたClaudeの提案値であり、VPS管理側・app owner
+  からの指定値ではない。運用開始後に調整が必要な場合がある。
 
 ## 希望時期
 
-特に指定なし。notice 010〜013と同じ計画にまとめてproduction反映する想定。
+特に指定なし。notice 010〜013・015〜019と同じ計画にまとめてproduction反映する想定。
 
 ## VPS管理チャットへの引き継ぎ
 
@@ -305,4 +368,5 @@ secret値は記載していない。
 - production approval: 未実施
 - related task_id: 20260920-007（初回実装）、20260920-008（テスト分離の修正）、
   20260920-015（S014-B01・B02対応）、20260920-017（testの不具合修正）、
-  20260920-018（並行実行の恒久対策、notice 015と共通）
+  20260920-018（並行実行の恒久対策、notice 015と共通）、
+  20260921-001（S014-B03・B04・B05対応）

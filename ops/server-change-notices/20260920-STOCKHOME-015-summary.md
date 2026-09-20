@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: d282137aef3fa96e242fb1b0c0d7f4d75904885a
+source_commit: 8d0406c69a72ebd141d328fc54ba0d9ce7f9789b
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
@@ -31,9 +31,15 @@ notice 010〜019の提出内容を参照）
   追加、cron成功/失敗/手動実行の恒久test追加、mobile側のバナー表示ロジックを
   純粋関数へ切り出しdedicated test追加、`DashboardScreen`へfocus/resume時の
   再取得を追加。`apps/api`＋`apps/mobile`）
-- `d282137`（**本notice対象・最終source**。cron相当testと他test fileの並行実行
-  競合への恒久対策（`apps/api/package.json`の`test`scriptへ
-  `--test-concurrency=1`追加）。notice 014と共通の対応）
+- `d282137`（cron相当testと他test fileの並行実行競合への恒久対策
+  （`apps/api/package.json`の`test`scriptへ`--test-concurrency=1`追加）。
+  notice 014と共通の対応）
+- `c59cef9`（notice 018のsource_commit hash訂正。`ops/**`のみ。**本noticeの対象外**）
+- `a223349`（notice 014のS014-B03・B04・B05対応。**本noticeの対象外**、notice 014参照）
+- `8d0406c`（**本notice対象・最終source。S015-B03対応**。`batch_run_status`書き込みを
+  独立関数`recordBatchRunStatus`へ切り出し、cron/failureのtestがこれを直接呼ぶ形へ
+  変更（`runDailyBatch()`を一切呼ばなくなり、他世帯データへの副作用が完全に無くなる）。
+  `forceFailureForTest`を削除。`apps/api`のみ）
 
 **本noticeが対象とするのは所見C-3への対応（夜間バッチ失敗のアプリ内表示）。
 notice 010〜014・016〜019は別変更のため分離したままとする。production反映時は
@@ -95,6 +101,37 @@ Claudeが実DBで検証する過程で、追加したcron相当test（`batchRunS
 個別file対応を繰り返していたため）。ローカルで170件（api全体）を2回連続で
 成功させ、再現性を確認済み。
 
+## VPS管理レビュー結果への対応（第2回：blocked→再提出）
+
+第2回VPS管理レビューで、S015-B01・B02の解消は確認されたが、新たに1点の
+指摘を受けblockedとなった
+（`stockhome_findings_014_019_review_20260920.md` §6参照）。
+
+- **S015-B03**: `batchRunStatus.test.ts`のsuccess caseが引数無し
+  `runDailyBatch()`を実行するため、ローカルDB内の**全household**を
+  再計算し、testが作成していない世帯のReadyGo pendingやPush処理にも
+  触れていた（VPS管理側の実行でも`processed: 18`・`households: 2`・
+  `readygo_pending: 9`となり、scope外dataを処理したことが確認された）。
+  `cleanup`はtestが作ったhouseholdだけを対象にしており、これらの副作用を
+  戻していなかった。`--test-concurrency=1`（task `20260920-018`）はtestの
+  **失敗**は防ぐが、**scope外dataへの副作用**は解消しないと指摘された。
+  あわせて「production用処理へ`forceFailureForTest`を露出する必要が
+  なくなる設計を優先する」との指示があった。
+
+対応: `batch_run_status`への書き込みを`runDailyBatch`本体から独立した
+関数`recordBatchRunStatus`へ切り出し、cron成功・cron失敗のテストは
+この関数を**直接呼ぶ**形へ変更した。これにより`runDailyBatch()`（全世帯
+処理）を一度も実行せずに「cron相当の記録が正しく行われ、dashboardへ
+反映されること」を検証できるようになり、他世帯のhousehold・item・
+ReadyGoキュー・push等へ一切触れなくなった。結果として、テスト専用フック
+だった`forceFailureForTest`は不要になり削除した（reviewの指示どおり）。
+「手動実行では更新されない」テストは元々`householdId`指定のためscope外に
+触れておらず、`runDailyBatch`本体の分岐が正しく機能する確認として維持した。
+
+Claudeが実DBで、修正後の`batchRunStatus.test.ts`実行の前後で
+`stock_snapshots`テーブルの行数・内容（全行のchecksum）が完全に一致する
+ことを直接確認した（他世帯データへの副作用が無いことの実証）。
+
 ## 変更理由
 
 2026-09-03の全体点検所見への対応（優先度「中」1件）。詳細は
@@ -124,9 +161,9 @@ port/bind/domain/health endpoint/起動command/cron schedule/DB接続情報/
 - service/container: `stockhome-api-prod`（`apps/api/src/services/batch.ts`・
   `routes/dashboard.ts`の変更、`prisma/schema.prisma`へのモデル追加＋migration。
   route追加・削除は無し、既存fieldの変更は無し。`batch.ts`の
-  `RunDailyBatchOptions`へテスト専用の`forceFailureForTest`フィールドを追加
-  したが、`server.ts`・`routes/dashboard.ts`等のproduction呼び出し元はいずれも
-  指定しないため、実行時の挙動には一切影響しない）
+  `batch_run_status`書き込みを独立関数`recordBatchRunStatus`へ切り出したが、
+  `runDailyBatch`本体の処理内容・呼び出し方は無変更。テスト専用フックだった
+  `forceFailureForTest`は削除済み）
 - URL/port/health: 変更なし
 - cron/timer/worker: schedule（19:55 JST）は変更なし。処理内容へ状態記録を追加
 - dependency: 変更なし
@@ -208,21 +245,29 @@ secret値は記載していない。
   - `npx tsx --test apps/api/src/services/batch.groupTargets.test.ts
     apps/api/src/services/notifyTarget.test.ts`: passed
 
-  **(A') Codex実施分（S015-B01・B02対応、task `20260920-016`）**
+  **(A') Codex実施分（第1回再対応S015-B01・B02、task `20260920-016`）**
   - `npm run build --workspace=@stockhome/shared` / `--workspace=@stockhome/api`: passed
   - `npx tsc --noEmit -p apps/mobile/tsconfig.json`: passed
   - `npx tsx --test apps/mobile/src/lib/batchStatus.test.ts`: passed（5 tests。
     null／failure／26時間超過（stale）／正常／26時間境界の5シナリオ）
+
+  **(A'') Codex実施分（第2回再対応S015-B03、task `20260921-002`）**
+  - `npm run build --workspace=@stockhome/shared` / `--workspace=@stockhome/api`: passed
+  - `npx tsc --noEmit -p apps/mobile/tsconfig.json`: passed
 
   **(B) 実DBテスト（ローカルPostgres、Claude実施）**
   - migration生成: `prisma migrate diff`で差分SQLを生成（`CREATE TABLE`・
     `CREATE UNIQUE INDEX`のみであることを確認）、`prisma migrate deploy`で
     ローカル開発DBへ適用し成功を確認
   - `npx tsx --test apps/api/src/services/batchRunStatus.test.ts`: **3件すべて
-    成功**（cron成功→dashboard反映、cron失敗（`forceFailureForTest`で再現）→
-    dashboard反映、手動実行では`batch_run_status`が更新されないことの3シナリオ）
-  - `npm test --workspace=@stockhome/api`: **170件すべて成功**（`--test-concurrency=1`
-    適用後に2回連続で170/170を確認。下記「テスト分離の修正経緯」参照）
+    成功**（`recordBatchRunStatus`直接呼び出しによるsuccess記録→dashboard反映、
+    failure記録→dashboard反映、`runDailyBatch`の手動実行では
+    `batch_run_status`が更新されないことの3シナリオ）
+  - **scope外data不変の確認（S015-B03対応の核心）**: `batchRunStatus.test.ts`
+    実行の直前・直後で`stock_snapshots`テーブルの行数（18件、不変）と
+    全行のchecksum（`md5(string_agg(...))`）が完全に一致することを確認。
+    他世帯のstock_snapshotへ一切書き込みが発生しないことを実証した
+  - `npm test --workspace=@stockhome/api`: **174件すべて成功**
   - end-to-end確認（スクラッチ環境、commit対象外。第1回提出時点で実施）: 実際の
     `runDailyBatch()`（cron相当、householdId未指定）を実行し`batch_run_status`へ
     `status: 'success'`が記録されることを確認。`GET /api/dashboard`（実HTTP、実認証）が
@@ -265,8 +310,8 @@ secret値は記載していない。
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
-- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`d282137`までの全commitを実際の時系列順で確認。上記release_commits参照）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`d282137`はpush済み、local/origin一致確認済み。本notice fileはこれからcommit・pushする）
+- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`8d0406c`までの全commitを実際の時系列順で確認。上記release_commits参照）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`8d0406c`はpush済み、local/origin一致確認済み。本notice fileはこれからcommit・pushする）
 - [x] data更新のtransaction・同時実行・途中失敗を確認した（`batch_run_status`はjob_nameの一意制約による単純なupsertで、失敗しても既存`try/catch`が握りつぶしバッチ本体の成否には影響しない。途中失敗時は前回値が残るだけで、翌日の実行で最新値へ更新される）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（上記「Deploy・rollback」参照。新規テーブルはrollback後も残存するが無害）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した（job: daily_batchの処理内容変更のみ、schedule不変。log: 変更なし。retention: 本テーブルは1行のみで増加しないため保持ポリシー不要。runtime/dependency: 変更なし。client配信: mobile側UI変更のためEAS Update配信が必要）
@@ -301,4 +346,5 @@ secret値は記載していない。
 - production approval: 未実施
 - related task_id: 20260920-009（初回実装、migration生成でblocked）、
   20260920-010（migration配置・commit）、20260920-016（S015-B01・B02対応）、
-  20260920-018（並行実行の恒久対策、notice 014と共通）
+  20260920-018（並行実行の恒久対策、notice 014と共通）、
+  20260921-002（S015-B03対応）
