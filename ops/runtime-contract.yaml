@@ -207,6 +207,12 @@
 #     .env.production.exampleへの実際の受け渡し設定もあわせて反映。本commitはドキュメント・
 #     Compose設定のみで、Codex実装分（accountRateLimit.tsの上限付きTTL化等）は別task
 #     20260920-004で対応中。production未反映。
+#   2026-09-20 (task 20260920-013): 所見C-8（npm audit残件・runtime image肥大化）・
+#     A-9（mobile平文HTTP全面許可）へ対応し、notice 20260920-STOCKHOME-017を作成した。
+#     fastify更新・Dockerfileのruntime image slim化・prismaの依存分類修正はClaudeが
+#     直接検証・commit（依存更新はCLAUDE.mdの例外規定）。known_gaps/resolved_gapsを
+#     更新し、対応完了に伴いops/investigations/OPS-P1-08-npm-audit-findings.mdを削除した
+#     （ファイル自身の指示どおり）。production未反映。
 #   2026-09-20 (task 20260920-009/010): 所見C-3（バッチ失敗が誰にも届かない）へ対応し、
 #     notice 20260920-STOCKHOME-015を作成した。新規テーブルbatch_run_statusを追加
 #     （migration 20260920210514_add_batch_run_status）、data.field_semanticsへ記載。
@@ -743,12 +749,32 @@ known_gaps:
     正式なイメージバージョン管理・ロールバック手順が未整備（deploy.rollback参照）。暫定手順は記載済みだが、
     正式な仕組み（タグ付きイメージ保持等）は別途整備が必要。
   - >-
-    OPS-P1-08のPhase Aで解消可能なdependencyを更新した後も、node-cron 3.0.3 / uuid 8.3.2のmoderateと、
-    xlsx 0.18.5のhighが残る。現構成での到達可能性は低いが、node-cron major update、xlsxの期限付き
-    リスク受容・代替library化・runtime imageからのdevDependencies除外を個別に判断する必要がある。
+    2026-09-20（所見C-8、notice 20260920-STOCKHOME-017）時点で、node-cron 3.0.3が依存する
+    uuid 8.3.2のmoderate脆弱性のみ残る。node-cron 4.x系はsemver majorであり、API差分
+    （コンストラクタ引数、`cron.schedule(...)`呼び出し方の変更有無）を確認してから採否を
+    判断する必要がある。現状のreachability評価（`node_modules/node-cron`は`uuid.v4()`を
+    引数なしで呼ぶのみで、脆弱な経路は使われていない）は変わっていない。
 
 # 2026-08-31〜09-02 時点で解消済みの事項
 resolved_gaps:
+  - >-
+    2026-09-20（所見C-8、notice 20260920-STOCKHOME-017）: OPS-P1-08調査
+    （ops/investigations/OPS-P1-08-npm-audit-findings.md、対応完了により削除済み）の
+    残件のうち2点を解消。(1) fastify 5.8.5→5.12.5（`npm audit fix`、非破壊的）。
+    修正対象の2件（schema validation bypass、X-Forwarded-*スプーフィング）はいずれも
+    本アプリの実際の使い方（Zod経由のvalidationのみ、trustProxyは数値ではなくIP配列）
+    では到達しないことを確認済みだが、defense-in-depthとして更新した。
+    (2) `apps/api/Dockerfile`のruntimeステージを本番専用の別install
+    （`npm ci --omit=dev`）へ変更し、xlsx（devDependency、high脆弱性×2、upstream修正
+    無し）・typescript・tsxをruntime imageから除外した（node_modules: 163MB→53MB）。
+    `prisma`はCLIが`entrypoint.ts`の起動時migrationで実際に使われるためdependenciesへ
+    再分類した（誤ってdevDependencies扱いだった）。Prisma Clientは別installでは
+    未生成のままになるため、builderが生成した`node_modules/.prisma`をruntimeへ
+    そのままコピーする方式にした（`npx prisma generate`の再実行は、ローカル未installだと
+    npmが最新の非互換メジャーバージョンを取得してしまうため採用しなかった）。
+    ローカルDockerで`docker build`・`docker run`（実DB接続）・migration成功・
+    `/health`200・DB依存route応答・全152テストを確認済み。node-cron major updateは
+    引き続きknown_gaps参照。
   - >-
     2026-09-15、VPS task 20260915-002でnotice 007・008の固定source 038e173を
     1つのAPI artifactとしてproduction反映。隔離restore・対象test29/29、health200/200、
