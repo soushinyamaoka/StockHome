@@ -11,7 +11,7 @@
 //   → ReadyGo スプレッドシートの Inbox に行追加
 //   → POST /api/bridge/readygo-ack → ここで初めて notification_log を記録
 // （「Inbox 投入成功時のみ notification_log 記録」という GAS 版の方針を踏襲）
-import type { Item, StockSnapshot } from '@prisma/client';
+import { Prisma, type Item, type StockSnapshot } from '@prisma/client';
 import { appLogger, ERROR_KINDS, LOG_EVENTS, safeErr, type AppLogger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { updateCountedInInventory, recalculateAllStocks } from './stockCalc';
@@ -118,6 +118,36 @@ export interface RunDailyBatchOptions {
 }
 
 const READYGO_DELIVERED_RETENTION_DAYS = 30;
+
+async function upsertPendingReadyGoRow(
+  householdId: string,
+  body: string,
+  alertsJson: Prisma.InputJsonValue
+): Promise<'created' | 'updated'> {
+  const now = new Date();
+  try {
+    await prisma.readyGoOutbox.create({
+      data: { householdId, body, alertsJson, status: 'pending', createdAt: now },
+    });
+    return 'created';
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      // A concurrent batch may have created the pending row first. Update it without
+      // touching a row already claimed by GAS.
+      const updated = await prisma.readyGoOutbox.updateMany({
+        where: { householdId, status: 'pending' },
+        data: { body, alertsJson, createdAt: now },
+      });
+      if (updated.count > 0) return 'updated';
+      // The pending row may have been claimed between the failed insert and update.
+      await prisma.readyGoOutbox.create({
+        data: { householdId, body, alertsJson, status: 'pending', createdAt: now },
+      });
+      return 'created';
+    }
+    throw e;
+  }
+}
 
 function dailyBatchRunId(date = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -270,30 +300,24 @@ export async function runDailyBatch(
       }
 
       for (const [householdId, list] of byHousehold) {
-        // A row fetched by GAS can be superseded before ACK; bridge ACK safely ignores its missing row.
-        const superseded = await prisma.readyGoOutbox.deleteMany({
-          where: { householdId, status: 'pending' },
-        });
-        result.readygoSuperseded += superseded.count;
-        if (superseded.count > 0) {
+        const outcome = await upsertPendingReadyGoRow(
+          householdId,
+          buildBroadcastMessage(list),
+          list.map((target) => ({
+            itemId: target.item.id,
+            reason: target.reason,
+            line: buildItemSummaryLine(target.item, target.snapshot, target.reason),
+          }))
+        );
+        if (outcome === 'updated') {
+          result.readygoSuperseded += 1;
           logger.info({
             event: LOG_EVENTS.READYGO_QUEUE_SUPERSEDED,
             job: 'daily_batch',
             run_id: runId,
-            household_superseded: superseded.count,
+            household_id: householdId,
           });
         }
-        await prisma.readyGoOutbox.create({
-          data: {
-            householdId,
-            body: buildBroadcastMessage(list),
-            alertsJson: list.map((target) => ({
-              itemId: target.item.id,
-              reason: target.reason,
-              line: buildItemSummaryLine(target.item, target.snapshot, target.reason),
-            })),
-          },
-        });
         queuedHouseholds++;
         result.queued = true;
       }

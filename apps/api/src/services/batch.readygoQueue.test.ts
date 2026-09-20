@@ -115,3 +115,20 @@ test('batch reports pending ReadyGo queue age', async () => {
     await scope.cleanup();
   }
 });
+
+test('concurrent batch runs for the same household leave exactly one pending row', async () => {
+  const scope = await createAlertScope();
+  try {
+    await Promise.all([
+      runDailyBatch(undefined, { householdId: scope.householdId }),
+      runDailyBatch(undefined, { householdId: scope.householdId }),
+      runDailyBatch(undefined, { householdId: scope.householdId }),
+    ]);
+    const pendingRows = await prisma.readyGoOutbox.findMany({
+      where: { householdId: scope.householdId, status: 'pending' },
+    });
+    assert.equal(pendingRows.length, 1);
+  } finally {
+    await scope.cleanup();
+  }
+});

@@ -125,12 +125,21 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
 
   // ReadyGo 配信待ちキューの取得（GAS の夜間トリガーが呼ぶ）
   app.get('/readygo-pending', async () => {
-    const rows = await prisma.readyGoOutbox.findMany({
-      where: { status: 'pending' },
-      orderBy: { createdAt: 'asc' },
-      take: 20,
-    });
-    return { pending: rows.map((r) => ({ id: r.id, body: r.body })) };
+    const claimed = await prisma.$queryRaw<{ id: string; body: string }[]>`
+      WITH claimed_rows AS (
+        UPDATE readygo_outbox
+        SET status = 'claimed', claimed_at = now()
+        WHERE id IN (
+          SELECT id FROM readygo_outbox
+          WHERE status = 'pending'
+          ORDER BY created_at ASC
+          LIMIT 20
+        )
+        RETURNING id, body, created_at
+      )
+      SELECT id, body FROM claimed_rows ORDER BY created_at ASC
+    `;
+    return { pending: claimed };
   });
 
   // ReadyGo Inbox 投入完了の ACK
@@ -144,7 +153,7 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
 
     for (const id of data.ids) {
       const row = await prisma.readyGoOutbox.findUnique({ where: { id } });
-      if (!row || row.status === 'delivered') continue;
+      if (!row || row.status !== 'claimed') continue;
 
       await prisma.readyGoOutbox.update({
         where: { id },

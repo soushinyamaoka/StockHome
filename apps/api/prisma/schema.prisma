@@ -354,12 +354,16 @@ model ReadyGoOutbox {
   householdId String    @map("household_id")
   body        String // ReadyGo Inbox に投入する集約メッセージ本文
   alertsJson  Json      @map("alerts_json") // [{itemId, reason, line}] ACK時の notification_log 記録用
-  status      String    @default("pending") // pending | delivered
+  status      String    @default("pending") // pending | claimed | delivered
   createdAt   DateTime  @default(now()) @map("created_at")
+  claimedAt   DateTime? @map("claimed_at") // GETがpendingをclaimした時刻（所見A-5/A-6再対応、S014-B02）
   deliveredAt DateTime? @map("delivered_at")
 
   @@index([status])
   @@map("readygo_outbox")
+  // household_idごとにpending行は最大1件（並行batch実行での二重行を防ぐ、S014-B01）。
+  // Prismaの@@uniqueは条件付きindexを表現できないため、migration.sqlへ手書きする
+  // partial unique index（CREATE UNIQUE INDEX ... WHERE status = 'pending'）で保証する。
 }
 
 // プッシュ通知の送信先端末（Expo Push Token）
