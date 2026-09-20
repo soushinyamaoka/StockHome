@@ -17,6 +17,7 @@ import { Section } from '../components/Section';
 import { Button } from '../components/Button';
 import { DaysCounter } from '../components/DaysCounter';
 import { ErrorState } from '../components/ErrorState';
+import { BatchStatusBanner } from '../components/BatchStatusBanner';
 import { useAuth } from '../hooks/useAuth';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../theme';
 import { remainQtyLabel, isSnoozed } from '../lib/stockUtils';
@@ -89,6 +90,8 @@ export default function DashboardScreen() {
       </View>
 
       {/* きれそうな消耗品（上位5件。総数は alertTotal） */}
+      <BatchStatusBanner lastBatchRun={data?.lastBatchRun ?? null} />
+
       <Section title="そろそろ切れそう" count={alertTotal}>
         {isError ? (
           <ErrorState onRetry={refetch} />

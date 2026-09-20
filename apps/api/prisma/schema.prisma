@@ -423,3 +423,19 @@ model AppConfig {
   @@unique([householdId, key])
   @@map("app_configs")
 }
+
+// 夜間バッチ(daily_batch)の直近実行結果。所見C-3対応。
+// job_name ごとに1行だけを保持する単純なstatusテーブル（household非依存）。
+// 手動実行(householdId指定時)は、このテーブルを更新しない。
+model BatchRunStatus {
+  id         String   @id @default(cuid())
+  jobName    String   @unique @map("job_name")
+  status     String // success | failure
+  runId      String   @map("run_id")
+  ranAt      DateTime @map("ran_at")
+  durationMs Int      @map("duration_ms")
+  errorName  String?  @map("error_name")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("batch_run_status")
+}

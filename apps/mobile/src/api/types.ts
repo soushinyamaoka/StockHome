@@ -149,6 +149,11 @@ export interface DashboardData {
   pendingCandidates: number;
   todayNotifications: number;
   totalActiveItems: number;
+  lastBatchRun: {
+    status: 'success' | 'failure';
+    ranAt: string;
+    ageHours: number;
+  } | null;
 }
 
 export interface ReflectionDto {

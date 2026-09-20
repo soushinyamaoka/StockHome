@@ -435,6 +435,31 @@ export async function runDailyBatch(
     }
     throw e;
   } finally {
+    if (!options.householdId) {
+      try {
+        await prisma.batchRunStatus.upsert({
+          where: { jobName: 'daily_batch' },
+          create: {
+            jobName: 'daily_batch',
+            status,
+            runId,
+            ranAt: new Date(startedAt),
+            durationMs: Date.now() - startedAt,
+            errorName: status === 'failure' ? (failureName ?? null) : null,
+          },
+          update: {
+            status,
+            runId,
+            ranAt: new Date(startedAt),
+            durationMs: Date.now() - startedAt,
+            errorName: status === 'failure' ? (failureName ?? null) : null,
+          },
+        });
+      } catch {
+        // 状態記録自体の失敗でjob_endログや本来のバッチ結果を握りつぶさない
+      }
+    }
+
     const line = {
       event: LOG_EVENTS.JOB_END,
       job: 'daily_batch',

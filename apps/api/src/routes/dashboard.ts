@@ -63,12 +63,27 @@ const dashboardRoutes: FastifyPluginAsync = async (app) => {
       where: { householdId, createdAt: { gte: today } },
     });
 
+    const lastBatchRunRow = await prisma.batchRunStatus.findUnique({
+      where: { jobName: 'daily_batch' },
+    });
+    const lastBatchRun = lastBatchRunRow
+      ? {
+          status: lastBatchRunRow.status,
+          ranAt: lastBatchRunRow.ranAt.toISOString(),
+          ageHours:
+            Math.round(
+              ((Date.now() - lastBatchRunRow.ranAt.getTime()) / (60 * 60 * 1000)) * 10
+            ) / 10,
+        }
+      : null;
+
     return {
       alerts: topAlerts,
       alertTotal,
       pendingCandidates,
       todayNotifications,
       totalActiveItems: items.length,
+      lastBatchRun,
     };
   });
 
