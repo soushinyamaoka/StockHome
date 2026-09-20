@@ -199,6 +199,14 @@
 #     詳細はdata.persistent_paths.backup_policyを参照。Claudeが本ファイルへ反映し、
 #     VPS管理側へ再レビュー提出する。本commitはドキュメント更新のみで、
 #     production API/DB・runtime・deployには一切変更なし。
+#   2026-09-20: notice 20260920-STOCKHOME-013（所見A-8、rate limit導入）のVPS管理レビューで
+#     blockedとなった指摘のうち、TRUSTED_PROXY_IPS環境変数の追加とnginxのXFF上書き挙動の記載を
+#     Claudeが本ファイルへ反映した。VPS管理側実測値172.19.0.1をconfig.env_varsへ追記し、
+#     network.publicへnginxの転送ヘッダ仕様（X-Real-IP上書き・X-Forwarded-For追記、proxy-addrの
+#     右から左への走査で詐称prefixが信頼されないこと）を記載。docker-compose.prod.yml・
+#     .env.production.exampleへの実際の受け渡し設定もあわせて反映。本commitはドキュメント・
+#     Compose設定のみで、Codex実装分（accountRateLimit.tsの上限付きTTL化等）は別task
+#     20260920-004で対応中。production未反映。
 #   2026-09-19 (commit 12ac1a5の再レビュー): VPS管理側が方針本文の整合を確認（local
 #     HEAD・cached origin/main・実remote mainがcommit一致、変更はruntime-contract.yaml
 #     への15行追加のみでbuild input変更なし、YAML parse成功、backup_policyの内容が
@@ -215,7 +223,7 @@ app: stockhome
 
 canonical_repo: https://github.com/soushinyamaoka/StockHome.git
 canonical_ref: main
-updated_at: 2026-09-19
+updated_at: 2026-09-20
 verified_against_runtime: 2026-09-19  # backup_policy追加分をVPS管理側が2026-09-19の再レビューで
   # 実機・証跡と照合済み（VPS内03:00 pg_dump 14世代、NAS 03:30 pull、snapshot 04:00・
   # 日次7/週次4/月次12、2026-09-19隔離復元結果、NAS側設定未確認の記載、いずれも一致）。
@@ -242,6 +250,13 @@ network:
     - url: https://stockhome.homehub-tools.dedyn.io
       upstream: 127.0.0.1:4002
       tls: letsencrypt
+      # nginxの転送ヘッダ仕様（VPS管理側確認、notice 20260920-STOCKHOME-013）:
+      # X-Real-IP は接続元IPで上書き。X-Forwarded-For は受信値の末尾へ接続元IPを追記する
+      # （クライアントの詐称値は保持されたまま残るが、末尾に本当の接続元IPが必ず追加される）。
+      # このためAPI側は trustProxy:true を使わず、TRUSTED_PROXY_IPS（直前proxyのみ）を
+      # 信頼するよう構成している。Fastify(proxy-addr)はXFFを右から左へ走査し最初の非信頼
+      # 値を採用するため、nginxが末尾に追記した本当の接続元IPが正しく採用され、
+      # クライアント側の詐称prefixは信頼されない。
   health:
     internal:
       path: /health
@@ -263,6 +278,14 @@ config:
     - { name: POSTGRES_USER, required: true, secret: true }
     - { name: POSTGRES_PASSWORD, required: true, secret: true }
     - { name: POSTGRES_DB, required: true, secret: false }
+    - { name: TRUSTED_PROXY_IPS, required: false, secret: false }
+      # notice 20260920-STOCKHOME-013（所見A-8）。server.ts の resolveTrustedProxies が
+      # Fastifyのtrust proxyへ渡す、直前proxy（nginx）のIPのカンマ区切りリスト。
+      # 未設定時はコード既定値 127.0.0.1,::1 にfallbackするが、本番はnginx→APIコンテナ間が
+      # Docker bridge network経由のため、この既定値とは一致しない。VPS管理側が2026-09-20に
+      # 実測した値は 172.19.0.1（stockhome_default networkのgateway IP）。docker-compose.prod.yml
+      # のapi.environmentへ渡し、.envに設定する。Docker bridge networkの再作成等でgateway IPが
+      # 変わり得るため、nginx-API間の接続経路が変わった場合はVPS管理側で再測定が必要。
     - { name: HISTORICAL_REPARSE_ENABLED, required: false, secret: false }
       # notice 20260907-STOCKHOME-006。'true'のときだけ GET/POST /api/bridge/reparse-candidates・
       # GET /api/bridge/reparse-progress を有効化する一時フラグ（未設定時は404）。
