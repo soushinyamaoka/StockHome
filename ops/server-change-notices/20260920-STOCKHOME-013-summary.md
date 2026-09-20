@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: dbff6c9bb8b67a4448c0e61f9da286f5adba3ee5
+source_commit: 0f27da3bbcd9a33935675321ee2fa7c0e3ac56b0
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
@@ -23,15 +23,31 @@ release_commits:（baseline以降、実際のcommit時系列順。notice 012以�
 - （中略。notice 010・011・012までの全commitは各noticeのrelease_commits参照）
 - `b8c0e71`（notice `20260920-STOCKHOME-012`のsource。所見A-2/A-7対応、JWT有効期限延長）
 - `b33dcb4`（notice 012の新規作成。`ops/**`のみ）
-- `dbff6c9`（**本notice対象・source**。所見A-8対応、rate limit導入。`apps/api`のみ）
+- `dbff6c9`（所見A-8対応、rate limit導入。`apps/api`のみ）
+- `96864a6`（本noticeの新規作成。`ops/**`のみ）
+- `a3468cd`（notice `20260920-STOCKHOME-012`第1回レビュー対応のテスト追加。
+  `apps/api/src/entrypoint.env.test.ts`・`apps/api/src/plugins/auth.test.ts`のみ。
+  **本noticeの対象外**）
+- `ade5825`（**Claude直接反映**。`docker-compose.prod.yml`・
+  `.env.production.example`へVPS管理側実測値`TRUSTED_PROXY_IPS=172.19.0.1`の
+  受け渡しを追加、`ops/runtime-contract.yaml`へ同値とnginxのXFF上書き挙動を記載。
+  コード変更なし）
+- `0f27da3`（**本notice対象・最終source**。第1回VPS管理レビューの指摘対応。
+  `accountRateLimit.ts`を上限付きTTL store化＋非string email型検査を追加、
+  `resolveTrustedProxies`を`lib/trustedProxies.ts`へ抽出しtrusted proxy／
+  詐称XFFのテストを追加。task `20260920-004`）
 
-**本noticeが対象とするのは`dbff6c9`のみ（rate limit導入）。notice 010
-（deploy/rollback機構）・011（mobile UI・push payload）・012（A-2/A-7・JWT期限）は
-別変更のため分離したままとする。**
+**本noticeが対象とするのはrate limit導入一式（`dbff6c9`の実装＋`ade5825`の
+Compose/runtime-contract反映＋`0f27da3`の再提出分修正）。notice 010
+（deploy/rollback機構）・011（mobile UI・push payload）・012（A-2/A-7・
+JWT期限）は別変更のため分離したままとする。**
 
 impact_level: L2
 
-status: ready_for_review
+status: ready_for_review（第1回VPS管理レビューでblocked。指摘5点のうち
+TRUSTED_PROXY_IPS配線・runtime-contract記載はClaudeが直接反映、残り3点
+（TTL store化・型検査・trusted proxy/詐称XFFテスト）はtask `20260920-004`で
+対応し再提出。下記「VPS管理レビュー結果への対応」参照）
 
 created_by: Claude
 
@@ -56,6 +72,40 @@ deployment_status: not_started
   （nginx）のみを信頼する設計にした。
 - **VPS管理側の推奨により、IP単独ではなく短時間のIP単位＋アカウント単位を
   併用している。**
+
+## VPS管理レビュー結果への対応（第1回blocked→再提出）
+
+第1回VPS管理レビューでblockedとなり、以下5点の指摘を受けた。VPS管理側が
+nginx→APIコンテナ間の直前proxy IPを実測し、`172.19.0.1`と判明した。
+
+1. **ComposeからTRUSTED_PROXY_IPSを渡し、runtime-contractにも追加**
+   → Claudeが直接対応（commit `ade5825`）。`docker-compose.prod.yml`の
+   `api.environment`へ`TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS}`を追加、
+   `.env.production.example`へ実測値`172.19.0.1`を追加（Docker bridge
+   networkの実装詳細に依存するため、ネットワーク再作成等で値が変わり得る
+   旨を注記）、`ops/runtime-contract.yaml`のconfig.env_varsとnetwork.public
+   へ同値・nginxのXFF挙動を記載した。
+2. **account rate limitを上限付きTTL storeへ変更**
+   → `apps/api/src/lib/accountRateLimit.ts`に`maxEntries`（既定5000）を
+   導入。新規key追加時のみ期限切れ削除→なお上限超過なら挿入順で
+   evictionする（task `20260920-004`、commit `0f27da3`）。
+3. **非文字列emailの型検査を追加**
+   → 同ファイルの`extractEmail`結果に`typeof rawEmail !== 'string'`の
+   ガードを追加し、数値・配列・オブジェクト等が渡っても`.trim()`で
+   例外を投げず素通りするよう修正（同commit）。
+4. **trusted proxy／詐称XFFのテストを追加**
+   → `resolveTrustedProxies`を副作用の無い`apps/api/src/lib/trustedProxies.ts`
+   へ抽出し（ロジック変更なし）、`Fastify({trustProxy: ['172.19.0.1']})`＋
+   `app.inject({remoteAddress, headers})`で、(a) 信頼済みproxyがXFF末尾へ
+   追記した実IPが正しく採用され、クライアントの詐称prefixが無視されること、
+   (b) 信頼されていない接続元からのXFFは完全に無視され生の接続元IPが
+   使われること、の2シナリオを検証するテストを追加した（同commit）。
+5. **NginxのXFF上書きをproduction前提へ記載**
+   → Claudeが直接対応（commit `ade5825`）。`ops/runtime-contract.yaml`の
+   `network.public`へ、nginxが`X-Real-IP`を接続元IPで上書き・
+   `X-Forwarded-For`は受信値の末尾へ接続元IPを追記する設定であること、
+   Fastify(proxy-addr)が右から左へ走査し最初の非信頼値を採用するため
+   詐称prefixが信頼されないことを記載した。
 
 ## 変更理由
 
@@ -109,8 +159,8 @@ port/bind/domain/health endpoint/起動command/DB schema/migration/volume/cron/
 ## env・secret contract
 
 - 変更: あり
-- 変数名・secret種類のみ: `TRUSTED_PROXY_IPS`（新規、secretではない。カンマ区切りのIPリスト。未設定時は既定値`127.0.0.1,::1`が使われるため、VPS側`.env`への追加は必須ではないが、実測確認後に正しい値を明示設定することを推奨する）
-- provisioning/rotation: 不要
+- 変数名・secret種類のみ: `TRUSTED_PROXY_IPS`（新規、secretではない。カンマ区切りのIPリスト。`docker-compose.prod.yml`から明示的に渡すようになった。VPS管理側の実測値は`172.19.0.1`。未設定時はコード側の既定値`127.0.0.1,::1`にfallbackするが、production運用では`.env`への明示設定が前提）
+- provisioning/rotation: `.env`へ`TRUSTED_PROXY_IPS=172.19.0.1`を設定（`.env.production.example`に記載済み）。Docker bridge networkの再作成等でgateway IPが変わった場合はVPS管理側で再測定・再設定が必要
 
 secret値は記載していない。
 
@@ -138,19 +188,33 @@ secret値は記載していない。
   - `npm run build --workspace=@stockhome/shared` / `--workspace=@stockhome/api`: passed
   - `npx tsc --noEmit -p apps/mobile/tsconfig.json`: passed
 
-  **(B) DB不要テスト（Codex実施）**
+  **(B) DB不要テスト（Codex実施、第1回レビュー分）**
   - `apps/api/src/lib/accountRateLimit.test.ts`（5件）: 同一namespace・同一email
     への試行が上限超過で429、異なるemailは別バケット、異なるnamespace
     （login/register）は同じemailでも別バケット、大文字小文字違いのemailは
     同一バケット、windowMs経過後のリセット、`Retry-After`ヘッダの存在を検証。全件成功
 
-  **(C) フルテストスイート（ローカルPostgres、Claude実施）**
-  - `npm test --workspace=@stockhome/api`: **133件すべて成功**（既存128件＋
+  **(B') DB不要テスト（Codex実施、再提出分。task `20260920-004`）**
+  - `npx tsx --test apps/api/src/lib/accountRateLimit.test.ts
+    apps/api/src/lib/trustedProxies.test.ts`: passed（12 tests）
+    - `accountRateLimit.test.ts`追加分: 容量上限（`setMaxEntriesForTest`で
+      小さい上限を設定し、上限超過時にstoreサイズが増え続けないことを確認）、
+      非string email（数値・配列を送っても500にならず素通りすることを確認）
+    - `trustedProxies.test.ts`（新規）: `resolveTrustedProxies()`の未設定/
+      空白/カンマ区切りparseの単体テスト3件、`Fastify({trustProxy:
+      ['172.19.0.1']})`での信頼済みproxy経由の詐称XFF prefix無視テスト、
+      信頼されていない接続元からのXFF完全無視テストの計5件
+
+  **(C) フルテストスイート（ローカルPostgres、Claude実施。第1回・再提出分とも実施）**
+  - 第1回: `npm test --workspace=@stockhome/api`: 133件すべて成功（既存128件＋
     新規5件）。既存テスト（無効化ユーザーテスト等）が新しいrate limitの
     カウンタと衝突しないことも確認済み（各テストが一意なemailを使用するため）
+  - 再提出分: `npm test --workspace=@stockhome/api`: **143件すべて成功**
+    （notice 012のJWT/entrypointテスト等を含む最新状態での全件再確認。
+    リグレッション無し）
 
   **(D) 実route・実DBを使ったend-to-end確認（Claude実施。スクラッチ環境、
-  commit対象外）**
+  commit対象外。第1回レビュー時点で実施）**
   - 実際のFastifyアプリ（`authPlugin`＋`authRoutes`を実際にmountしたインスタンス）
     と実PostgreSQLに対し、同一emailで6回連続ログインを試行:
     5回目まで200、6回目で429・`Retry-After: 900`（15分）を確認
@@ -176,8 +240,8 @@ secret値は記載していない。
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
-- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`dbff6c9`までのcommitを実際の時系列順で確認。上記release_commits参照）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`dbff6c9`はpush済み、local/origin一致確認済み。本notice fileはこれからcommit・pushする）
+- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`0f27da3`までのcommitを実際の時系列順で確認。上記release_commits参照）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`0f27da3`はpush済み、local/origin一致確認済み。本notice fileはこれからcommit・pushする）
 - [ ] data更新のtransaction・同時実行・途中失敗・再実行を確認した — 該当なし（DBデータ更新を伴わない変更のため。rate limitのstateはin-memory）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（本変更はimage rollbackのみで完全に戻せる。data rollbackは不要）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した（job/log/retention: 該当なし。runtime/dependency: `@fastify/rate-limit`追加のみ。client配信: mobile側の変更を含まないため該当なし）
@@ -188,17 +252,19 @@ secret値は記載していない。
 
 ## 未解決事項
 
-- **nginxからDocker経由でAPIコンテナへ接続した際の実際の接続元IPが未確認。**
-  `docker-compose.prod.yml`はAPIを`127.0.0.1:4002:4002`でport publishしており、
-  nginxからの接続がコンテナ内から実際にどのIP（`127.0.0.1`かDocker bridge
-  gatewayのIPか）として観測されるかは、Docker側の実装詳細に依存し、リポジトリの
-  読解だけでは確定できなかった。`TRUSTED_PROXY_IPS`は環境変数で上書き可能にして
-  あるため、初回production利用時にVPS管理側で実測確認のうえ、必要なら値を
-  設定していただきたい。誤っていた場合の失敗モードは安全側（詐称されたIPを
-  信頼する方向には倒れない）であることは確認済み。
+- ~~nginxからDocker経由でAPIコンテナへ接続した際の実際の接続元IPが未確認~~
+  → **解決済み**。VPS管理側が実測し`172.19.0.1`と判明。
+  `docker-compose.prod.yml`・`.env.production.example`へ配線し、
+  `ops/runtime-contract.yaml`へ記録した（上記「VPS管理レビュー結果への対応」
+  参照）。Docker bridge networkの実装詳細に依存する値のため、ネットワーク
+  再作成等で変わり得る点は注記済み（再測定が必要になった場合はVPS管理側で
+  対応）。
 - rate limitの具体的な上限値（IPベース20回/分、アカウントベース5回/15分）は
   Claudeの提案値であり、VPS管理側・app ownerからの指定値ではない。運用開始後に
   厳しすぎる／緩すぎると判断された場合は調整が必要。
+- account rate limitの上限付きTTL storeの容量（`maxEntries=5000`）も
+  Claudeの提案値。単一世帯・低頻度利用の通常運用では到達しない想定だが、
+  運用開始後に不足・過剰と判断された場合は調整が必要。
 
 ## 希望時期
 
@@ -215,4 +281,4 @@ secret値は記載していない。
 - app owner: 未実施
 - VPS management review: 未実施
 - production approval: 未実施
-- related task_id: 20260920-002
+- related task_id: 20260920-002（実装）、20260920-004（第1回レビュー指摘への対応）

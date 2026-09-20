@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: b8c0e7140a4939dec368374ccfe05e77efe35e41
+source_commit: a3468cdc4c202c896d81067680e544daf7df69d0
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
@@ -25,16 +25,22 @@ release_commits:（baseline以降、実際のcommit時系列順）
 - `12ac1a5`（`ops/runtime-contract.yaml`のみ、C-2バックアップ方針記録）
 - `ad432fb`（notice `20260919-STOCKHOME-011`。所見A-1/A-3/B-5対応。**本noticeの対象外**、011で`accepted`済み）
 - `084d1d1`/`a9200ee`/`280b101`/`611dbcf`/`71da90f`/`741eeec`/`dcccd40`/`274a7b6`/`b0c1535`/`e5ac6f8`/`3a7c9fb`/`e5d4d62`（notice `20260919-STOCKHOME-010`、C-5ロールバック機構。**本noticeの対象外**、010で`accepted`済み）
-- `b8c0e71`（**本notice対象・source**。所見A-2・A-7対応、JWT有効期限延長。`apps/api`のみ）
+- `b8c0e71`（所見A-2・A-7対応、JWT有効期限延長。`apps/api`のみ）
+- `96864a6`/`dbff6c9`/`b33dcb4`（notice `20260920-STOCKHOME-013`、A-8 rate limit導入関連。**本noticeの対象外**、013で別途扱う）
+- `a3468cd`（**本notice対象・source。第1回VPS管理レビューの指摘対応**。
+  `JWT_SECRET`未設定・空文字時の起動失敗テスト、新規JWTのexp-iat=90日テストを
+  追加。`entrypoint.ts`・`plugins/auth.ts`・`routes/auth.ts`の実装自体に差分は
+  無い（テスト追加のみ）。task `20260920-003`）
 
-**本noticeが対象とするのは`b8c0e71`のみ（認証まわりのAPI変更）。notice 010
-（deploy/rollback機構）・011（mobile UI・push payload）とは無関係な変更のため、
-分離したままとする。両notice ID・全release commitについては前回・前々回の
-notice 010提出内容を参照。**
+**本noticeが対象とするのは認証まわりのAPI変更（`b8c0e71`の実装＋`a3468cd`の
+テスト追加）。notice 010（deploy/rollback機構）・011（mobile UI・push
+payload）・013（A-8 rate limit）とは無関係な変更のため、分離したままとする。
+他notice ID・全release commitについては各noticeの提出内容を参照。**
 
 impact_level: L2
 
-status: ready_for_review
+status: ready_for_review（第1回VPS管理レビューでblocked。指摘2点をtask
+`20260920-003`で対応し再提出。下記「VPS管理レビュー結果への対応」参照）
 
 created_by: Claude
 
@@ -60,6 +66,24 @@ Codexが実装）。
 - **JWT有効期限の延長**（7日→90日）: notice 011で「A-2と同じ後続taskで扱う」と
   先送りしていたもの。A-2が入って初めて「無効化の即時反映」が効くため、
   このタイミングで合わせて変更した。
+
+## VPS管理レビュー結果への対応（第1回blocked→再提出）
+
+第1回VPS管理レビューでblockedとなり、以下2点のテスト追加を求められた
+（A-2実装・既存5テストは問題なしと確認済みとの評価済み）。
+
+1. `JWT_SECRET`未設定・空文字時に、migration/serverを開始せず非0終了する
+   ことを確認するテスト
+2. 新規発行するJWTの`exp - iat`が90日（7,776,000秒）であることを確認する
+   テスト
+
+`entrypoint.ts`をimportせず子processとして直接起動する方式
+（`apps/api/src/entrypoint.env.test.ts`、`bridge.reparse.test.ts`の既存
+child-process起動パターンを踏襲）で1を、`authPlugin`のみを登録した最小
+Fastifyアプリで`app.jwt.sign`/`app.jwt.decode`を使う方式
+（`apps/api/src/plugins/auth.test.ts`）で2を実装した。いずれもDB接続不要。
+`entrypoint.ts`・`plugins/auth.ts`・`routes/auth.ts`の実装自体への変更は
+無い（テスト追加のみ、task `20260920-003`）。
 
 ## 変更理由
 
@@ -136,18 +160,38 @@ secret値は記載していない。
 
 - health contract変更: なし
 - 実施テスト:
+
+  **(A) 静的検証**
   - `npm run build --workspace=@stockhome/shared`: passed
   - `npm run build --workspace=@stockhome/api`: passed
   - `npx tsc --noEmit -p apps/mobile/tsconfig.json`: passed
-  - `npm test --workspace=@stockhome/api`（ローカルPostgres）: **128件すべて成功**
+
+  **(B) DB不要テスト（Codex実施、第1回レビュー分）**
+  - `npm test --workspace=@stockhome/api`（ローカルPostgres）: 128件すべて成功
     （既存123件＋新規5件。新規5件は`apps/api/src/routes/authDisabledUser.http.test.ts`
     で、無効化ユーザーのログイン拒否・有効ユーザーのログイン成功・発行済み
     トークンの即時失効・有効ユーザートークンの継続動作・誤ったパスワード時の
     401維持を検証）
+
+  **(C) DB不要テスト（Codex実施、再提出分。task `20260920-003`）**
+  - `npx tsx --test apps/api/src/entrypoint.env.test.ts
+    apps/api/src/plugins/auth.test.ts`: passed（3 tests）
+    - `entrypoint.env.test.ts`: `NODE_ENV=production`かつ`JWT_SECRET`未設定・
+      空文字それぞれで、子processが終了コード1・`startup_failed`ログ出力・
+      `migration_start`ログ非出力になることを確認（2シナリオ）
+    - `auth.test.ts`: `authPlugin`のみを登録した最小アプリで発行したJWTの
+      `exp - iat`が7,776,000秒（90日）、payloadの`userId`が正しく復元される
+      ことを確認（1シナリオ）
+
+  **(D) フルテストスイート（ローカルPostgres、Claude実施、再提出分）**
+  - `npm test --workspace=@stockhome/api`: **143件すべて成功**（notice 013の
+    rate limit関連テスト等を含む最新状態での全件再確認。既存テストとの
+    衝突・リグレッション無し）
+
   - 差分自己点検: `apps/api/prisma/`・`packages/shared`・`apps/gas`・
-    `apps/mobile`・`ops/`に本taskによる差分が無いことを確認。変更ファイルは
-    `apps/api/src/plugins/auth.ts`・`apps/api/src/routes/auth.ts`・
-    `apps/api/src/entrypoint.ts`・新規テストファイルの4件のみ
+    `apps/mobile`・`ops/`に本taskによる差分が無いことを確認。
+    `entrypoint.ts`・`plugins/auth.ts`・`routes/auth.ts`の実装自体には
+    第1回レビュー以降の差分が無い（新規テストファイル2件の追加のみ）
 - 結果: すべて成功
 - 未実施テストと理由: production環境での`JWT_SECRET`未設定時の実際の起動失敗確認は未実施（production VPSへの接続はVPS管理側の個別承認後に限られるため）。deploy時にVPS管理側で`.env`の`JWT_SECRET`設定を確認いただくことで代替する。
 
@@ -161,8 +205,8 @@ secret値は記載していない。
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
-- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`b8c0e71`までの全commitを実際の時系列順で確認。上記release_commits参照）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`b8c0e71`はpush済み、local/origin一致確認済み。本notice fileはこれからcommit・pushする）
+- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`a3468cd`までの全commitを実際の時系列順で確認。上記release_commits参照）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`a3468cd`はpush済み、local/origin一致確認済み。本notice fileはこれからcommit・pushする）
 - [ ] data更新のtransaction・同時実行・途中失敗・再実行を確認した — 該当なし（DBデータ更新を伴わない変更のため）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（本変更はimage rollbackのみで完全に戻せる。data rollbackは不要）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した（job: 該当なし。log: `startup_failed`イベントへのfield追加のみ。runtime/dependency: 変更なし。client配信: mobile側の変更を含まないため該当なし）
@@ -193,4 +237,4 @@ secret値は記載していない。
 - app owner: 未実施
 - VPS management review: 未実施
 - production approval: 未実施
-- related task_id: 20260920-001
+- related task_id: 20260920-001（実装）、20260920-003（第1回レビュー指摘への対応、テスト追加）
