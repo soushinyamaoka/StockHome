@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  AppState,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -9,7 +10,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { fetchDashboard } from '../api/misc';
@@ -36,6 +37,21 @@ export default function DashboardScreen() {
     queryKey: ['dashboard'],
     queryFn: fetchDashboard,
   });
+
+  // 他tabから戻ってきた時（画面focus）に最新状態を取得し直す
+  useFocusEffect(
+    React.useCallback(() => {
+      refetch();
+    }, [refetch])
+  );
+
+  // appがバックグラウンドから復帰した時（画面はfocus済みのまま）にも取得し直す
+  React.useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refetch();
+    });
+    return () => subscription.remove();
+  }, [refetch]);
 
   const alerts = data?.alerts ?? [];
   const alertTotal = data?.alertTotal ?? alerts.length;

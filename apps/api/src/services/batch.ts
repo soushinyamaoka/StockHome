@@ -115,6 +115,10 @@ export interface BatchResult {
 
 export interface RunDailyBatchOptions {
   householdId?: string;
+  // テスト専用: batch_run_status.status='failure'記録の回帰testのためだけに、
+  // 主要処理の前に強制的に例外を投げる。production呼び出し元（server.ts・
+  // routes/dashboard.ts）からは絶対に指定しないこと。
+  forceFailureForTest?: boolean;
 }
 
 const READYGO_DELIVERED_RETENTION_DAYS = 30;
@@ -198,6 +202,9 @@ export async function runDailyBatch(
   logger.info({ event: LOG_EVENTS.JOB_START, job: 'daily_batch', run_id: runId });
 
   try {
+    if (options.forceFailureForTest) {
+      throw new Error('forced failure for test');
+    }
     // 前回送信分のreceiptを確認し、実配信できなかった端末を無効化する。
     // 失敗してもバッチ本体を止めない
     try {

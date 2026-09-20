@@ -1,36 +1,16 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
+import { resolveBatchStatusMessage, type LastBatchRun } from '../lib/batchStatus';
 import { COLORS, FONTS, RADIUS, SPACING } from '../theme';
 
 interface BatchStatusBannerProps {
-  lastBatchRun: {
-    status: 'success' | 'failure';
-    ranAt: string;
-    ageHours: number;
-  } | null;
-}
-
-function formatJstTime(ranAt: string): string {
-  return new Date(ranAt).toLocaleTimeString('ja-JP', {
-    timeZone: 'Asia/Tokyo',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  });
+  lastBatchRun: LastBatchRun | null;
 }
 
 export function BatchStatusBanner({ lastBatchRun }: BatchStatusBannerProps) {
-  if (!lastBatchRun) return null;
-
-  const isFailure = lastBatchRun.status === 'failure';
-  const isStale = lastBatchRun.status === 'success' && lastBatchRun.ageHours > 26;
-  if (!isFailure && !isStale) return null;
-
-  const time = formatJstTime(lastBatchRun.ranAt);
-  const message = isFailure
-    ? `夜間バッチが失敗しました（${time}実行）`
-    : `バッチの実行が確認できません（前回${time}）`;
+  const message = resolveBatchStatusMessage(lastBatchRun);
+  if (!message) return null;
 
   return (
     <View style={styles.container}>
