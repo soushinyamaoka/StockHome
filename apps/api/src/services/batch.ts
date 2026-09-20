@@ -115,10 +115,41 @@ export interface BatchResult {
 
 export interface RunDailyBatchOptions {
   householdId?: string;
-  // テスト専用: batch_run_status.status='failure'記録の回帰testのためだけに、
-  // 主要処理の前に強制的に例外を投げる。production呼び出し元（server.ts・
-  // routes/dashboard.ts）からは絶対に指定しないこと。
-  forceFailureForTest?: boolean;
+}
+
+export interface RecordBatchRunStatusParams {
+  status: 'success' | 'failure';
+  runId: string;
+  startedAt: number;
+  failureName?: string;
+}
+
+// batch_run_status（所見C-3）への書き込みを、runDailyBatchの実行から
+// 独立してtestできるよう切り出した関数。この関数自体はhousehold・item等
+// 業務dataに一切触れない（batch_run_status 1テーブルのみを更新する）
+export async function recordBatchRunStatus(params: RecordBatchRunStatusParams): Promise<void> {
+  try {
+    await prisma.batchRunStatus.upsert({
+      where: { jobName: 'daily_batch' },
+      create: {
+        jobName: 'daily_batch',
+        status: params.status,
+        runId: params.runId,
+        ranAt: new Date(params.startedAt),
+        durationMs: Date.now() - params.startedAt,
+        errorName: params.status === 'failure' ? (params.failureName ?? null) : null,
+      },
+      update: {
+        status: params.status,
+        runId: params.runId,
+        ranAt: new Date(params.startedAt),
+        durationMs: Date.now() - params.startedAt,
+        errorName: params.status === 'failure' ? (params.failureName ?? null) : null,
+      },
+    });
+  } catch {
+    // 状態記録自体の失敗でjob_endログや本来のバッチ結果を握りつぶさない
+  }
 }
 
 const READYGO_DELIVERED_RETENTION_DAYS = 30;
@@ -202,9 +233,6 @@ export async function runDailyBatch(
   logger.info({ event: LOG_EVENTS.JOB_START, job: 'daily_batch', run_id: runId });
 
   try {
-    if (options.forceFailureForTest) {
-      throw new Error('forced failure for test');
-    }
     // 前回送信分のreceiptを確認し、実配信できなかった端末を無効化する。
     // 失敗してもバッチ本体を止めない
     try {
@@ -467,28 +495,7 @@ export async function runDailyBatch(
     throw e;
   } finally {
     if (!options.householdId) {
-      try {
-        await prisma.batchRunStatus.upsert({
-          where: { jobName: 'daily_batch' },
-          create: {
-            jobName: 'daily_batch',
-            status,
-            runId,
-            ranAt: new Date(startedAt),
-            durationMs: Date.now() - startedAt,
-            errorName: status === 'failure' ? (failureName ?? null) : null,
-          },
-          update: {
-            status,
-            runId,
-            ranAt: new Date(startedAt),
-            durationMs: Date.now() - startedAt,
-            errorName: status === 'failure' ? (failureName ?? null) : null,
-          },
-        });
-      } catch {
-        // 状態記録自体の失敗でjob_endログや本来のバッチ結果を握りつぶさない
-      }
+      await recordBatchRunStatus({ status, runId, startedAt, failureName });
     }
 
     const line = {

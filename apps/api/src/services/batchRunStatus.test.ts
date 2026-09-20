@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import Fastify from 'fastify';
 import { prisma } from '../lib/prisma';
-import { runDailyBatch } from './batch';
+import { recordBatchRunStatus, runDailyBatch } from './batch';
 import authPlugin from '../plugins/auth';
 import dashboardRoutes from '../routes/dashboard';
 
@@ -57,11 +57,12 @@ async function buildDashboardApp() {
   return app;
 }
 
-test('cron run records success in batch_run_status, and dashboard reflects it', async () => {
+test('recordBatchRunStatus writes success, and dashboard reflects it', async () => {
   const app = await buildDashboardApp();
   const scope = await createScope();
   try {
-    await runDailyBatch();
+    const startedAt = Date.now() - 5000;
+    await recordBatchRunStatus({ status: 'success', runId: 'test-run-success', startedAt });
 
     const row = await prisma.batchRunStatus.findUnique({ where: { jobName: 'daily_batch' } });
     assert.ok(row);
@@ -83,16 +84,22 @@ test('cron run records success in batch_run_status, and dashboard reflects it', 
   }
 });
 
-test('cron run records failure when the batch throws, and dashboard reflects it', async () => {
+test('recordBatchRunStatus writes failure with errorName, and dashboard reflects it', async () => {
   const app = await buildDashboardApp();
   const scope = await createScope();
   try {
-    await assert.rejects(() => runDailyBatch(undefined, { forceFailureForTest: true }));
+    const startedAt = Date.now() - 5000;
+    await recordBatchRunStatus({
+      status: 'failure',
+      runId: 'test-run-failure',
+      startedAt,
+      failureName: 'Error',
+    });
 
     const row = await prisma.batchRunStatus.findUnique({ where: { jobName: 'daily_batch' } });
     assert.ok(row);
     assert.equal(row!.status, 'failure');
-    assert.ok(row!.errorName);
+    assert.equal(row!.errorName, 'Error');
 
     const token = await app.jwt.sign({ userId: scope.userId });
     const res = await app.inject({
