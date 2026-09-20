@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { test, beforeEach } from 'node:test';
 import Fastify from 'fastify';
-import { createAccountRateLimitPreHandler, resetAccountRateLimitStoreForTest } from './accountRateLimit';
+import {
+  createAccountRateLimitPreHandler,
+  getAccountRateLimitStoreSizeForTest,
+  resetAccountRateLimitStoreForTest,
+  setMaxEntriesForTest,
+} from './accountRateLimit';
 
 beforeEach(() => {
   resetAccountRateLimitStoreForTest();
@@ -90,6 +95,39 @@ test('resets the counter after its fixed window expires', async () => {
     assert.equal((await attempt(app, 'user@example.com')).statusCode, 429);
     await new Promise((resolve) => setTimeout(resolve, 30));
     assert.equal((await attempt(app, 'user@example.com')).statusCode, 200);
+  } finally {
+    await app.close();
+  }
+});
+
+test('keeps the TTL store within its configured capacity', async () => {
+  setMaxEntriesForTest(3);
+  const app = await buildApp();
+  try {
+    for (const email of ['a@example.com', 'b@example.com', 'c@example.com', 'd@example.com']) {
+      assert.equal((await attempt(app, email)).statusCode, 200);
+    }
+    assert.ok(getAccountRateLimitStoreSizeForTest() <= 3);
+  } finally {
+    await app.close();
+  }
+});
+
+test('passes through non-string email values without throwing', async () => {
+  const app = await buildApp();
+  try {
+    assert.equal(
+      (await app.inject({ method: 'POST', url: '/attempt', payload: { email: 12345 } })).statusCode,
+      200
+    );
+    assert.equal(
+      (await app.inject({ method: 'POST', url: '/attempt', payload: { email: ['a@example.com'] } })).statusCode,
+      200
+    );
+    assert.equal(
+      (await app.inject({ method: 'POST', url: '/attempt', payload: { email: { value: 'a@example.com' } } })).statusCode,
+      200
+    );
   } finally {
     await app.close();
   }
