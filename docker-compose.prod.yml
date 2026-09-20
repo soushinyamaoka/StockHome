@@ -3,6 +3,13 @@
 #   1) cp .env.production.example .env   して値を設定
 #   2) docker compose -f docker-compose.prod.yml up -d --build
 #   3) ログ確認: docker compose -f docker-compose.prod.yml logs -f api
+#
+# scripts/deploy.ps1 経由のdeployでは、build contextが毎回別directory
+# （~/stockhome/releases/<tag>）になるため、Composeの既定の.env探索
+# （--project-directory基準）に任せず、scripts/vps-deploy-runner.shが
+# --env-fileで ~/stockhome/.env を明示指定する。本fileはbuild contextの
+# 一部として毎回転送されるが、.envはgit管理外のため常に~/stockhome直下の
+# 永続fileを参照する。
 services:
   postgres:
     image: postgres:16-alpine

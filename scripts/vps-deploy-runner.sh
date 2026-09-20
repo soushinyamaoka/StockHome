@@ -31,6 +31,12 @@ INTERNAL_URL="${SH_INTERNAL_URL:-http://127.0.0.1:4002}"
 CONTAINER="${SH_CONTAINER:-stockhome-api-prod}"
 IMAGE_REPO="${SH_IMAGE_REPO:-stockhome-api}"
 COMPOSE_PROJECT="${SH_COMPOSE_PROJECT:-stockhome}"
+# .envの実体は$HOME/stockhome直下の永続的な場所にあり、releases/<tag>（毎回作り直す
+# 一時領域）には含まれない（.envはgit追跡外・tarballにも含まれない）。
+# --project-directoryをreleases/<tag>にしたことで、Composeの既定の.env探索先も
+# そちらに変わってしまうため、明示的に--env-fileで本来の場所を指定する
+# （VPS管理レビュー指摘: Composeへproduction .envを明示指定する）
+ENV_FILE="${SH_ENV_FILE:-$HOME/stockhome/.env}"
 
 NEW_TAG=""
 RELEASE_DIR=""
@@ -70,7 +76,7 @@ fi
 # project名（~/stockhome由来の"stockhome"）と一致させることで、build元の
 # directoryが変わってもnetwork/連携は不変に保つ
 dc() {
-  docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" --project-directory "$RELEASE_DIR" "$@"
+  docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" --project-directory "$RELEASE_DIR" --env-file "$ENV_FILE" "$@"
 }
 
 wait_health_matrix() {
@@ -92,42 +98,49 @@ wait_health_matrix() {
 }
 
 # --- 切替前に、現行imageのimmutable tagを確定・保全する ----------------------
+# **現行containerが存在しない場合は、build・切替のどちらも行わずここで停止する**
+# （VPS管理レビュー指摘: 現行container不在時はbuild前に停止する）。本scriptは
+# 「productionには常に稼働中のcontainerがある」ことを前提とし、不在は異常な
+# 状態（誤ったdirectory・compose project名の不一致・手動操作の影響等）として
+# 扱う。まったくの初回セットアップ（productionにcontainerが一度も存在しない
+# 状態）は本scriptの対象外とし、別途手動でのbootstrapが必要。
+PREVIOUS_IMAGE=$(docker inspect --format '{{.Config.Image}}' "$CONTAINER" 2>/dev/null || echo "")
+PREVIOUS_IMAGE_ID=$(docker inspect --format '{{.Image}}' "$CONTAINER" 2>/dev/null || echo "")
+
+if [ -z "$PREVIOUS_IMAGE" ]; then
+  echo "DEPLOY_RESULT=no_previous_container"
+  exit 14
+fi
+
 # 現行方式のimage（repo:tag形式）ならそのtagをそのまま使う。旧方式（Compose
 # 自動命名でrepo:tag形式でない）imageの場合はimage IDから一度だけ
 # pre-v2-<timestamp>というimmutable tagを付与して保全する（可変tagをrollback
 # 根拠にしない、という方針に沿う）。
 #
-# **現行containerが存在するのに保全できなかった場合は、build・切替のどちらも
-# 行わずここで停止する**（VPS管理レビュー再指摘: previous imageを保全できない
-# 場合はbuild・切替前に停止する）。現行containerが存在しない（初回deploy）場合は
-# 保全対象が無いので、そのまま進んでよい。
-PREVIOUS_IMAGE=$(docker inspect --format '{{.Config.Image}}' "$CONTAINER" 2>/dev/null || echo "")
-PREVIOUS_IMAGE_ID=$(docker inspect --format '{{.Image}}' "$CONTAINER" 2>/dev/null || echo "")
+# **保全できなかった場合も、build・切替のどちらも行わずここで停止する**
+# （previous imageを保全できない場合はbuild・切替前に停止する）。
 ROLLBACK_TAG=""
-
-if [ -n "$PREVIOUS_IMAGE" ]; then
-  case "$PREVIOUS_IMAGE" in
-    "$IMAGE_REPO":*)
-      ROLLBACK_TAG="${PREVIOUS_IMAGE#$IMAGE_REPO:}"
-      ;;
-    *)
-      if [ -n "$PREVIOUS_IMAGE_ID" ]; then
-        CANDIDATE="pre-v2-$(date +%Y%m%d%H%M%S)"
-        if docker tag "$PREVIOUS_IMAGE_ID" "$IMAGE_REPO:$CANDIDATE"; then
-          ROLLBACK_TAG="$CANDIDATE"
-          echo "PRESERVED_PREVIOUS_AS=$IMAGE_REPO:$ROLLBACK_TAG"
-        fi
+case "$PREVIOUS_IMAGE" in
+  "$IMAGE_REPO":*)
+    ROLLBACK_TAG="${PREVIOUS_IMAGE#$IMAGE_REPO:}"
+    ;;
+  *)
+    if [ -n "$PREVIOUS_IMAGE_ID" ]; then
+      CANDIDATE="pre-v2-$(date +%Y%m%d%H%M%S)"
+      if docker tag "$PREVIOUS_IMAGE_ID" "$IMAGE_REPO:$CANDIDATE"; then
+        ROLLBACK_TAG="$CANDIDATE"
+        echo "PRESERVED_PREVIOUS_AS=$IMAGE_REPO:$ROLLBACK_TAG"
       fi
-      ;;
-  esac
-  # tag付け自体が成功していても、実際にimageとして引けるかを最終確認する
-  if [ -n "$ROLLBACK_TAG" ] && ! docker image inspect "$IMAGE_REPO:$ROLLBACK_TAG" >/dev/null 2>&1; then
-    ROLLBACK_TAG=""
-  fi
-  if [ -z "$ROLLBACK_TAG" ]; then
-    echo "DEPLOY_RESULT=previous_image_preserve_failed"
-    exit 12
-  fi
+    fi
+    ;;
+esac
+# tag付け自体が成功していても、実際にimageとして引けるかを最終確認する
+if [ -n "$ROLLBACK_TAG" ] && ! docker image inspect "$IMAGE_REPO:$ROLLBACK_TAG" >/dev/null 2>&1; then
+  ROLLBACK_TAG=""
+fi
+if [ -z "$ROLLBACK_TAG" ]; then
+  echo "DEPLOY_RESULT=previous_image_preserve_failed"
+  exit 12
 fi
 echo "PREVIOUS_IMAGE=$PREVIOUS_IMAGE"
 echo "ROLLBACK_TAG=$ROLLBACK_TAG"

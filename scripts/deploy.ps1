@@ -58,10 +58,15 @@ $ErrorActionPreference = 'Stop'
 $Root           = Split-Path -Parent $PSScriptRoot
 $Remote         = 'vps'
 $RemoteDir      = 'stockhome'
-$Tarball        = 'deploy.tgz'
-$BootstrapLocal = 'vps-bootstrap.local.sh'
-$BootstrapPath  = "$RemoteDir/vps-bootstrap.sh"
 $KeepImages     = 3
+
+# local/remoteの一時fileは実行ごとに固有名にする（VPS管理レビュー指摘）。
+# 固定名だと、並行して実行された別のdeploy/rollbackが同じfileへ書き込み、
+# 転送内容が混ざる（＝別commitの内容を実行してしまう）おそれがある。
+$RunToken       = [guid]::NewGuid().ToString('N').Substring(0, 12)
+$Tarball        = "deploy-$RunToken.tgz"
+$BootstrapLocal = "vps-bootstrap-$RunToken.local.sh"
+$BootstrapPath  = "$RemoteDir/.vps-bootstrap-$RunToken.sh"
 
 # runner/bootstrap が返す DEPLOY_RESULT を人間向けの説明にする
 $ResultText = @{
@@ -74,6 +79,7 @@ $ResultText = @{
   'missing_required_arg'                                = 'runner の呼び出し引数が不足しています（内部エラー）'
   'release_dir_missing'                                 = '展開先ディレクトリが見つかりません（内部エラー）'
   'compose_file_missing'                                = '展開した内容に docker-compose.prod.yml が含まれていません'
+  'no_previous_container'                                = '現在稼働中のコンテナが見つからないため、ビルド・切替を行わずに中止しました（初回セットアップはこのコマンドの対象外です）'
   'previous_image_preserve_failed'                       = '現在稼働中のイメージを安全に保全できなかったため、ビルド・切替を行わずに中止しました（現行コンテナは無変更）'
   'build_failed'                                        = 'VPS でのビルドに失敗しました（切替前に停止、現行コンテナは無変更）'
   'up_failed_no_previous_image'                          = 'コンテナ起動に失敗し、ロールバック先も特定できませんでした'
@@ -84,7 +90,7 @@ $ResultText = @{
 }
 
 function Invoke-DeployRemote([string]$Tag, [string]$ExtraArgs) {
-  Write-Host "== bootstrap を転送中（固定 path、上書き）==" -ForegroundColor Cyan
+  Write-Host "== bootstrap を転送中（本実行専用の一意な path）==" -ForegroundColor Cyan
   scp $BootstrapLocal ("{0}:{1}" -f $Remote, $BootstrapPath)
   if ($LASTEXITCODE -ne 0) { throw 'bootstrap script の転送に失敗しました。' }
   ssh $Remote "chmod +x $BootstrapPath"
@@ -107,10 +113,14 @@ function Invoke-DeployRemote([string]$Tag, [string]$ExtraArgs) {
   }
 
   $text = if ($ResultText.ContainsKey($result)) { $ResultText[$result] } else { $result }
-  if ($result -eq 'success' -or $result -eq 'rolled_back_to_previous') {
+  if ($result -eq 'success') {
     Write-Host "  OK — $text" -ForegroundColor Green
   }
   else {
+    # 'rolled_back_to_previous' も含め、successでない結果はすべて
+    # デプロイ失敗として非0終了する（VPS管理レビュー指摘: 自動rollback時は
+    # deploy失敗として扱う）。自動rollbackでproductionは無事だが、依頼された
+    # 新commitへの反映自体は失敗しており、それをOK扱いにしてはいけない
     throw "$text（DEPLOY_RESULT=$result, cmd exit=$exitCode）"
   }
 }
@@ -190,9 +200,28 @@ try {
   $entries = New-DeployArtifact $CommitHash
 
   # bootstrap script もその commit の内容から取り出す（deploy.ps1 実行時点の
-  # working tree ではなく、実際に build/展開される commit と完全に一致させるため）
-  git show "${CommitHash}:scripts/vps-bootstrap.sh" > $BootstrapLocal
+  # working tree ではなく、実際に build/展開される commit と完全に一致させるため）。
+  #
+  # PowerShell の `>` / Out-File は Windows PowerShell 5.1 既定で UTF-16LE
+  # （+ 改行変換）へ再エンコードしてしまい、bash が解釈できない壊れた script に
+  # なる（VPS管理レビュー指摘）。cmd.exe の `>` はネイティブプロセスの stdout を
+  # 一切再解釈せずバイト列のまま書き出すため、commit 内の実バイト
+  # （.gitattributes で `*.sh text eol=lf` 固定、UTF-8/LF）がそのまま保存される。
+  cmd /c "git show ${CommitHash}:scripts/vps-bootstrap.sh > `"$BootstrapLocal`""
   if ($LASTEXITCODE -ne 0) { throw "commit $CommitHash に scripts/vps-bootstrap.sh がありません。" }
+
+  # 実際に書き出された内容がUTF-8(BOM無し)・LFであることを検証する
+  $bsBytes = [System.IO.File]::ReadAllBytes((Resolve-Path $BootstrapLocal))
+  if ($bsBytes.Length -ge 3 -and $bsBytes[0] -eq 0xEF -and $bsBytes[1] -eq 0xBB -and $bsBytes[2] -eq 0xBF) {
+    throw "$BootstrapLocal にUTF-8 BOMが付与されています（bashのshebang行を壊すため不可）。"
+  }
+  $bsText = [System.Text.Encoding]::UTF8.GetString($bsBytes)
+  if ($bsText -notmatch '^#!/bin/bash') {
+    throw "$BootstrapLocal の先頭がshebangになっていません（転送時にエンコーディングが壊れた可能性があります）。"
+  }
+  if ($bsText.Contains("`r`n")) {
+    throw "$BootstrapLocal にCRLFが含まれています（VPS上のbash実行が壊れるため不可）。"
+  }
 
   if ($DryRun) {
     Write-Host '== DryRun: 送信内容 ==' -ForegroundColor Yellow
@@ -211,5 +240,11 @@ try {
 finally {
   if (Test-Path $Tarball) { Remove-Item $Tarball -Force }
   if (Test-Path $BootstrapLocal) { Remove-Item $BootstrapLocal -Force }
+  # remote側の一時bootstrap（本実行専用の一意なpath）を片付ける。DryRunでは
+  # 転送していないので対象なし。失敗しても後続runの一意名と衝突しないため
+  # 致命的ではなく、ベストエフォートで消す（元の例外を上書きしない）
+  if (-not $DryRun) {
+    try { ssh $Remote "rm -f $BootstrapPath" 2>$null | Out-Null } catch {}
+  }
   Pop-Location
 }
