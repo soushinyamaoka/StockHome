@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { bridgeCandidatesPayloadSchema, reparseCandidatesQuerySchema, reparseCandidatesPayloadSchema } from '@stockhome/shared';
 import { appLogger, ERROR_KINDS, LOG_EVENTS, safeErr } from '../lib/logger';
@@ -15,6 +16,35 @@ import {
 // GAS ブリッジ用ルート（JWT ではなく共有トークンで認証）
 // GAS の Gmail 取込（各ユーザーの個人トリガー）が解析済み候補を POST してくる
 const RECLAIM_LEASE_MS = 30 * 60 * 1000;
+
+// 未ACKのままlease切れとなったclaimed行を、household単位で個別に回収する
+// （S014-B06: daily_batchの並行insertとの原子性対応）。household当たり
+// pendingは最大1件というpartial unique indexがあるため、reclaim先の
+// pendingへの更新は「他householdの回収を巻き込まない単一行のupdateMany」で
+// 試み、一意制約違反（P2002）を捕捉したら「同一householdへの新しいpending
+// 行が並行して作られた＝このstale行はsupersede済み」とみなして削除に
+// フォールバックする。batch.tsのupsertPendingReadyGoRowと同じ
+// insert→catch P2002→フォールバックの作法をreclaimにも適用したもの。
+async function reclaimStaleClaims(leaseThreshold: Date): Promise<void> {
+  const stale = await prisma.readyGoOutbox.findMany({
+    where: { status: 'claimed', claimedAt: { lt: leaseThreshold } },
+    select: { id: true },
+  });
+  for (const { id } of stale) {
+    try {
+      await prisma.readyGoOutbox.updateMany({
+        where: { id, status: 'claimed', claimedAt: { lt: leaseThreshold } },
+        data: { status: 'pending', claimedAt: null },
+      });
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        await prisma.readyGoOutbox.deleteMany({ where: { id, status: 'claimed' } });
+      } else {
+        throw e;
+      }
+    }
+  }
+}
 
 const bridgeRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', async (req, reply) => {
@@ -128,20 +158,7 @@ const bridgeRoutes: FastifyPluginAsync = async (app) => {
   // ReadyGo 配信待ちキューの取得（GAS の夜間トリガーが呼ぶ）
   app.get('/readygo-pending', async () => {
     const leaseThreshold = new Date(Date.now() - RECLAIM_LEASE_MS);
-    await prisma.$executeRaw`
-      DELETE FROM readygo_outbox stale
-      WHERE stale.status = 'claimed'
-        AND stale.claimed_at < ${leaseThreshold}
-        AND EXISTS (
-          SELECT 1 FROM readygo_outbox fresh
-          WHERE fresh.household_id = stale.household_id
-            AND fresh.status = 'pending'
-        )
-    `;
-    await prisma.readyGoOutbox.updateMany({
-      where: { status: 'claimed', claimedAt: { lt: leaseThreshold } },
-      data: { status: 'pending', claimedAt: null },
-    });
+    await reclaimStaleClaims(leaseThreshold);
 
     const claimed = await prisma.$queryRaw<{ id: string; body: string }[]>`
       WITH claimed_rows AS (

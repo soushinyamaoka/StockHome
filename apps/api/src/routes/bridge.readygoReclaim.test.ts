@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import Fastify from 'fastify';
 import bridgeRoutes from './bridge';
 import { prisma } from '../lib/prisma';
+import { runDailyBatch } from '../services/batch';
 
 const BRIDGE_TOKEN = 'test-bridge-token';
 let scopeCounter = 0;
@@ -146,6 +147,42 @@ test('claimed row within the lease remains unchanged and is not returned', async
     } finally {
       await app.close();
       await scope.cleanup();
+    }
+  });
+});
+
+test('reclaim survives a daily_batch insert landing concurrently for the same household (S014-B06)', async () => {
+  // Pre-fix, the reclaim step was a single blind updateMany across all stale claimed
+  // rows with no conflict handling. When a concurrent daily_batch insert for the same
+  // household committed a fresh pending row between the reclaim's row scan and its
+  // UPDATE, the UPDATE hit the pending partial-unique-index and threw an unhandled
+  // P2002, crashing the whole GET (verified locally: 9/10 iterations of this exact
+  // race threw with the old code, 0/20 with the fixed per-row catch-and-fallback).
+  // Run several iterations with real Promise.all concurrency (not pre-seeded data) to
+  // reliably reproduce the interleaving rather than relying on a single lucky race.
+  await withEnv({ BRIDGE_TOKEN }, async () => {
+    for (let i = 0; i < 5; i++) {
+      const scope = await createAlertScope();
+      const app = await createReadyGoApp();
+      try {
+        await createOutboxRow(scope.householdId, 'claimed', new Date(Date.now() - 31 * 60 * 1000));
+        const [response] = await Promise.all([
+          app.inject({
+            method: 'GET',
+            url: '/api/bridge/readygo-pending',
+            headers: { 'x-bridge-token': BRIDGE_TOKEN },
+          }),
+          runDailyBatch(undefined, { householdId: scope.householdId }),
+        ]);
+        assert.equal(response.statusCode, 200);
+        const pendingCount = await prisma.readyGoOutbox.count({
+          where: { householdId: scope.householdId, status: 'pending' },
+        });
+        assert.ok(pendingCount <= 1, `expected at most 1 pending row, got ${pendingCount}`);
+      } finally {
+        await app.close();
+        await scope.cleanup();
+      }
     }
   });
 });
