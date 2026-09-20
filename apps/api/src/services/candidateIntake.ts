@@ -9,6 +9,7 @@ import type { ImportOrderCandidate, Prisma } from '@prisma/client';
 import { APP_CONFIG_KEYS, DEFAULTS, type BridgeCandidate } from '@stockhome/shared';
 import { appLogger, ERROR_KINDS, LOG_EVENTS, safeErr } from '../lib/logger';
 import { prisma } from '../lib/prisma';
+import { jstDateOnly } from '../utils/date';
 import {
   refreshStockSnapshotForItem,
   todayDateOnly,
@@ -18,15 +19,6 @@ import {
 } from './stockCalc';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
-
-// メール日時の「JST カレンダー日付」を UTC 0時の Date で返す。
-// GAS は mailDate.toISOString()（UTC）で送ってくるため、UTC の年月日で切ると
-// JST 早朝(0–8時台)のメールが前日扱いになる。+9h してから日付を取り JST 基準に揃える。
-function jstDateOnly(d: Date): Date {
-  const jst = new Date(d.getTime() + JST_OFFSET_MS);
-  return new Date(Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate()));
-}
 
 // 取込候補の数量換算（過大カウント防止ガード付き）。
 // モデル: detected_qty=「セット数」, default_purchase_qty=「1セットの個数」→ qty = セット数 × 個数。
@@ -519,7 +511,10 @@ export async function processBridgeCandidates(
   return result;
 }
 
-async function resolveHouseholdId(importedByEmail: string | undefined): Promise<string | null> {
+// フォールバック: 最初の household（単一家庭運用前提。CLAUDE.md参照）。
+// household が2件以上存在する状態でこのフォールバックが発動した場合は、
+// 単一家庭前提が崩れている可能性が高いため警告ログを出す（所見C-6対応）。
+export async function resolveHouseholdId(importedByEmail: string | undefined): Promise<string | null> {
   if (importedByEmail) {
     const user = await prisma.user.findUnique({
       where: { email: importedByEmail },
@@ -527,9 +522,17 @@ async function resolveHouseholdId(importedByEmail: string | undefined): Promise<
     });
     if (user?.memberships[0]) return user.memberships[0].householdId;
   }
-  // フォールバック: 最初の household（単一家庭運用前提）
-  const household = await prisma.household.findFirst({ orderBy: { createdAt: 'asc' } });
-  return household?.id ?? null;
+  const households = await prisma.household.findMany({
+    orderBy: { createdAt: 'asc' },
+    take: 2,
+  });
+  if (households.length > 1) {
+    appLogger.warn({
+      event: LOG_EVENTS.HOUSEHOLD_RESOLUTION_FALLBACK,
+      reason: importedByEmail ? 'email_not_matched' : 'email_missing',
+    });
+  }
+  return households[0]?.id ?? null;
 }
 
 async function processSingleCandidate(c: BridgeCandidate, result: IntakeResult) {

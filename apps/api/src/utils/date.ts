@@ -20,3 +20,14 @@ export function addDays(date: Date, days: number): Date {
   d.setUTCDate(d.getUTCDate() + days);
   return d;
 }
+
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+// 任意の日時の「JST カレンダー日付」を UTC 0時の Date で返す。
+// getTime()（UTCミリ秒）に固定オフセットを足してからUTC getterで日付を取るため、
+// 実行プロセスの TZ 環境変数やホストのタイムゾーン設定に一切依存しない。
+// DB の date 型は UTC 0時で保持しているため、比較はこの形式で揃える。
+export function jstDateOnly(d: Date): Date {
+  const jst = new Date(d.getTime() + JST_OFFSET_MS);
+  return new Date(Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate()));
+}

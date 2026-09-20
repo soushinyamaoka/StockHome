@@ -18,20 +18,16 @@
 import type { Item, ItemRuntimeState, PurchaseLog, Prisma } from '@prisma/client';
 import { DEFAULTS } from '@stockhome/shared';
 import { prisma } from '../lib/prisma';
+import { jstDateOnly } from '../utils/date';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-// 任意の日時を「ローカルタイムゾーンのカレンダー日付」で UTC 0時の Date に丸める。
-// 本番コンテナ・開発環境とも TZ=Asia/Tokyo のため、ローカルgetterはJSTのカレンダー日付を返す
-// （docker-compose.prod.yml参照）。DB の date 型は UTC 0時で保持しているため、
-// 比較はこの形式で揃える
-function dateOnlyLocal(d: Date): Date {
-  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-}
-
+// 任意の日時をJSTカレンダー日付でUTC0時のDateに丸める（utils/date.tsのjstDateOnly、
+// TZ環境変数に依存しない実装）。DBのdate型はUTC0時で保持しているため、比較は
+// この形式で揃える。
 // 今日（JST のカレンダー日付）を UTC 0時の Date で返す
 export function todayDateOnly(): Date {
-  return dateOnlyLocal(new Date());
+  return jstDateOnly(new Date());
 }
 
 // 日付差（a - b、日数）。両方 UTC 0時前提
@@ -98,7 +94,7 @@ export function calculateStock(
   // 補正の基準日（JSTのカレンダー日付、todayDateOnyと同じ丸め方に揃える）。
   // 以前はUTC日付で丸めていたため、JST 0時〜9時台に書き込まれた補正が
   // todayDateOnly()（JST基準）とズレて即座に1日分減衰する不具合があった（修正済み）
-  const overrideDate = hasOverride && state ? dateOnlyLocal(state.manualOverrideAt!) : null;
+  const overrideDate = hasOverride && state ? jstDateOnly(state.manualOverrideAt!) : null;
 
   // 補正と最新購入のうち「より新しい基準イベント」を起点にする。
   // 通常、counted 化した購入は登録時に setManualOverrideQty で「直前残数＋購入数」を

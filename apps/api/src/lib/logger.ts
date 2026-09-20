@@ -16,6 +16,7 @@ export const LOG_EVENTS = {
   READYGO_OUTBOX_CLEANED: 'readygo_outbox_cleaned',
   READYGO_ACK_FAILED: 'readygo_ack_failed',
   CANDIDATE_INTAKE_FAILED: 'candidate_intake_failed',
+  HOUSEHOLD_RESOLUTION_FALLBACK: 'household_resolution_fallback',
   DB_CLIENT_LOG: 'db_client_log',
   MIGRATION_START: 'migration_start',
   MIGRATION_END: 'migration_end',
