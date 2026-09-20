@@ -47,3 +47,15 @@ for (const [scenario, jwtSecret] of [
     assert.doesNotMatch(stdout, /"JWT_SECRET"\s*:/);
   });
 }
+
+test('entrypoint proceeds past the JWT_SECRET check and starts migrations when JWT_SECRET is set in production', { timeout: 15_000 }, async () => {
+  const { stdout } = await runEntrypoint({
+    NODE_ENV: 'production',
+    JWT_SECRET: 'notice-012-positive-path-test-secret',
+    DATABASE_URL: 'invalid',
+  });
+
+  assert.match(stdout, /"event":"migration_start"/);
+  assert.doesNotMatch(stdout, /"event":"startup_failed"/);
+  assert.doesNotMatch(stdout, /"reason":"missing_required_env"/);
+});
