@@ -207,6 +207,12 @@
 #     .env.production.exampleへの実際の受け渡し設定もあわせて反映。本commitはドキュメント・
 #     Compose設定のみで、Codex実装分（accountRateLimit.tsの上限付きTTL化等）は別task
 #     20260920-004で対応中。production未反映。
+#   2026-09-20: 所見C-7（ログ類の保持方針がpush_ticketsだけ決まっている）へ対応し、
+#     notice 20260920-STOCKHOME-018を作成した。notification_logs・
+#     stock_correction_logs・import_order_candidatesの3テーブルについて、
+#     「現時点では自動削除しない」方針を明記した（理由・再検討の目安件数を
+#     data.data_retentionへ記載）。コード変更は無い（方針決定・記録のみ）。
+#     Claude直接作業。production未反映（記録の反映のみのためdeploy不要）。
 #   2026-09-20 (task 20260920-013): 所見C-8（npm audit残件・runtime image肥大化）・
 #     A-9（mobile平文HTTP全面許可）へ対応し、notice 20260920-STOCKHOME-017を作成した。
 #     fastify更新・Dockerfileのruntime image slim化・prismaの依存分類修正はClaudeが
@@ -614,6 +620,47 @@ data:
         alerts_json（itemId・reason・1行要約）。いずれも在庫状態から翌日の夜間バッチが
         再生成できる通知キューであり、購入履歴・在庫補正等の業務データは含まない。
         配信実績そのものは notification_log 側に残る（本テーブルの削除では失われない）。
+    - table: notification_logs
+      policy: >-
+        2026-09-20（所見C-7、notice 20260920-STOCKHOME-018）方針決定。**自動削除は
+        設けない。** 通知履歴は利用者が「いつ何を通知されたか」を追跡する監査ログで、
+        単一世帯・低頻度利用（アラート対象品目が新規に出た時のみ記録、日次batchの
+        新規アラート件数に比例）のため増加は緩やか（開発DBで52件、2026-08末〜の
+        累積）。push_tickets・readygo_outboxと異なり「同じ内容を後から再生成できる」
+        性質の一時キューではなく、削除すると過去の通知実績そのものが失われるため、
+        自動削除の対象にしない判断とした。
+      backup_impact: 削除しないため該当なし。DB全体backupに含まれる。
+      revisit_threshold: >-
+        目安として10万行、またはDBサイズ・パフォーマンスに体感できる影響が
+        出た場合に、保持期間ポリシーの追加を再検討する。
+    - table: stock_correction_logs
+      policy: >-
+        2026-09-20（所見C-7、notice 20260920-STOCKHOME-018）方針決定。**自動削除は
+        設けない。** 在庫補正（手動での実数入力）の履歴で、利用者が明示的に操作した
+        時だけ増える（開発DBで12件）。在庫計算自体はitem_runtime_statesの現在値
+        （manual_override_qty等）のみを参照し、本テーブルは表示専用の履歴のため、
+        削除しても計算ロジックへの影響はないが、「なぜ今の残数になっているか」の
+        説明責任を持つ監査ログとして自動削除の対象にしない判断とした。
+      backup_impact: 削除しないため該当なし。DB全体backupに含まれる。
+      revisit_threshold: >-
+        目安として10万行、またはDBサイズ・パフォーマンスに体感できる影響が
+        出た場合に、保持期間ポリシーの追加を再検討する。
+    - table: import_order_candidates
+      policy: >-
+        2026-09-20（所見C-7、notice 20260920-STOCKHOME-018）方針決定。**自動削除は
+        設けない。** Gmail自動取込の候補（開発DBで56件）。確定済み(confirmed)・
+        無視済み(ignored)の候補も含め、品名部分一致による自動確定判定
+        （candidateIntake.tsのprocessSingleCandidate等）や、価格の信頼性判定
+        （層3判定、過去の確定単価との照合）が過去の候補データを参照するため、
+        古い候補を削除すると自動確定・価格判定の精度に副作用が出る可能性がある
+        （報告書原文が指摘した「学習型マッピングの入力」のリスク）。削除する場合は
+        副作用の確認が必要という報告書の指摘どおり、**現時点では自動削除しない**
+        判断とした。
+      backup_impact: 削除しないため該当なし。DB全体backupに含まれる。
+      revisit_threshold: >-
+        目安として10万行、またはDBサイズ・パフォーマンスに体感できる影響が
+        出た場合に、自動確定・価格判定ロジックへの影響を検証したうえで
+        保持期間ポリシーの追加を再検討する。
 
 jobs:
   - name: daily_batch
