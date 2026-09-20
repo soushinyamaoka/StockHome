@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 332c8c022f195c0a08d1d78d40aa2478c0466ff0
+source_commit: 332c8c0bc661edb753b36dfa2ceed638f772c68a
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
@@ -63,6 +63,12 @@ notice 014）とは異なり、これら3テーブルは「再生成不可の監
 2. `production_change: not_required`・`deployment_status: not_applicable`が
    テンプレート正規値と不一致だった → `production_change: none`・
    `deployment_status: not_started`へ訂正した。
+
+第2回VPS管理レビューで、上記1の訂正時に`source_commit`のfull hashを誤記して
+おり（`332c8c022f195c0a08d1d78d40aa2478c0466ff0`、実在しないcommit）実在しない
+ことを指摘され（S018-D02）blockedとなった。正しいfull hash
+`332c8c0bc661edb753b36dfa2ceed638f772c68a`（`git rev-parse 332c8c0`で確認）へ
+再訂正した。
 
 コード変更・方針内容そのものへの変更は無い。
 
@@ -153,7 +159,7 @@ volume/cron/API contract/ログ出力、いずれも無変更。
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
 - [x] production baselineとrelease全commit・build入力差分を確認した（コード側の変更が無いため該当なし。`ops/runtime-contract.yaml`のみの差分であることを`git status`で確認済み）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`332c8c0`はpush済み、local/origin一致確認済み。本notice fileの訂正分はこれからcommit・pushする）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`332c8c0bc661edb753b36dfa2ceed638f772c68a`はpush済み、`git rev-parse 332c8c0`で実在確認・local/origin一致確認済み。本notice fileの訂正分はこれからcommit・pushする）
 - [x] data更新のtransaction・同時実行・途中失敗を確認した — 該当なし（DB操作を伴わない変更のため）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた — 該当なし（imageの変更が無い）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した（retention: 本noticeそのものが3テーブルの保持方針記載。job/log/runtime/dependency/client配信: いずれも該当なし）
