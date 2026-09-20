@@ -34,10 +34,8 @@ export default {
       bundleIdentifier: IS_DEV
         ? "com.example.stockhome.dev"
         : "com.example.stockhome",
-      // VPS API への HTTP(平文) 接続を許可（開発ビルドは実ネイティブビルドのため必須）
-      infoPlist: {
-        NSAppTransportSecurity: { NSAllowsArbitraryLoads: true },
-      },
+      // 開発ビルドのみVPS APIへのHTTP(平文)接続を許可する（本番ビルドはHTTPS化済みAPIのみのため不要）
+      ...(IS_DEV ? { infoPlist: { NSAppTransportSecurity: { NSAllowsArbitraryLoads: true } } } : {}),
     },
     android: {
       package: IS_DEV ? "com.example.stockhome.dev" : "com.example.stockhome",
@@ -59,7 +57,8 @@ export default {
       [
         "expo-build-properties",
         {
-          android: { usesCleartextTraffic: true },
+          // 開発ビルドのみ平文HTTPを許可する（本番ビルドは既定のHTTPS限定のまま）
+          android: IS_DEV ? { usesCleartextTraffic: true } : {},
         },
       ],
     ],
