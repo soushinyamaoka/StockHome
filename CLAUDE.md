@@ -40,6 +40,13 @@ GAS 版からの移行プロジェクト。仕様の正は `apps/gas/StockHome_�
 - 在庫計算では `counted_in_inventory=true` の購入履歴のみ加味する。`inventory_effective_at <= today` で counted 化（夜間バッチ）。
 - 日付は API レスポンスで `'YYYY-MM-DD'` 文字列に変換（`utils/serialize.ts`）。受信時は `parseDateOnly` で Date 化。
 - 書き込み系（購入登録・補正・候補確定）の直後は該当品目の stock_snapshot を即時再計算する。
+- **単一世帯運用が前提**（2026-09-03所見C-6、2026-09-20方針決定）。Gmail取込の世帯解決
+  （`candidateIntake.ts`の`resolveHouseholdId`）は、メールから利用者を特定できない場合
+  「最初に作られたhousehold」へフォールバックする。2世帯目を追加する場合はこの前提が
+  崩れるため、フォールバック依存箇所（`candidateIntake.ts`の`resolveHouseholdId`、他に
+  `household.findFirst`等の単純化を探すこと）を先に洗い出し、明示的な世帯解決へ置き換える
+  設計が必要（household件数が2件以上の状態でフォールバックが発動すると警告ログ
+  `household_resolution_fallback`を出す安全網のみ実装済み。防止策ではない）。
 
 ## 在庫計算（GAS 版 StockService 準拠）
 
