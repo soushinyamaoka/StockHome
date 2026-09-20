@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: f6cb13d0c8c40af6d6be948c63f8c0f06bb153ec
+source_commit: 1e8b51418bbdf5075efe80416331f149d6e0724e
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
@@ -46,13 +46,20 @@ notice 010〜019の提出内容を参照）
   個別の楽観的`updateMany`＋一意制約違反（P2002）時の`deleteMany`フォール
   バックへ変更（従来は全household分をまとめて1回の`updateMany`で回収して
   おり、daily_batchの並行insertと競合すると未処理のP2002で丸ごと失敗して
-  いた）。daily_batchとの実並行テスト（5反復）を追加。`apps/api`のみ）
-- `f6cb13d`（**本notice対象・最終source。S014-B07対応**。GAS側
-  `deliverStockHomeNotifications`に配信済みidのローカル記録（Script
-  Properties、TTL 7日）を追加。`appendToInbox`成功直後・ACK呼び出しより
-  前に記録することで、ACK不達で同じ行が再取得されても再投入せずACKだけ
-  再試行するようにした（従来はACK不達→lease回収後の再取得で、ReadyGo
-  Inboxへ同じ内容が二重投入され得た）。`apps/gas`のみ）
+  いた）。daily_batchとの実並行テスト（5反復）を追加。`apps/api`のみ。
+  **第3回提出分**）
+- `f6cb13d`（S014-B07初回対応。GAS側`deliverStockHomeNotifications`に
+  配信済みidのローカル記録（Script Properties、TTL 7日）を追加。
+  `appendToInbox`成功直後・ACK呼び出しより前に記録することで、ACK不達で
+  同じ行が再取得されても再投入せずACKだけ再試行するようにした。`apps/gas`
+  のみ。**第3回提出分。第4回レビューで「Inbox投入とID記録が別操作のため
+  その間の中断で二重投入しうる」と部分対応の指摘を受け、下記commitで
+  Inbox行への同時書き込み方式へ置き換えた**）
+- `1e8b514`（**本notice対象・最終source。S014-B07再対応**。GAS側の冪等化を
+  Script Properties方式から、ReadyGo Inbox行のE列（`stockhome_outbox_id`）へ
+  outbox idを本文と同じ`appendRow`呼び出しで同時書き込みする方式へ置き換え
+  （投入と記録が単一操作になり中間状態が無い）。`deliverStockHomeNotifications`
+  全体を`LockService`で排他し、並行実行による二重投入も防ぐ。`apps/gas`のみ）
 
 **本noticeが対象とするのは所見A-5・A-6への対応（夜間バッチのReadyGoキュー重複抑止・
 世帯スコープ・保持期間・claim方式による二重配信防止）。notice 010〜013・016〜019は
@@ -196,6 +203,63 @@ S014-B03・B04・B05の解消は確認されたが、新たに2点の指摘を�
   作成し、7シナリオ（通常配信・ACK不達後の再取得での再投入スキップと
   ACK再試行・Inbox投入失敗時は記録しない・混在batch・pending無し・TTL
   prune・壊れた記録の扱い）を検証する。
+  **（第4回レビューで部分対応と指摘され、下記「VPS管理レビュー結果への
+  対応（第4回）」でInbox行への同時書き込み方式へ置き換えた。本節はその
+  変更前の設計の記録として残す）**
+
+## VPS管理レビュー結果への対応（第4回：blocked→再提出）
+
+第4回VPS管理レビューで、S014-B06の解消は確認されたが、S014-B07は部分対応
+との指摘を受けblocked継続となった。
+
+- **S014-B07部分対応の指摘**: 前回（task `20260921-004`、commit
+  `f6cb13d`）の設計は、`appendToInbox`成功と、GAS Script Propertiesへの
+  配信済みid記録が**別操作**だった。VPS管理側の指摘: 「Inbox追加と
+  Script PropertiesへのID記録が別操作のため、その間の停止・記録失敗では
+  同じ通知が再投入されます。outbox IDをInbox行と同時に保存して再投入前に
+  照合するなど、Inbox側で冪等化してください。並行実行対策も追加して
+  ください。」
+- **notice/runtime contractへの反映指摘**: 「併せてnotice/runtime
+  contractへ、GAS→APIの反映順・GAS version確認・rollback、および残っている
+  schema/migration・中間状態の記載矛盾を反映してください。」
+
+対応:
+
+- **S014-B07（Inbox側での冪等化）**: `ReadyGoBotService.appendToInbox`を
+  outbox id対応にし、ReadyGo Inboxシートへ新規列E（`stockhome_outbox_id`）を
+  追加。本文と同じ`appendRow`呼び出しでidを同時に書き込むことで、「Inboxへの
+  投入」と「投入済みの記録」を単一のAPI呼び出しへ統合した（途中で処理が
+  中断しても、投入済みだが未記録という中間状態が発生しなくなった）。投入前に
+  E列を読み、同じidが既に存在すれば投入をスキップしてtrueを返す（呼び出し元
+  はACKだけ再試行する）。**並行実行対策**として、`deliverStockHomeNotifications`
+  全体を`LockService.getScriptLock()`（`tryLock(0)`、`apps/gas/src/
+  GmailImportService.js`の既存箇所と同じ作法）で排他し、read→appendの間に
+  別の配信処理が割り込むことを防いだ。旧Script Properties方式
+  （`READYGO_DELIVERED_IDS`・TTL 7日）は完全に削除した。`apps/gas/test/
+  readygoDelivery.gas.test.cjs`を全面書き換え、9シナリオ（Inbox単体5件:
+  通常投入・重複idスキップ・id欠落・spreadsheet未設定・sheet不在／
+  配信統合4件: 通常配信・ACK不達後の再取得でのスキップとACK再試行・
+  lock保持中の完全スキップ・lock解放と次回実行）で検証した。
+  **既知の限界**（コード・下記「未解決事項」にも記載）: ReadyGo Bot側の
+  実装次第で、(1) E列追加への非対応、(2) 処理済み行の早期削除・アーカイブ
+  による冪等化マーカーの消失、が起こりうる。いずれも外部システム
+  （ReadyGo Bot）の挙動に依存し、StockHome側のtestでは検証できない。
+- **GAS→APIの反映順・GAS version確認・rollback**: 「production変更」節へ
+  3小節（GAS→APIの反映順、GAS versionの確認、rollback（GAS側））として
+  追記した。要旨: API先行deployを推奨（wire contractは全ラウンドで不変の
+  ため順序を問わず安全だが、より強いサーバ側防御を早く有効化するためAPI
+  先行が望ましい）。GAS versionの確認は、`push.bat`がHEADを即座に更新し
+  installable triggerがHEADで実行される性質を踏まえ、次回trigger実行後に
+  Apps Script実行ログで新コード固有の文言を確認する方法を明記。rollbackは
+  対象commitを戻して`push.bat`→`deploy.bat`を再実行する手順とし、Inbox
+  列Eの残存データは無害なため削除不要である旨を明記。
+- **残っていたschema/migration・中間状態の記載矛盾**: `ops/runtime-
+  contract.yaml`の`readygo_outbox`エントリ(4)lease回収の説明が、
+  S014-B06で「判定してから実行する（TOCTOU）」方式から「楽観的に実行し
+  一意制約違反時にフォールバックする」方式へ変更した後も、旧方式の
+  「新しいpending行が既にあれば...とみなして削除する」という判定先行の
+  表現のまま残っていた。実際のS014-B06実装（楽観的update＋P2002捕捉時
+  フォールバック）に合わせて表現を訂正した。
 
 ## 変更理由
 
@@ -228,17 +292,19 @@ port/bind/domain/health endpoint/起動command/DB schema/migration/volume/cron s
 | 配信済み(`delivered`)行の保持 | 無制限に残る | 30日を超えた行を削除（cron実行は全世帯、手動実行は当該世帯のみ） |
 | 滞留の可視化 | 無し | `job_end`へ`readygo_pending`・`readygo_pending_oldest_age_h`・`readygo_superseded`・`readygo_cleaned`を追加 |
 | stale claimedのlease回収とdaily_batch並行insertの競合 | 全household分をまとめて1回の`updateMany`で回収しており、daily_batchの並行insertと競合すると未処理のP2002でリクエスト全体が失敗する | household単位で個別の楽観的`updateMany`を試み、P2002を捕捉したら`deleteMany`へフォールバック。他householdの回収を巻き込まない |
-| ACK不達後の再配信（GAS側） | 防御なし。ACKが届かず lease回収後に同じ行が再取得されると、ReadyGo Inboxへ同じ内容が再度投入され二重配信になりうる | `appendToInbox`成功直後・ACK呼び出しより前にGASのScript Propertiesへ配信済みidを記録（TTL 7日）。再取得時は記録済みidの投入をスキップし、ACKのみ再試行する |
+| ACK不達後の再配信（GAS側） | 防御なし。ACKが届かず lease回収後に同じ行が再取得されると、ReadyGo Inboxへ同じ内容が再度投入され二重配信になりうる | ReadyGo Inbox行のE列へoutbox idを本文と同じ`appendRow`呼び出しで同時書き込みし、既存idの再投入をスキップする（投入と記録が単一操作のため中間状態が無い）。配信処理全体を`LockService`で排他し並行実行による二重投入も防ぐ |
 
 ## 影響対象
 
 - service/container: `stockhome-api-prod`（`apps/api/src/services/batch.ts`・`routes/bridge.ts`・`routes/dashboard.ts`・`lib/logger.ts`の変更。route追加・削除は無し、`POST /api/dashboard/run-batch`のレスポンスは既存fieldを維持したままfieldを追加）。
-  加えてGAS側`apps/gas/src/ApiBridge.js`（`deliverStockHomeNotifications`の
-  冪等化、S014-B07）。GASは新規Script Property
-  `READYGO_DELIVERED_IDS`（配信済みoutbox id記録、TTL 7日で自動prune）を
-  使う。値そのものはoutbox行idの配列であり、secretではない。反映には
-  プロジェクト規約どおり`apps/gas/push.bat`→`apps/gas/deploy.bat`（clasp）
-  が必要（production承認後にユーザーが手動実行。`apps/gas/CLAUDE.md`参照）
+  加えてGAS側`apps/gas/src/ApiBridge.js`（`deliverStockHomeNotifications`へ
+  `LockService`排他を追加、S014-B07）・`apps/gas/src/ReadyGoBotService.js`
+  （`appendToInbox`がoutbox idを受け取り、ReadyGo Inboxシートの新規E列
+  `stockhome_outbox_id`へ本文と同時書き込みするよう変更、S014-B07）。
+  新規Script Propertyは無い（配信済み記録はReadyGo Inboxシート自体に
+  持たせる設計としたため）。反映にはプロジェクト規約どおり
+  `apps/gas/push.bat`→`apps/gas/deploy.bat`（clasp）が必要（production
+  承認後にユーザーが手動実行。`apps/gas/CLAUDE.md`参照）
 - URL/port/health: 変更なし
 - cron/timer/worker: schedule（19:55 JST / 20:10 JST）は変更なし。`daily_batch`の処理内容のみ変更
 - dependency: 変更なし（新規パッケージ追加なし）
@@ -257,6 +323,61 @@ port/bind/domain/health endpoint/起動command/DB schema/migration/volume/cron s
   イベントに出る）。
 - downtime: 既存と同じ（brief-restart）
 - maintenance window: 不要
+- GAS側（S014-B07対応、`apps/gas/src/ApiBridge.js`・`ReadyGoBotService.js`）:
+  production承認後、ユーザーが手動で`apps/gas/push.bat`→`apps/gas/deploy.bat`
+  （`apps/gas/CLAUDE.md`参照）を実行する。ReadyGo側Inboxシートへ列Eを追加する
+  （`stockhome_outbox_id`）。既存のA〜D列の意味・順序は変更しない
+
+### GAS→APIの反映順
+
+**API（`stockhome-api-prod`のdeploy）を先に反映し、その後にGAS
+（`push.bat`→`deploy.bat`）を反映することを推奨する。** 理由:
+`GET /api/bridge/readygo-pending`・`POST /api/bridge/readygo-ack`の
+wire contract（`{pending:[{id,body}]}`・`{ids:[...]}`）はnotice 014の
+一連の変更（S014-B01〜B07）を通じて一切変更していない（DB側の内部実装
+（claim状態・lease・atomicity）とGAS側の冪等化（Inbox列E）だけが変わる）。
+そのため:
+- API先行の場合: 旧GASコード（冪等化無し）は新APIへ問題なく接続でき、
+  サーバ側の重複防止（partial unique index・claim・lease回収）が
+  即座に有効化される。GAS未反映の間はGAS側の冪等化層（S014-B07）だけが
+  未適用だが、サーバ側の防止機構により実害は限定的
+- GAS先行の場合: 新GASコード（Inbox列Eでの冪等化）は旧APIへも問題なく
+  接続できるが、サーバ側の重複防止（S014-B01〜B06）が未反映のまま、
+  より弱い（旧baselineの）重複防止状態が長く続く
+- いずれの順序でも接続不能・contract不整合は起きないが、より強い防御
+  （サーバ側）を早く有効化するため上記の順序を推奨する
+
+### GAS versionの確認
+
+`push.bat`実行はGASプロジェクトのHEAD（最新保存）を更新し、時間主導型
+installable trigger（`deliverStockHomeNotifications`）は次回発火時から
+HEADの内容で実行される（Web アプリ`/exec`URLの反映には別途`deploy.bat`
+が必要だが、ReadyGo配信trigger自体はpush.batの時点で新コードに切り替わる）。
+反映確認は、次回のtrigger実行（20時台）後、Apps Scriptエディタの実行数
+（Executions）ログで以下を確認する:
+- 新コード固有のログ文言`[ReadyGoBotService] Inbox に投入しました
+  (...文字, outboxId=...)`が出ている（旧コードは`outboxId=`を含まない
+  文言だった）
+- lockが競合した場合のログ`[Deliver] 他の配信処理が実行中のため終了します。`
+  が出現しうる（新規追加のLockService対応）
+`deploy.bat`実行後は`clasp deployments`（または Apps Script エディタの
+デプロイ履歴）で新しいデプロイバージョン番号を確認し、反映記録として
+残すことを推奨する
+
+### rollback（GAS側）
+
+`apps/gas/src/ApiBridge.js`・`ReadyGoBotService.js`を本notice反映前の
+commit（`9c20a5d`。この2fileが本notice（S014-B07）で初めて変更される前に
+最後に触られたcommit。`git log --oneline -- apps/gas/src/ApiBridge.js
+apps/gas/src/ReadyGoBotService.js`で確認済み）へ戻し、
+`push.bat`→`deploy.bat`を再実行する（installable triggerはHEADへ即座に
+追従するため、`push.bat`の
+再実行だけで挙動は旧版へ戻る。`deploy.bat`はWeb アプリURLとの整合のため
+念のため実行する）。ReadyGo側Inboxシートへ追加した列E
+（`stockhome_outbox_id`）のデータはrollback後も残存するが、無害な列である
+ため削除は不要（新規DBテーブルがrollback後も残存して無害な場合と同様の
+扱い）。API側にDB schema変更を伴うrollbackは無い（本notice内で新規に
+追加したmigrationは無く、S014-B01時点のmigrationのまま）。
 
 `production_change: required`のため、`deployment_status: not_started`のままVPS管理側へ引き継ぐ。
 
@@ -343,6 +464,21 @@ secret値は記載していない。
     壊れた記録の扱い）
   - `node apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`: **34件
     すべて成功**（既存。回帰なし）
+  - **（第4回レビューで部分対応の指摘を受け、`readygoDelivery.gas.test.cjs`は
+    下記(A''''')で全面書き換えている）**
+
+  **(A''''') Codex実施分（第4回再対応S014-B07、task `20260921-005`。GAS側）**
+
+  - `node --check apps/gas/src/ApiBridge.js`: passed
+  - `node --check apps/gas/src/ReadyGoBotService.js`: passed
+  - `node apps/gas/test/readygoDelivery.gas.test.cjs`: **9件すべて成功**
+    （全面書き換え。Inbox単体5件: 通常投入でE列にid記録・重複idは
+    再投入せずtrue・id欠落は投入せずfalse・spreadsheet未設定はfalse・
+    sheet不在はfalse／配信統合4件: 通常配信でid付き1行投入しACK・
+    ACK不達後の再取得でInbox再投入せずACKのみ再試行・lock保持中は
+    Inbox・ACKとも一切触れない・lock解放後は次回実行が取得可能）
+  - `node apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`: **34件
+    すべて成功**（既存。回帰なし）
 
   **(B) 実DBテスト（ローカルPostgres、Claude実施）**
 
@@ -420,8 +556,8 @@ secret値は記載していない。
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
-- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`f6cb13d`までのcommitを実際の時系列順で確認。上記release_commits参照）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`f6cb13d`はpush済み、local/origin一致確認済み。本noticeの確定分はこれからcommit・pushする）
+- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`1e8b514`までのcommitを実際の時系列順で確認。上記release_commits参照）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`1e8b514`はpush済み、local/origin一致確認済み。本noticeの確定分はこれからcommit・pushする）
 - [x] data更新のtransaction・同時実行・途中失敗を確認した（キューの置き換え削除→insertは
   同一バッチ内の連続操作。途中失敗時はpendingが0件になり得るが、翌日の実行で最新内容が
   再度積まれるため復旧する。購入履歴等の業務データは一切変更しない）
@@ -444,10 +580,14 @@ secret値は記載していない。
   並行insert時の原子性はS014-B06対応で解消済み。lease値（30分）はGAS単体
   実行の上限（6分）を踏まえたClaudeの提案値であり、VPS管理側・app owner
   からの指定値ではない。運用開始後に調整が必要な場合がある。
-- GAS側の配信済み記録（`READYGO_DELIVERED_IDS`）のTTL（7日）もClaudeの提案値
-  （S014-B07対応）。7日を超えてACKが通らない異常が続く場合のみ、稀に
-  Inboxへの再投入が起こり得る既知のトレードオフ。運用開始後に調整が必要な
-  場合がある。
+- GAS側の冪等化（S014-B07、第4回対応）は、ReadyGo Inboxシートに追加した
+  E列（`stockhome_outbox_id`）を突き合わせる方式のため、以下2点はStockHome
+  側のtestでは検証できない既知の限界: (1) ReadyGo Bot側の実装がInbox行の
+  列数を厳密に検証する場合、E列追加が影響しうる。(2) ReadyGo Bot側が
+  処理済み行を投入後すぐに削除・アーカイブする実装だった場合、次回リトライ
+  時にはE列のidが既に無く、重複投入を防げない可能性がある。いずれも
+  ReadyGo Bot側の挙動次第であり、production反映前に運用者による実地確認を
+  推奨する。
 
 ## 希望時期
 
@@ -468,4 +608,5 @@ secret値は記載していない。
   20260920-015（S014-B01・B02対応）、20260920-017（testの不具合修正）、
   20260920-018（並行実行の恒久対策、notice 015と共通）、
   20260921-001（S014-B03・B04・B05対応）、20260921-003（S014-B06対応）、
-  20260921-004（S014-B07対応、GAS側）
+  20260921-004（S014-B07初回対応、GAS側）、
+  20260921-005（S014-B07再対応、Inbox側での冪等化、GAS側）

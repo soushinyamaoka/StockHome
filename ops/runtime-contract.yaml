@@ -249,9 +249,9 @@
 #     20260919.md・backup_restore_drill_log.md）を明記した。訂正commitも文書更新のみで
 #     server change notice・production承認は不要（VPS管理側判定）。
 #   2026-09-20〜09-21 (notice 20260920-STOCKHOME-014、所見A-5・A-6のVPS管理レビュー
-#     3ラウンド、task 20260920-015・20260921-001/003、GAS側task 20260921-004): 初回実装
-#     （pendingの単純な置き換え削除→insert）に対し、第1回レビューで並行batchとGAS
-#     fetch/ACKの競合（S014-B01・B02）を指摘され、readygo_outboxをpending→claimed→
+#     4ラウンド、task 20260920-015・20260921-001/003、GAS側task 20260921-004/005):
+#     初回実装（pendingの単純な置き換え削除→insert）に対し、第1回レビューで並行batchと
+#     GAS fetch/ACKの競合（S014-B01・B02）を指摘され、readygo_outboxをpending→claimed→
 #     deliveredの3状態＋partial unique indexへ再設計した。第2回レビューでさらに、
 #     並行claimの二重取得（S014-B03、`FOR UPDATE SKIP LOCKED`＋status再確認で解消）、
 #     既存重複を含む状態でのmigration失敗（S014-B04、migration内でのDELETE整理で解消）、
@@ -260,12 +260,19 @@
 #     一意制約違反で500になる問題（S014-B06、household単位の楽観的update＋P2002捕捉時
 #     フォールバックdeleteへ変更して解消）と、GAS側でACK不達時に同じ内容がReadyGo
 #     Inboxへ二重投入されうる問題（S014-B07、GAS側`ApiBridge.js`へScript Properties
-#     ベースの配信済みid記録・TTL 7日を追加して解消）を指摘され対応した。
-#     data.data_retentionのreadygo_outbox項目を新しい状態遷移・原子性保証・lease回収
-#     の説明へ更新済み（GAS側の冪等化はScript Properties上の記録であり本ファイルの
-#     対象であるAPI側DBには影響しないため、ここへは記載しない）。schema変更は
-#     claimed_at列＋partial unique index追加のみ（migration 20260920222509）。
-#     production未反映。
+#     ベースの配信済みid記録・TTL 7日を追加）を指摘され対応した。第4回レビューで、
+#     このS014-B07対応が「Inbox投入とID記録が別操作のため中断時に二重投入しうる」と
+#     部分対応の指摘を受け、ReadyGo Inboxシートへ列E（`stockhome_outbox_id`）を追加し
+#     本文と同じ`appendRow`呼び出しでidを同時書き込みする方式へ置き換えた（旧Script
+#     Properties方式は削除）。あわせて`deliverStockHomeNotifications`全体を
+#     `LockService`で排他し並行実行対策も追加した。data.data_retentionの
+#     readygo_outbox項目(4)lease回収の説明も、S014-B06が「判定してから実行」方式から
+#     「楽観的実行＋一意制約違反時フォールバック」方式へ変更したことを反映するよう
+#     訂正した（第4回レビューで記載矛盾を指摘され対応）。GAS側の冪等化（Inbox列Eでの
+#     照合）はAPI側DBに影響しないため、data.data_retentionへは詳細を記載しない。
+#     schema変更はAPI側がclaimed_at列＋partial unique index追加のみ（migration
+#     20260920222509）。ReadyGo Inbox側の列E追加はGAS側スプレッドシートの変更であり
+#     本ファイルが対象とするAPI/DBのschemaではない。production未反映。
 
 schema_version: 1
 app: stockhome
@@ -621,7 +628,7 @@ data:
     - table: readygo_outbox
       policy: >-
         2026-09-20（notice 20260920-STOCKHOME-014、所見A-5・A-6）追加。2026-09-21の
-        第2回VPS管理レビュー（S014-B03・B04・B05）対応で、以下の内容へ更新した。
+        第2回・第3回VPS管理レビュー（S014-B03〜B06）対応で、以下の内容へ更新した。
         statusは pending → claimed → delivered の3状態（claimed_at列を追加）。
         (1) 投入: daily_batchがキューへ投入する際、まず新規insertを試み、同一household
         の既存pending行と衝突（partial unique index違反）した場合はその行の内容をupdate
@@ -638,11 +645,22 @@ data:
         (3) ACK: POST /api/bridge/readygo-ack はclaimed行のみを受理しdeliveredへ遷移
         させる（pendingのまま・既にdeliveredの行はACK対象外）。
         (4) lease回収: GET呼び出しの先頭で、claimed_atから30分（GAS単体実行の上限6分に
-        十分な余裕を持たせた値）を超えてclaimされたまま残る行を回収する。同一household
-        に新しいpending行が無ければpendingへ戻し（reclaim直後、同一呼び出し内のclaim
-        処理で即座に再claimされレスポンスにも含まれる。reclaim後にpendingのまま残る
-        中間状態は無い）、新しいpending行が既にあれば古い方をsupersede済みとみなして
-        削除する。これによりGASがReadyGo投入前に停止した場合でも通知が永久に失われない。
+        十分な余裕を持たせた値）を超えてclaimされたまま残る行を、household・行単位で
+        個別に回収する。各行ごとに「pendingへ戻す」updateを楽観的に試み（同一household
+        向けのより新しいpending行が無い前提で実行）、一意制約違反（partial unique
+        indexへの違反、＝並行して新しいpending行が作られていた場合）を検知した場合の
+        みその行を削除するフォールバックへ切り替える（判定してから実行するのではなく、
+        DBの一意制約自体を判定として使うため、daily_batchの並行insertとの競合でも
+        リクエスト全体が失敗しない。S014-B06、2026-09-21第3回VPS管理レビュー対応。
+        household単位でまとめて1回のupdateで回収していた旧実装は、他householdの並行
+        insertと競合すると未処理のエラーでreclaim処理全体が失敗する不具合があった）。
+        pendingへ戻った行は、reclaim直後・同一呼び出し内のclaim処理で即座に再claimされ
+        レスポンスにも含まれる（reclaim後にpendingのまま残る中間状態は無い）。これに
+        よりGASがReadyGo投入前に停止した場合でも通知が永久に失われない。なお、この
+        reclaimによって同じ行が複数回GASへ配信される可能性自体は残るが、二重の
+        LINE配信を防ぐ冪等化はGAS側（ReadyGo Inboxシートへoutbox idを本文と同時書き込み
+        し、既存idの再投入をスキップする。S014-B07）で行っており、本テーブル
+        （API側DB）の外側の仕組みのためここには詳細を記載しない。
         (5) 保持期間: status='delivered' かつ delivered_at が30日より古い行を削除する。
         cron実行(19:55 JST)は全household、世帯を指定した手動実行はその世帯のみが対象。
         削除件数は readygo_outbox_cleaned イベントに出る。
