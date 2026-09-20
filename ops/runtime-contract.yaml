@@ -207,6 +207,13 @@
 #     .env.production.exampleへの実際の受け渡し設定もあわせて反映。本commitはドキュメント・
 #     Compose設定のみで、Codex実装分（accountRateLimit.tsの上限付きTTL化等）は別task
 #     20260920-004で対応中。production未反映。
+#   2026-09-20 (第2回VPS管理レビュー): notice 20260920-STOCKHOME-013の第2回レビューで、
+#     コードblockerは解消済み・Nginx変更も不要と判定されたうえで、文書側4点の訂正指示を
+#     受けた。TRUSTED_PROXY_IPSをrequired: falseからrequired: trueへ訂正（productionでは
+#     明示設定が前提であることを反映）、接続元IP実測172.19.0.1を単に「解決済み」で統一、
+#     nginxの転送ヘッダ仕様の説明を「XFF上書き」という不正確な表現から「追記方式＋
+#     直前proxy限定trust」（X-Real-IPは上書き、X-Forwarded-Forは追記で上書きではない）
+#     へ訂正した。Claudeが本ファイルへ反映。production未反映。
 #   2026-09-19 (commit 12ac1a5の再レビュー): VPS管理側が方針本文の整合を確認（local
 #     HEAD・cached origin/main・実remote mainがcommit一致、変更はruntime-contract.yaml
 #     への15行追加のみでbuild input変更なし、YAML parse成功、backup_policyの内容が
@@ -251,12 +258,13 @@ network:
       upstream: 127.0.0.1:4002
       tls: letsencrypt
       # nginxの転送ヘッダ仕様（VPS管理側確認、notice 20260920-STOCKHOME-013）:
-      # X-Real-IP は接続元IPで上書き。X-Forwarded-For は受信値の末尾へ接続元IPを追記する
-      # （クライアントの詐称値は保持されたまま残るが、末尾に本当の接続元IPが必ず追加される）。
-      # このためAPI側は trustProxy:true を使わず、TRUSTED_PROXY_IPS（直前proxyのみ）を
-      # 信頼するよう構成している。Fastify(proxy-addr)はXFFを右から左へ走査し最初の非信頼
-      # 値を採用するため、nginxが末尾に追記した本当の接続元IPが正しく採用され、
-      # クライアント側の詐称prefixは信頼されない。
+      # 現行は「追記方式＋直前proxy限定trust」の設計。X-Real-IP は接続元IPで上書きするが、
+      # X-Forwarded-For は受信値の末尾へ接続元IPを追記する（上書きではない。クライアントの
+      # 詐称値は保持されたまま残るが、末尾に本当の接続元IPが必ず追加される）。
+      # このためAPI側は trustProxy:true を使わず、TRUSTED_PROXY_IPS（直前proxyのみ、
+      # 実測 172.19.0.1）を信頼するよう構成している。Fastify(proxy-addr)はXFFを右から
+      # 左へ走査し最初の非信頼値を採用するため、nginxが末尾に追記した本当の接続元IPが
+      # 正しく採用され、クライアント側の詐称prefixは信頼されない。
   health:
     internal:
       path: /health
@@ -278,14 +286,15 @@ config:
     - { name: POSTGRES_USER, required: true, secret: true }
     - { name: POSTGRES_PASSWORD, required: true, secret: true }
     - { name: POSTGRES_DB, required: true, secret: false }
-    - { name: TRUSTED_PROXY_IPS, required: false, secret: false }
+    - { name: TRUSTED_PROXY_IPS, required: true, secret: false }
       # notice 20260920-STOCKHOME-013（所見A-8）。server.ts の resolveTrustedProxies が
       # Fastifyのtrust proxyへ渡す、直前proxy（nginx）のIPのカンマ区切りリスト。
-      # 未設定時はコード既定値 127.0.0.1,::1 にfallbackするが、本番はnginx→APIコンテナ間が
-      # Docker bridge network経由のため、この既定値とは一致しない。VPS管理側が2026-09-20に
-      # 実測した値は 172.19.0.1（stockhome_default networkのgateway IP）。docker-compose.prod.yml
-      # のapi.environmentへ渡し、.envに設定する。Docker bridge networkの再作成等でgateway IPが
-      # 変わり得るため、nginx-API間の接続経路が変わった場合はVPS管理側で再測定が必要。
+      # VPS管理側が2026-09-20に実測した値は 172.19.0.1（stockhome_default networkの
+      # gateway IP、解決済み）。docker-compose.prod.ymlのapi.environmentへ渡し、.envへ
+      # TRUSTED_PROXY_IPS=172.19.0.1 を設定することがdeploy前提（本番運用ではrequired）。
+      # コード側の既定値 127.0.0.1,::1 はnginx→APIコンテナ間のDocker bridge network経由の
+      # 実接続元とは一致しないfallbackのため、production deployでは明示設定を必須とする。
+      # Docker bridge networkの再作成等でgateway IPが変わった場合はVPS管理側で再測定が必要。
     - { name: HISTORICAL_REPARSE_ENABLED, required: false, secret: false }
       # notice 20260907-STOCKHOME-006。'true'のときだけ GET/POST /api/bridge/reparse-candidates・
       # GET /api/bridge/reparse-progress を有効化する一時フラグ（未設定時は404）。

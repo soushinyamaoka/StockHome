@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: a3468cdc4c202c896d81067680e544daf7df69d0
+source_commit: 11a9a1539073a8021343668193ad45bfb810ec1f
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
@@ -25,22 +25,31 @@ release_commits:（baseline以降、実際のcommit時系列順）
 - `12ac1a5`（`ops/runtime-contract.yaml`のみ、C-2バックアップ方針記録）
 - `ad432fb`（notice `20260919-STOCKHOME-011`。所見A-1/A-3/B-5対応。**本noticeの対象外**、011で`accepted`済み）
 - `084d1d1`/`a9200ee`/`280b101`/`611dbcf`/`71da90f`/`741eeec`/`dcccd40`/`274a7b6`/`b0c1535`/`e5ac6f8`/`3a7c9fb`/`e5d4d62`（notice `20260919-STOCKHOME-010`、C-5ロールバック機構。**本noticeの対象外**、010で`accepted`済み）
-- `b8c0e71`（所見A-2・A-7対応、JWT有効期限延長。`apps/api`のみ）
-- `96864a6`/`dbff6c9`/`b33dcb4`（notice `20260920-STOCKHOME-013`、A-8 rate limit導入関連。**本noticeの対象外**、013で別途扱う）
-- `a3468cd`（**本notice対象・source。第1回VPS管理レビューの指摘対応**。
-  `JWT_SECRET`未設定・空文字時の起動失敗テスト、新規JWTのexp-iat=90日テストを
-  追加。`entrypoint.ts`・`plugins/auth.ts`・`routes/auth.ts`の実装自体に差分は
-  無い（テスト追加のみ）。task `20260920-003`）
+- `b8c0e71`（**本notice対象**。所見A-2・A-7対応、JWT有効期限延長。`apps/api`のみ）
+- `b33dcb4`（notice `20260920-STOCKHOME-012`（本notice）の新規作成。`ops/**`のみ）
+- `dbff6c9`（notice `20260920-STOCKHOME-013`、所見A-8対応・rate limit導入。**本noticeの対象外**、013で別途扱う）
+- `96864a6`（notice `20260920-STOCKHOME-013`の新規作成。`ops/**`のみ。**本noticeの対象外**）
+- `a3468cd`（第1回VPS管理レビューの指摘対応。`JWT_SECRET`未設定・空文字時の
+  起動失敗テスト、新規JWTのexp-iat=90日テストを追加。`entrypoint.ts`・
+  `plugins/auth.ts`・`routes/auth.ts`の実装自体に差分は無い。task
+  `20260920-003`）
+- `ade5825`/`0f27da3`（notice `20260920-STOCKHOME-013`関連。**本noticeの
+  対象外**）
+- `13bf318`（notice 012・013の再提出反映。`ops/**`のみ）
+- `11a9a15`（**本notice対象・最終source。第2回VPS管理レビューの指摘対応**。
+  `JWT_SECRET`設定済みで環境検査を通過し`migration_start`まで進む正方向
+  テストを追加。`entrypoint.ts`・`plugins/auth.ts`・`routes/auth.ts`の
+  実装自体に差分は無い（テスト追加のみ）。task `20260920-005`／
+  `20260920-006`）
 
-**本noticeが対象とするのは認証まわりのAPI変更（`b8c0e71`の実装＋`a3468cd`の
-テスト追加）。notice 010（deploy/rollback機構）・011（mobile UI・push
-payload）・013（A-8 rate limit）とは無関係な変更のため、分離したままとする。
-他notice ID・全release commitについては各noticeの提出内容を参照。**
+**本noticeが対象とするのは認証まわりのAPI変更（`b8c0e71`の実装＋`a3468cd`・
+`11a9a15`のテスト追加）。notice 010（deploy/rollback機構）・011（mobile UI・
+push payload）・013（A-8 rate limit）とは無関係な変更のため、分離したまま
+とする。他notice ID・全release commitについては各noticeの提出内容を参照。**
 
 impact_level: L2
 
-status: ready_for_review（第1回VPS管理レビューでblocked。指摘2点をtask
-`20260920-003`で対応し再提出。下記「VPS管理レビュー結果への対応」参照）
+status: ready_for_review
 
 created_by: Claude
 
@@ -84,6 +93,29 @@ Fastifyアプリで`app.jwt.sign`/`app.jwt.decode`を使う方式
 （`apps/api/src/plugins/auth.test.ts`）で2を実装した。いずれもDB接続不要。
 `entrypoint.ts`・`plugins/auth.ts`・`routes/auth.ts`の実装自体への変更は
 無い（テスト追加のみ、task `20260920-003`）。
+
+## VPS管理レビュー結果への対応（第2回：正方向テスト追加）
+
+第2回VPS管理レビューで、「非空の`JWT_SECRET`で環境検査を通過し、
+`migration_start`まで進む正方向テストを追加」との指摘を受けた（第1回の
+失敗系2テストのみでは正常系の検証が無かったため）。
+
+`entrypoint.env.test.ts`へ、`NODE_ENV=production`・`JWT_SECRET`設定済みの
+場合に`migration_start`ログへ到達し`startup_failed`/`missing_required_env`
+が出力されないことを検証するテストを追加した（task `20260920-005`）。
+
+実装過程で1回のブロッカーが発生した: 最初の実装は子processのenvから
+`DATABASE_URL`を削除するだけだったが、**Prisma CLIは渡された`env`に
+`DATABASE_URL`が無い場合、schema.prismaと同じディレクトリの`.env`
+ファイルを自分自身で独自に読み込んでしまう**ため、ローカル開発用DBへの
+実接続を試み、実行環境によっては長時間ハングしてテストがタイムアウトした
+（`blocked`、task `20260920-005`はこの時点で推測実装をせず停止）。Claudeが
+ローカルで原因を特定し、子processのenvへ明示的に`DATABASE_URL: 'invalid'`
+（validなpostgresql://スキームではない値）を渡すことで、Prismaの`.env`
+自動読み込みを防ぎ、接続を試みる前の設定validation段階（314ms、
+`prisma_error_code: P1012`）で確実に失敗させる方式へ修正した
+（task `20260920-006`）。`migration_start`ログは失敗の前に出力されるため、
+本テストの検証内容には影響しない。
 
 ## 変更理由
 
@@ -173,7 +205,7 @@ secret値は記載していない。
     トークンの即時失効・有効ユーザートークンの継続動作・誤ったパスワード時の
     401維持を検証）
 
-  **(C) DB不要テスト（Codex実施、再提出分。task `20260920-003`）**
+  **(C) DB不要テスト（Codex実施、第1回再提出分。task `20260920-003`）**
   - `npx tsx --test apps/api/src/entrypoint.env.test.ts
     apps/api/src/plugins/auth.test.ts`: passed（3 tests）
     - `entrypoint.env.test.ts`: `NODE_ENV=production`かつ`JWT_SECRET`未設定・
@@ -183,15 +215,28 @@ secret値は記載していない。
       `exp - iat`が7,776,000秒（90日）、payloadの`userId`が正しく復元される
       ことを確認（1シナリオ）
 
-  **(D) フルテストスイート（ローカルPostgres、Claude実施、再提出分）**
-  - `npm test --workspace=@stockhome/api`: **143件すべて成功**（notice 013の
-    rate limit関連テスト等を含む最新状態での全件再確認。既存テストとの
-    衝突・リグレッション無し）
+  **(C') DB不要テスト（Codex実施、第2回再提出分。task `20260920-005`／
+  `20260920-006`）**
+  - `npx tsx --test apps/api/src/entrypoint.env.test.ts`: passed（3 tests）
+    - 既存2シナリオ（未設定・空文字）に加え、`JWT_SECRET`設定済み・
+      `DATABASE_URL: 'invalid'`のシナリオで、環境検査を通過し
+      `migration_start`ログへ到達すること、`startup_failed`/
+      `missing_required_env`が出力されないことを確認（正方向テスト、
+      1シナリオ追加）
+
+  **(D) フルテストスイート（ローカルPostgres、Claude実施。第1回・第2回
+  再提出分とも実施）**
+  - 第1回再提出分: `npm test --workspace=@stockhome/api`: 143件すべて成功
+    （notice 013のrate limit関連テスト等を含む最新状態での全件再確認。
+    既存テストとの衝突・リグレッション無し）
+  - 第2回再提出分: `npm test --workspace=@stockhome/api`: **144件すべて
+    成功**（正方向テスト1件追加後の全件再確認。リグレッション無し）
 
   - 差分自己点検: `apps/api/prisma/`・`packages/shared`・`apps/gas`・
     `apps/mobile`・`ops/`に本taskによる差分が無いことを確認。
     `entrypoint.ts`・`plugins/auth.ts`・`routes/auth.ts`の実装自体には
-    第1回レビュー以降の差分が無い（新規テストファイル2件の追加のみ）
+    第1回レビュー以降の差分が無い（新規テストファイル2件の追加＋
+    正方向テスト1件の追加のみ）
 - 結果: すべて成功
 - 未実施テストと理由: production環境での`JWT_SECRET`未設定時の実際の起動失敗確認は未実施（production VPSへの接続はVPS管理側の個別承認後に限られるため）。deploy時にVPS管理側で`.env`の`JWT_SECRET`設定を確認いただくことで代替する。
 
@@ -205,8 +250,8 @@ secret値は記載していない。
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
-- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`a3468cd`までの全commitを実際の時系列順で確認。上記release_commits参照）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`a3468cd`はpush済み、local/origin一致確認済み。本notice fileはこれからcommit・pushする）
+- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`11a9a15`までの全commitを実際の時系列順で確認。上記release_commits参照）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`11a9a15`はpush済み、local/origin一致確認済み。本notice fileはこれからcommit・pushする）
 - [ ] data更新のtransaction・同時実行・途中失敗・再実行を確認した — 該当なし（DBデータ更新を伴わない変更のため）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（本変更はimage rollbackのみで完全に戻せる。data rollbackは不要）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した（job: 該当なし。log: `startup_failed`イベントへのfield追加のみ。runtime/dependency: 変更なし。client配信: mobile側の変更を含まないため該当なし）
@@ -237,4 +282,4 @@ secret値は記載していない。
 - app owner: 未実施
 - VPS management review: 未実施
 - production approval: 未実施
-- related task_id: 20260920-001（実装）、20260920-003（第1回レビュー指摘への対応、テスト追加）
+- related task_id: 20260920-001（実装）、20260920-003（第1回レビュー指摘対応）、20260920-005／20260920-006（第2回レビュー指摘対応、正方向テスト追加）

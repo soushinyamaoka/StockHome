@@ -30,8 +30,8 @@ release_commits:（baseline以降、実際のcommit時系列順。notice 012以�
   **本noticeの対象外**）
 - `ade5825`（**Claude直接反映**。`docker-compose.prod.yml`・
   `.env.production.example`へVPS管理側実測値`TRUSTED_PROXY_IPS=172.19.0.1`の
-  受け渡しを追加、`ops/runtime-contract.yaml`へ同値とnginxのXFF上書き挙動を記載。
-  コード変更なし）
+  受け渡しを追加、`ops/runtime-contract.yaml`へ同値とnginxの転送ヘッダ挙動
+  （追記方式＋直前proxy限定trust）を記載。コード変更なし）
 - `0f27da3`（**本notice対象・最終source**。第1回VPS管理レビューの指摘対応。
   `accountRateLimit.ts`を上限付きTTL store化＋非string email型検査を追加、
   `resolveTrustedProxies`を`lib/trustedProxies.ts`へ抽出しtrusted proxy／
@@ -44,10 +44,7 @@ JWT期限）は別変更のため分離したままとする。**
 
 impact_level: L2
 
-status: ready_for_review（第1回VPS管理レビューでblocked。指摘5点のうち
-TRUSTED_PROXY_IPS配線・runtime-contract記載はClaudeが直接反映、残り3点
-（TTL store化・型検査・trusted proxy/詐称XFFテスト）はtask `20260920-004`で
-対応し再提出。下記「VPS管理レビュー結果への対応」参照）
+status: ready_for_review
 
 created_by: Claude
 
@@ -100,12 +97,33 @@ nginx→APIコンテナ間の直前proxy IPを実測し、`172.19.0.1`と判明�
    追記した実IPが正しく採用され、クライアントの詐称prefixが無視されること、
    (b) 信頼されていない接続元からのXFFは完全に無視され生の接続元IPが
    使われること、の2シナリオを検証するテストを追加した（同commit）。
-5. **NginxのXFF上書きをproduction前提へ記載**
+5. **Nginxの転送ヘッダ挙動（追記方式＋直前proxy限定trust）をproduction前提へ記載**
    → Claudeが直接対応（commit `ade5825`）。`ops/runtime-contract.yaml`の
-   `network.public`へ、nginxが`X-Real-IP`を接続元IPで上書き・
-   `X-Forwarded-For`は受信値の末尾へ接続元IPを追記する設定であること、
-   Fastify(proxy-addr)が右から左へ走査し最初の非信頼値を採用するため
-   詐称prefixが信頼されないことを記載した。
+   `network.public`へ、nginxが`X-Real-IP`を接続元IPで上書きする一方、
+   `X-Forwarded-For`は上書きではなく受信値の末尾へ接続元IPを追記する設定で
+   あること、API側はこれに合わせて`trustProxy:true`を使わず直前proxy
+   （nginx）のみを信頼する設計にしていること、Fastify(proxy-addr)が右から
+   左へ走査し最初の非信頼値を採用するため詐称prefixが信頼されないことを
+   記載した（第2回レビューで、当初の見出し「XFF上書き」が不正確との
+   指摘を受け「追記方式＋直前proxy限定trust」へ訂正）。
+
+## VPS管理レビュー結果への対応（第2回：文書訂正のみ）
+
+第2回VPS管理レビューで、コードblocker（上記5点）は解消済み、Nginx設定変更も
+不要と判定された。以下4点の文書訂正のみを求められ、Claudeが直接対応した
+（コード変更なし）。
+
+1. `ops/runtime-contract.yaml`の`TRUSTED_PROXY_IPS`を`required: false`から
+   `required: true`へ訂正（production運用では明示設定が前提であることを
+   反映。下記「env・secret contract」「Deploy・rollback」参照）。
+2. `.env`への`TRUSTED_PROXY_IPS`設定を、deploy前提として明記（下記
+   「Deploy・rollback」参照）。
+3. 接続元IP実測（`172.19.0.1`）の記載を「解決済み」で統一し、
+   「確認が必要」「未確認」等の残存していた古い表現を除去した（下記
+   「server_impact判定」「production変更」「未解決事項」参照）。
+4. nginxの転送ヘッダ挙動の見出しを「XFF上書き」（不正確。XFFは上書きでは
+   なく追記のため）から「現行追記方式＋直前proxy限定trust」へ訂正した
+   （上記item 5、`ops/runtime-contract.yaml`）。
 
 ## 変更理由
 
@@ -117,9 +135,9 @@ nginx→APIコンテナ間の直前proxy IPを実測し、`172.19.0.1`と判明�
 server_impact: notify
 
 判定理由: 認証routeの応答（429の新設）、Fastifyの`trustProxy`設定、新規依存
-（`@fastify/rate-limit`）を追加するため。特に、初回production利用時に
-Docker経由でnginxからAPIコンテナへ接続した際の実際の接続元IPを確認する
-必要があり（下記「未解決事項」参照）、deploy前の実測確認が要る。
+（`@fastify/rate-limit`）を追加するため。Docker経由でnginxからAPIコンテナへ
+接続した際の実際の接続元IPは、VPS管理側の実測により`172.19.0.1`で解決済み
+（`TRUSTED_PROXY_IPS`へ設定し反映済み。下記「env・secret contract」参照）。
 port/bind/domain/health endpoint/起動command/DB schema/migration/volume/cron/
 既存API contract（既存エンドポイントの追加削除）は変更していない。
 
@@ -144,7 +162,15 @@ port/bind/domain/health endpoint/起動command/DB schema/migration/volume/cron/
 ## production変更
 
 - 必要性: あり
-- 想定作業: 通常のAPI deployで反映される。**deploy前に、VPS管理側でnginxからAPIコンテナへの実際の接続がどのIPとして観測されるかを確認する必要がある**（下記「未解決事項」参照）。誤っていた場合の失敗モードは「安全側」（`trustProxy`が接続元IPにマッチしなければ、Fastifyは`X-Forwarded-For`を一切信頼せず生の接続元IPをそのまま使う＝Docker bridge gatewayの1つのIPに全リクエストが集約されるだけで、詐称されたIPを信頼する方向には倒れない。ただしこの場合、実質的に全利用者が同一IPとして扱われ、IPベースのrate limitが家庭全体で共有されてしまう）。
+- 想定作業: 通常のAPI deployで反映される。**deploy前提として、`.env`に
+  `TRUSTED_PROXY_IPS=172.19.0.1`（VPS管理側の実測値、解決済み）が設定されて
+  いることを確認する**（下記「env・secret contract」「Deploy・rollback」
+  参照）。仮に値が誤っていた／未設定だった場合の失敗モードは「安全側」
+  （`trustProxy`が接続元IPにマッチしなければ、Fastifyは`X-Forwarded-For`を
+  一切信頼せず生の接続元IPをそのまま使う＝Docker bridge gatewayの1つのIPに
+  全リクエストが集約されるだけで、詐称されたIPを信頼する方向には倒れない。
+  ただしこの場合、実質的に全利用者が同一IPとして扱われ、IPベースのrate
+  limitが家庭全体で共有されてしまう）。
 - downtime: 既存と同じ（brief-restart）
 - maintenance window: 不要
 
@@ -159,8 +185,8 @@ port/bind/domain/health endpoint/起動command/DB schema/migration/volume/cron/
 ## env・secret contract
 
 - 変更: あり
-- 変数名・secret種類のみ: `TRUSTED_PROXY_IPS`（新規、secretではない。カンマ区切りのIPリスト。`docker-compose.prod.yml`から明示的に渡すようになった。VPS管理側の実測値は`172.19.0.1`。未設定時はコード側の既定値`127.0.0.1,::1`にfallbackするが、production運用では`.env`への明示設定が前提）
-- provisioning/rotation: `.env`へ`TRUSTED_PROXY_IPS=172.19.0.1`を設定（`.env.production.example`に記載済み）。Docker bridge networkの再作成等でgateway IPが変わった場合はVPS管理側で再測定・再設定が必要
+- 変数名・secret種類のみ: `TRUSTED_PROXY_IPS`（新規、secretではない。カンマ区切りのIPリスト。`docker-compose.prod.yml`から明示的に渡す。`ops/runtime-contract.yaml`上は`required: true`（第2回レビューで`false`から訂正）。VPS管理側の実測値は`172.19.0.1`で解決済み。コード側の既定値`127.0.0.1,::1`はnginx→APIコンテナ間のDocker bridge network経由の実接続元とは一致しないfallbackのため、production運用では`.env`への明示設定がdeploy前提）
+- provisioning/rotation: `.env`へ`TRUSTED_PROXY_IPS=172.19.0.1`を設定（`.env.production.example`に記載済み、deploy前提。下記「Deploy・rollback」参照）。Docker bridge networkの再作成等でgateway IPが変わった場合はVPS管理側で再測定・再設定が必要
 
 secret値は記載していない。
 
@@ -174,7 +200,7 @@ secret値は記載していない。
 
 ## Deploy・rollback
 
-- deploy前提: なし（`TRUSTED_PROXY_IPS`は既定値で動作するため、未設定でもdeploy自体は可能。ただし実測確認前は、Docker経由の接続元IPが既定値と一致しない場合、IPベースのrate limitが家庭全体で共有される状態になる）
+- deploy前提: `.env`に`TRUSTED_PROXY_IPS=172.19.0.1`（VPS管理側実測値）が設定されていることを確認する（未設定の場合、コード側の既定値`127.0.0.1,::1`にfallbackし、Docker bridge経由の実際の接続元IPと一致しないため、IPベースのrate limitが家庭全体で共有される状態になる。安全側の失敗モードではあるが、deploy前に必ず設定すること）
 - deploy手順の変更: なし
 - rollback方法: 旧image tagへの切り替え（従来手順、またはnotice 010のrollback機構が承認され次第そちらを利用可）
 - rollback不能条件: 特になし（DBデータを変更しないため、image rollbackのみで完全に戻せる）
@@ -226,9 +252,9 @@ secret値は記載していない。
 
 - 結果: すべて成功
 - 未実施テストと理由: **VPS上での実接続テストは未実施**（他のnoticeと同様、
-  production環境への接続はVPS管理側の個別承認後に限られるため）。特に
+  production環境への接続はVPS管理側の個別承認後に限られるため）。
   「nginxからDocker経由でAPIコンテナへ接続した際の実際の接続元IP」は
-  実機でしか確認できない（下記「未解決事項」参照）。
+  VPS管理側の実測により解決済み（`172.19.0.1`。下記「未解決事項」参照）。
 
 ## Log・監視
 
@@ -252,13 +278,13 @@ secret値は記載していない。
 
 ## 未解決事項
 
-- ~~nginxからDocker経由でAPIコンテナへ接続した際の実際の接続元IPが未確認~~
-  → **解決済み**。VPS管理側が実測し`172.19.0.1`と判明。
+- nginxからDocker経由でAPIコンテナへ接続した際の実際の接続元IP:
+  **解決済み**。VPS管理側が実測し`172.19.0.1`と判明。
   `docker-compose.prod.yml`・`.env.production.example`へ配線し、
-  `ops/runtime-contract.yaml`へ記録した（上記「VPS管理レビュー結果への対応」
-  参照）。Docker bridge networkの実装詳細に依存する値のため、ネットワーク
-  再作成等で変わり得る点は注記済み（再測定が必要になった場合はVPS管理側で
-  対応）。
+  `ops/runtime-contract.yaml`（`required: true`）へ記録した（上記
+  「VPS管理レビュー結果への対応」参照）。Docker bridge networkの実装詳細に
+  依存する値のため、ネットワーク再作成等で変わり得る点は注記済み
+  （再測定が必要になった場合はVPS管理側で対応）。
 - rate limitの具体的な上限値（IPベース20回/分、アカウントベース5回/15分）は
   Claudeの提案値であり、VPS管理側・app ownerからの指定値ではない。運用開始後に
   厳しすぎる／緩すぎると判断された場合は調整が必要。
