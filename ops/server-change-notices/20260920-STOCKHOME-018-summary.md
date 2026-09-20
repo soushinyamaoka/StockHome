@@ -12,13 +12,20 @@ app: stockhome
 
 source_branch: main
 
-source_commit: e690a16149f75a02f639c230521fe88400677c34
+source_commit: 332c8c022f195c0a08d1d78d40aa2478c0466ff0
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
-release_commits: 本noticeは`ops/runtime-contract.yaml`への方針記載のみで、
-コード側のsource commitは無い（後述のとおりコード変更を伴わない）。参照する
-repo状態は`e690a16`（直前notice 017の反映後）。
+release_commits:（baseline以降。notice 017以降の分のみ再掲。それ以前の全commit列は
+notice 010〜017の提出内容を参照）
+
+- `ec6e541`（baseline。notice `20260918-STOCKHOME-009`でproduction反映・`verified`済み）
+- （中略。notice 010〜016までの全commitは各noticeのrelease_commits参照）
+- `e690a16`（notice `20260920-STOCKHOME-017`の新規作成。所見C-8・A-9。**本noticeの対象外**）
+- `332c8c0`（**本notice対象・最終source**。`ops/runtime-contract.yaml`へ所見C-7の
+  方針記載＋本notice fileの新規作成。コード変更は無い）
+
+**本noticeが対象とするのは所見C-7（データ保持方針の明記）への対応のみ。**
 
 impact_level: L1
 
@@ -26,11 +33,11 @@ status: ready_for_review
 
 created_by: Claude
 
-production_change: not_required
+production_change: none
 
 vps_management_handoff: required
 
-deployment_status: not_applicable
+deployment_status: not_started
 
 ## 変更概要
 
@@ -44,6 +51,20 @@ deployment_status: not_applicable
 notice 014）とは異なり、これら3テーブルは「再生成不可の監査ログ」または
 「削除すると別ロジック（自動確定・価格判定）に副作用が出うるデータ」であり、
 単一世帯・低頻度利用では増加も緩やかなため、自動削除の対象にしない判断とした。
+
+## VPS管理レビュー結果への対応（blocked→再提出）
+
+第1回VPS管理レビューで、方針内容自体は受理可能だが以下2点のmetadata不整合を
+指摘され（S018-D01）blockedとなった。
+
+1. `source_commit`が、実際に`ops/runtime-contract.yaml`を変更した`332c8c0`
+   ではなく、直前notice（017）作成時の`e690a16`のままだった → `332c8c0`へ
+   訂正した。
+2. `production_change: not_required`・`deployment_status: not_applicable`が
+   テンプレート正規値と不一致だった → `production_change: none`・
+   `deployment_status: not_started`へ訂正した。
+
+コード変更・方針内容そのものへの変更は無い。
 
 ## 変更理由
 
@@ -79,7 +100,7 @@ volume/cron/API contract/ログ出力、いずれも無変更。
 
 ## production変更
 
-- 必要性: なし（`production_change: not_required`）
+- 必要性: なし（`production_change: none`）
 - 想定作業: 該当なし。deploy不要（コード変更が無いため、既存productionの
   イメージ・DB・挙動に一切影響しない）。
 - downtime: 該当なし
@@ -132,14 +153,14 @@ volume/cron/API contract/ログ出力、いずれも無変更。
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
 - [x] production baselineとrelease全commit・build入力差分を確認した（コード側の変更が無いため該当なし。`ops/runtime-contract.yaml`のみの差分であることを`git status`で確認済み）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`e690a16`はpush済み、本notice fileはこれからcommit・pushする）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`332c8c0`はpush済み、local/origin一致確認済み。本notice fileの訂正分はこれからcommit・pushする）
 - [x] data更新のtransaction・同時実行・途中失敗を確認した — 該当なし（DB操作を伴わない変更のため）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた — 該当なし（imageの変更が無い）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した（retention: 本noticeそのものが3テーブルの保持方針記載。job/log/runtime/dependency/client配信: いずれも該当なし）
-- [ ] app owner、VPS review、production承認、client配信承認を分離した — production承認は不要（`production_change: not_required`）。VPS reviewは下記Approval参照
+- [ ] app owner、VPS review、production承認、client配信承認を分離した — production承認は不要（`production_change: none`）。VPS reviewは下記Approval参照
 - [x] secret非混入とtracked working tree cleanを確認した（`git status --short`で確認。既知の無関係な未追跡ファイルのみ残存）
 
-未確認・該当なしの理由: 本noticeはコード変更を伴わないドキュメント更新のみのため、多くの項目が「該当なし」となる。production承認プロセス自体は不要（`production_change: not_required`）だが、`ops/runtime-contract.yaml`の内容が実機の運用方針と整合しているかの確認としてVPS管理側へ引き継ぐ。
+未確認・該当なしの理由: 本noticeはコード変更を伴わないドキュメント更新のみのため、多くの項目が「該当なし」となる。production承認プロセス自体は不要（`production_change: none`）だが、`ops/runtime-contract.yaml`の内容が実機の運用方針と整合しているかの確認としてVPS管理側へ引き継ぐ。
 
 ## 未解決事項
 
@@ -163,5 +184,5 @@ volume/cron/API contract/ログ出力、いずれも無変更。
 
 - app owner: 未実施
 - VPS management review: 未実施
-- production approval: 不要（`production_change: not_required`）
+- production approval: 不要（`production_change: none`）
 - related task_id: 該当なし（Claude直接作業、`ops/runtime-contract.yaml`への記載のみ）

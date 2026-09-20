@@ -35,11 +35,11 @@ status: ready_for_review
 
 created_by: Claude
 
-production_change: not_required
+production_change: none
 
 vps_management_handoff: required
 
-deployment_status: not_applicable
+deployment_status: not_started
 
 ## 変更概要
 
@@ -53,6 +53,14 @@ admin限定操作・自己ロックアウト防止）と`corrections.ts`（在�
 チェック・snapshot再計算）に、それぞれHTTPレベルのテストを新規追加した
 （計11シナリオ）。**実装コード（`users.ts`・`corrections.ts`）自体への変更は
 一切無い**。
+
+## VPS管理レビュー結果への対応（blocked→再提出）
+
+第1回VPS管理レビューで、追加した11件のHTTPテストの内容自体は受理可能だが、
+`production_change: not_required`・`deployment_status: not_applicable`が
+テンプレート正規値と不一致と指摘され（S019-D01）blockedとなった。
+`production_change: none`・`deployment_status: not_started`へ訂正した。
+テスト内容・実装への変更は無い。
 
 ## 変更理由
 
@@ -89,7 +97,7 @@ env名/ログ出力、いずれも無変更。
 
 ## production変更
 
-- 必要性: なし（`production_change: not_required`）
+- 必要性: なし（`production_change: none`）
 - 想定作業: 該当なし。deploy不要（実装コードへの変更が無いため、既存
   productionの挙動に一切影響しない）。
 - downtime: 該当なし
@@ -160,7 +168,7 @@ env名/ログ出力、いずれも無変更。
 - [x] data更新のtransaction・同時実行・途中失敗を確認した — 該当なし（テスト追加のみで実装への変更が無いため）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた — 該当なし（imageの変更が無い）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した（いずれも該当なし。テストファイルのみの追加）
-- [ ] app owner、VPS review、production承認、client配信承認を分離した — production承認は不要（`production_change: not_required`）。VPS reviewは下記Approval参照
+- [ ] app owner、VPS review、production承認、client配信承認を分離した — production承認は不要（`production_change: none`）。VPS reviewは下記Approval参照
 - [x] secret非混入とtracked working tree cleanを確認した（`git status --short`で確認。既知の無関係な未追跡ファイルのみ残存）
 
 未確認・該当なしの理由: 本noticeはテストファイルの新規追加のみで実装コードへの変更を伴わないため、多くの項目が「該当なし」となる。production承認プロセス自体は不要。
@@ -186,5 +194,5 @@ env名/ログ出力、いずれも無変更。
 
 - app owner: 未実施
 - VPS management review: 未実施
-- production approval: 不要（`production_change: not_required`）
+- production approval: 不要（`production_change: none`）
 - related task_id: 20260920-014
