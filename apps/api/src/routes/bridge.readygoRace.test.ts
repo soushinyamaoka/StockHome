@@ -83,16 +83,19 @@ async function createClaimedRowAndReplacement(app: Awaited<ReturnType<typeof cre
     headers: { 'x-bridge-token': BRIDGE_TOKEN },
   });
   assert.equal(claimedResponse.statusCode, 200);
-  const [claimed] = claimedResponse.json<{ pending: { id: string; body: string }[] }>().pending;
-  assert.ok(claimed);
+  const claimedBefore = await prisma.readyGoOutbox.findFirstOrThrow({
+    where: { householdId, status: 'claimed' },
+  });
+  const returnedIds = claimedResponse
+    .json<{ pending: { id: string; body: string }[] }>()
+    .pending.map((r) => r.id);
+  assert.ok(returnedIds.includes(claimedBefore.id));
 
-  const claimedBefore = await prisma.readyGoOutbox.findUniqueOrThrow({ where: { id: claimed.id } });
-  assert.equal(claimedBefore.status, 'claimed');
   await runDailyBatch(undefined, { householdId });
   const pending = await prisma.readyGoOutbox.findFirstOrThrow({
     where: { householdId, status: 'pending' },
   });
-  return { claimed, claimedBefore, pending };
+  return { claimed: { id: claimedBefore.id, body: claimedBefore.body }, claimedBefore, pending };
 }
 
 test('claimed ReadyGo rows are excluded from batch replacement', async () => {
@@ -101,6 +104,7 @@ test('claimed ReadyGo rows are excluded from batch replacement', async () => {
     const app = await createReadyGoApp();
     try {
       const { claimed, claimedBefore, pending } = await createClaimedRowAndReplacement(app, scope.householdId);
+      assert.equal(claimedBefore.householdId, scope.householdId);
       const claimedAfter = await prisma.readyGoOutbox.findUniqueOrThrow({ where: { id: claimed.id } });
       assert.equal(claimedAfter.status, 'claimed');
       assert.equal(claimedAfter.body, claimedBefore.body);
