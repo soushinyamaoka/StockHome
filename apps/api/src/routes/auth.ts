@@ -56,6 +56,11 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     const ok = await bcrypt.compare(data.password, user.passwordHash);
     if (!ok) return reply.code(401).send({ message: 'メールアドレスかパスワードが違います' });
 
+    // Check after the password so an attacker cannot distinguish disabled accounts.
+    if (!user.isActive) {
+      return reply.code(403).send({ message: 'このアカウントは利用できません' });
+    }
+
     const member = await prisma.householdMember.findFirst({
       where: { userId: user.id },
       orderBy: { createdAt: 'asc' },

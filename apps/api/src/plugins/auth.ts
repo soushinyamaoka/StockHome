@@ -25,8 +25,10 @@ declare module '@fastify/jwt' {
 
 const authPlugin: FastifyPluginAsync = async (fastify) => {
   await fastify.register(jwt, {
+    // Development fallback. entrypoint.ts rejects a missing JWT_SECRET in production.
     secret: process.env.JWT_SECRET || 'dev-secret-please-change',
-    sign: { expiresIn: '7d' },
+    // Disabled users are checked on every authenticated request.
+    sign: { expiresIn: '90d' },
   });
 
   fastify.decorate(
@@ -42,9 +44,13 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
       const membership = await prisma.householdMember.findFirst({
         where: { userId },
         orderBy: { createdAt: 'asc' },
+        include: { user: { select: { isActive: true } } },
       });
       if (!membership) {
         return reply.code(403).send({ message: '所属している家庭が見つかりません' });
+      }
+      if (!membership.user.isActive) {
+        return reply.code(403).send({ message: 'このアカウントは利用できません' });
       }
       req.auth = {
         userId,

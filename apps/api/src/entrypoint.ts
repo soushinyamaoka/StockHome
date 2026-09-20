@@ -17,6 +17,21 @@ function failEntrypoint(): never {
   process.exit(1);
 }
 
+function verifyRequiredEnv(): void {
+  if (process.env.NODE_ENV !== 'production') return;
+
+  const secret = process.env.JWT_SECRET;
+  if (!secret || secret.trim() === '') {
+    appLogger.critical({
+      event: LOG_EVENTS.STARTUP_FAILED,
+      reason: 'missing_required_env',
+      env_name: 'JWT_SECRET',
+    });
+    flushLogs();
+    process.exit(1);
+  }
+}
+
 export async function runMigrations(): Promise<number> {
   const startedAt = Date.now();
   appLogger.info({ event: LOG_EVENTS.MIGRATION_START, schema: PRISMA_SCHEMA });
@@ -134,6 +149,8 @@ export function startServer(): void {
 }
 
 async function main(): Promise<void> {
+  verifyRequiredEnv();
+
   const migrationExitCode = await runMigrations();
   if (migrationExitCode !== 0) {
     flushLogs();
