@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: a2233497d3ad6b94ca1b11d23c665ea548fad2e8
+source_commit: f6cb13d0c8c40af6d6be948c63f8c0f06bb153ec
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
@@ -36,12 +36,23 @@ notice 010〜019の提出内容を参照）
   `--test-concurrency=1`追加）。**notice 014・015共通の対応、本noticeの対象外
   としても記載**）
 - `c59cef9`（notice 018のsource_commit hash訂正。`ops/**`のみ。**本noticeの対象外**）
-- `a223349`（**本notice対象・最終source。S014-B03・B04・B05対応**。claim SQLへ
-  `FOR UPDATE SKIP LOCKED`＋`status`再確認を追加（並行GET二重claim防止）、
-  migrationへ既存pending重複の整理DELETEを追加（重複があってもmigration自体が
-  失敗しないようにする）、`GET /readygo-pending`へ未ACK claimedのlease回収を
-  追加（30分超claimedのまま残った行を、新しいpendingが無ければpendingへ戻し
-  同一呼び出しで再claim、新しいpendingがあれば削除する）。`apps/api`のみ）
+- `a223349`（S014-B03・B04・B05対応。claim SQLへ`FOR UPDATE SKIP LOCKED`＋
+  `status`再確認を追加（並行GET二重claim防止）、migrationへ既存pending
+  重複の整理DELETEを追加（重複があってもmigration自体が失敗しないように
+  する）、`GET /readygo-pending`へ未ACK claimedのlease回収を追加（30分超
+  claimedのまま残った行を、新しいpendingが無ければpendingへ戻し同一呼び出し
+  で再claim、新しいpendingがあれば削除する）。`apps/api`のみ。**第2回提出分**）
+- `16d05eb`（**S014-B06対応**。stale claimed行の回収を、household単位で
+  個別の楽観的`updateMany`＋一意制約違反（P2002）時の`deleteMany`フォール
+  バックへ変更（従来は全household分をまとめて1回の`updateMany`で回収して
+  おり、daily_batchの並行insertと競合すると未処理のP2002で丸ごと失敗して
+  いた）。daily_batchとの実並行テスト（5反復）を追加。`apps/api`のみ）
+- `f6cb13d`（**本notice対象・最終source。S014-B07対応**。GAS側
+  `deliverStockHomeNotifications`に配信済みidのローカル記録（Script
+  Properties、TTL 7日）を追加。`appendToInbox`成功直後・ACK呼び出しより
+  前に記録することで、ACK不達で同じ行が再取得されても再投入せずACKだけ
+  再試行するようにした（従来はACK不達→lease回収後の再取得で、ReadyGo
+  Inboxへ同じ内容が二重投入され得た）。`apps/gas`のみ）
 
 **本noticeが対象とするのは所見A-5・A-6への対応（夜間バッチのReadyGoキュー重複抑止・
 世帯スコープ・保持期間・claim方式による二重配信防止）。notice 010〜013・016〜019は
@@ -138,6 +149,54 @@ DB全体のhousehold・itemを処理するため、並行実行中の他test fil
   （新pendingなし→再claim、新pendingあり→stale側削除・fresh側がclaim、
   lease内→完全に無変更）を確認済み。
 
+## VPS管理レビュー結果への対応（第3回：blocked→再提出）
+
+第3回VPS管理レビュー（チャットフィードバック、正本doc番号は今回未提示）で、
+S014-B03・B04・B05の解消は確認されたが、新たに2点の指摘を受けblockedと
+なった。
+
+- **S014-B06**: `GET /readygo-pending`のlease回収処理が「全household分を
+  まとめて1回の`updateMany`」で行われており、daily_batchの並行insertと
+  競合すると、その1回の`updateMany`全体が未処理の`P2002`（一意制約違反）
+  で失敗し、リクエスト全体が500になる。VPS管理側の指摘: 「lease回収と
+  再claimを単一transaction/SQLへ統合し、batch投入との実並行テストを
+  追加してください」。
+- **S014-B07**: `apps/gas/src/ApiBridge.js`の`deliverStockHomeNotifications()`
+  は、`appendToInbox`成功後、ループの最後でまとめてACKする構造になって
+  いる。ACKのHTTP呼び出しだけが失敗（ネットワーク断・GASの実行タイムアウト
+  でACK呼び出し前に打ち切り等）すると、API側はその行を`claimed`のまま
+  保持し、30分のlease回収後に同じidが再度返される。現状には何の防御も
+  無いため、次回実行で再度`appendToInbox`が呼ばれ、ReadyGo Inboxへ同じ
+  内容が二重投入され、家族へLINEが2回届く。VPS管理側の指摘: 「outbox ID
+  等で冪等化し、ACK不達→再取得のテストを追加してください」。
+
+対応:
+
+- **S014-B06**: stale claimed行の回収を、household単位で個別の楽観的
+  `updateMany`（`where: { id, status: 'claimed', claimedAt: { lt } }`）へ
+  変更し、一意制約違反（`P2002`）を捕捉したら「同一householdへの新しい
+  pending行が並行して作られた＝このstale行はsupersede済み」とみなして
+  `deleteMany`へフォールバックする設計へ変更した（`batch.ts`の
+  `upsertPendingReadyGoRow`と同じ「insert→catch P2002→フォールバック」の
+  作法をreclaimにも適用）。Claudeが実DBで、2つの独立したPrismaClient接続
+  を使い、reclaim処理とdaily_batchの並行insertを実際に競合させて検証。
+  **修正前のコードは10回中9回で未処理のP2002をthrowした**（500エラーの
+  再現）。修正後は同じ並行実行を20回行い**20/20でクラッシュなし・
+  household当たりpending件数は常に1件以下**を確認済み。加えて、
+  `bridge.readygoReclaim.test.ts`へ、`Promise.all`による実際の並行実行
+  （5反復）でdaily_batchの並行insertとの競合を検証するテストを追加した。
+- **S014-B07**: GAS側`deliverStockHomeNotifications`に、`appendToInbox`
+  成功直後（ACK呼び出しより前）に配信済みoutbox行idをScript Properties
+  （TTL 7日。Claudeの提案値、30分のleaseより十分長い）へローカル記録する
+  処理を追加した。次回実行時、同じidが既に記録されていれば`appendToInbox`
+  を呼ばずスキップし、ACKだけ再試行する。「ACK呼び出しより前に記録する」
+  順序により、直後にACKが失敗・タイムアウトしても次回実行時の二重投入を
+  防げる。既存の`apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`
+  と同じnode:vm手法で新規`apps/gas/test/readygoDelivery.gas.test.cjs`を
+  作成し、7シナリオ（通常配信・ACK不達後の再取得での再投入スキップと
+  ACK再試行・Inbox投入失敗時は記録しない・混在batch・pending無し・TTL
+  prune・壊れた記録の扱い）を検証する。
+
 ## 変更理由
 
 2026-09-03の全体点検所見への対応（優先度「中」2件）。詳細は
@@ -168,10 +227,18 @@ port/bind/domain/health endpoint/起動command/DB schema/migration/volume/cron s
 | GAS停止時のキュー滞留 | 毎晩積まれ続け、復旧時に最大20通が一度に流れる | 常に最新1件へ置き換わるため積み上がらない |
 | 配信済み(`delivered`)行の保持 | 無制限に残る | 30日を超えた行を削除（cron実行は全世帯、手動実行は当該世帯のみ） |
 | 滞留の可視化 | 無し | `job_end`へ`readygo_pending`・`readygo_pending_oldest_age_h`・`readygo_superseded`・`readygo_cleaned`を追加 |
+| stale claimedのlease回収とdaily_batch並行insertの競合 | 全household分をまとめて1回の`updateMany`で回収しており、daily_batchの並行insertと競合すると未処理のP2002でリクエスト全体が失敗する | household単位で個別の楽観的`updateMany`を試み、P2002を捕捉したら`deleteMany`へフォールバック。他householdの回収を巻き込まない |
+| ACK不達後の再配信（GAS側） | 防御なし。ACKが届かず lease回収後に同じ行が再取得されると、ReadyGo Inboxへ同じ内容が再度投入され二重配信になりうる | `appendToInbox`成功直後・ACK呼び出しより前にGASのScript Propertiesへ配信済みidを記録（TTL 7日）。再取得時は記録済みidの投入をスキップし、ACKのみ再試行する |
 
 ## 影響対象
 
-- service/container: `stockhome-api-prod`（`apps/api/src/services/batch.ts`・`routes/bridge.ts`・`routes/dashboard.ts`・`lib/logger.ts`の変更。route追加・削除は無し、`POST /api/dashboard/run-batch`のレスポンスは既存fieldを維持したままfieldを追加）
+- service/container: `stockhome-api-prod`（`apps/api/src/services/batch.ts`・`routes/bridge.ts`・`routes/dashboard.ts`・`lib/logger.ts`の変更。route追加・削除は無し、`POST /api/dashboard/run-batch`のレスポンスは既存fieldを維持したままfieldを追加）。
+  加えてGAS側`apps/gas/src/ApiBridge.js`（`deliverStockHomeNotifications`の
+  冪等化、S014-B07）。GASは新規Script Property
+  `READYGO_DELIVERED_IDS`（配信済みoutbox id記録、TTL 7日で自動prune）を
+  使う。値そのものはoutbox行idの配列であり、secretではない。反映には
+  プロジェクト規約どおり`apps/gas/push.bat`→`apps/gas/deploy.bat`（clasp）
+  が必要（production承認後にユーザーが手動実行。`apps/gas/CLAUDE.md`参照）
 - URL/port/health: 変更なし
 - cron/timer/worker: schedule（19:55 JST / 20:10 JST）は変更なし。`daily_batch`の処理内容のみ変更
 - dependency: 変更なし（新規パッケージ追加なし）
@@ -182,10 +249,12 @@ port/bind/domain/health endpoint/起動command/DB schema/migration/volume/cron s
 ## production変更
 
 - 必要性: あり
-- 想定作業: 通常のAPI deployで反映される。deploy直後の初回`daily_batch`（19:55 JST）で、
-  既存の`delivered`行のうち30日を超えたものが一度にまとめて削除される可能性がある
-  （削除件数は`readygo_outbox_cleaned`イベントに出る）。DBのschemaは変更しないため、
-  migrationは発生しない。
+- 想定作業: 通常のAPI deployで反映される。deploy時に`prisma migrate deploy`で
+  migration `20260920222509_readygo_outbox_claim`（既存pending重複の整理・
+  `claimed_at`列追加・partial unique index追加）が適用される。deploy直後の初回
+  `daily_batch`（19:55 JST）で、既存の`delivered`行のうち30日を超えたものが
+  一度にまとめて削除される可能性がある（削除件数は`readygo_outbox_cleaned`
+  イベントに出る）。
 - downtime: 既存と同じ（brief-restart）
 - maintenance window: 不要
 
@@ -259,6 +328,22 @@ secret値は記載していない。
     （内部で`prisma generate`）: passed
   - `npx tsc --noEmit -p apps/mobile/tsconfig.json`: passed
 
+  **(A''') Codex実施分（第3回再対応S014-B06、task `20260921-003`）**
+
+  - `npm run build --workspace=@stockhome/shared` / `--workspace=@stockhome/api`
+    （内部で`prisma generate`）: passed
+  - `npx tsc --noEmit -p apps/mobile/tsconfig.json`: passed
+
+  **(A'''') Codex実施分（第3回再対応S014-B07、task `20260921-004`。GAS側）**
+
+  - `node --check apps/gas/src/ApiBridge.js`: passed
+  - `node apps/gas/test/readygoDelivery.gas.test.cjs`: **7件すべて成功**
+    （新規。通常配信・ACK不達後の再取得での再投入スキップとACK再試行・
+    Inbox投入失敗時は記録しない・混在batch・pending無し・TTL prune・
+    壊れた記録の扱い）
+  - `node apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`: **34件
+    すべて成功**（既存。回帰なし）
+
   **(B) 実DBテスト（ローカルPostgres、Claude実施）**
 
   - migration検証（第1回）: `prisma migrate diff`で差分SQLを生成（`ADD COLUMN`のみ。
@@ -274,12 +359,20 @@ secret値は記載していない。
     lease内）を一時household上で直接確認。reclaim直後に同一呼び出しの
     claim処理で即座に再claimされる（pendingのまま残る中間状態は無い）ことを
     含めて確認
+  - reclaim原子性検証（S014-B06）: 2つの独立したPrismaClient接続で、
+    reclaim処理とdaily_batchの並行insertを実際に競合させて検証。修正前の
+    コード（全household分をまとめて1回の`updateMany`）は10回中9回で
+    未処理のP2002をthrow（500エラーの再現）。修正後（household単位の
+    個別update＋P2002捕捉時のフォールバックdelete）は同じ並行実行を20回
+    行い20/20でクラッシュなし・household当たりpending件数は常に1件以下
+    であることを確認
   - `npx tsx --test --test-concurrency=1 apps/api/src/services/batch.readygoQueue.test.ts
     apps/api/src/routes/bridge.readygoRace.test.ts
-    apps/api/src/routes/bridge.readygoReclaim.test.ts`: **12件すべて成功**
+    apps/api/src/routes/bridge.readygoReclaim.test.ts`: **13件すべて成功**
     （既存4シナリオ＋並行batch実行1シナリオ＋claim/ACK関連3シナリオ＋
-    並行GET二重claim防止1シナリオ＋reclaim3シナリオ）
-  - `npm test --workspace=@stockhome/api`: **174件すべて成功**（notice 015・
+    並行GET二重claim防止1シナリオ＋reclaim3シナリオ＋daily_batchとの
+    実並行reclaimテスト1シナリオ（5反復））
+  - `npm test --workspace=@stockhome/api`: **175件すべて成功**（notice 015・
     016〜019分を含む最新状態）
 
   **(C) テスト分離の修正経緯（task `20260920-008`、`20260920-018`）**
@@ -327,8 +420,8 @@ secret値は記載していない。
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
-- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`a223349`までのcommitを実際の時系列順で確認。上記release_commits参照）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`a223349`はpush済み、local/origin一致確認済み。本noticeの確定分はこれからcommit・pushする）
+- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`f6cb13d`までのcommitを実際の時系列順で確認。上記release_commits参照）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`f6cb13d`はpush済み、local/origin一致確認済み。本noticeの確定分はこれからcommit・pushする）
 - [x] data更新のtransaction・同時実行・途中失敗を確認した（キューの置き換え削除→insertは
   同一バッチ内の連続操作。途中失敗時はpendingが0件になり得るが、翌日の実行で最新内容が
   再度積まれるため復旧する。購入履歴等の業務データは一切変更しない）
@@ -347,9 +440,14 @@ secret値は記載していない。
   アプリ内表示は所見C-3（notice `20260920-STOCKHOME-015`）で別途対応済み
   （夜間バッチ自体の成否表示であり、ReadyGoキュー滞留そのものの専用表示ではない点に
   留意）。
-- 未ACK claimedのlease回収（30分）はS014-B05対応で解消済み。lease値（30分）は
-  GAS単体実行の上限（6分）を踏まえたClaudeの提案値であり、VPS管理側・app owner
+- 未ACK claimedのlease回収（30分）はS014-B05対応で解消済み、daily_batchとの
+  並行insert時の原子性はS014-B06対応で解消済み。lease値（30分）はGAS単体
+  実行の上限（6分）を踏まえたClaudeの提案値であり、VPS管理側・app owner
   からの指定値ではない。運用開始後に調整が必要な場合がある。
+- GAS側の配信済み記録（`READYGO_DELIVERED_IDS`）のTTL（7日）もClaudeの提案値
+  （S014-B07対応）。7日を超えてACKが通らない異常が続く場合のみ、稀に
+  Inboxへの再投入が起こり得る既知のトレードオフ。運用開始後に調整が必要な
+  場合がある。
 
 ## 希望時期
 
@@ -369,4 +467,5 @@ secret値は記載していない。
 - related task_id: 20260920-007（初回実装）、20260920-008（テスト分離の修正）、
   20260920-015（S014-B01・B02対応）、20260920-017（testの不具合修正）、
   20260920-018（並行実行の恒久対策、notice 015と共通）、
-  20260921-001（S014-B03・B04・B05対応）
+  20260921-001（S014-B03・B04・B05対応）、20260921-003（S014-B06対応）、
+  20260921-004（S014-B07対応、GAS側）

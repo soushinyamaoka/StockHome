@@ -248,6 +248,24 @@
 #     分担へ訂正し、恒久記録先（VPS管理repoのstockhome_backup_and_rollback_decision_
 #     20260919.md・backup_restore_drill_log.md）を明記した。訂正commitも文書更新のみで
 #     server change notice・production承認は不要（VPS管理側判定）。
+#   2026-09-20〜09-21 (notice 20260920-STOCKHOME-014、所見A-5・A-6のVPS管理レビュー
+#     3ラウンド、task 20260920-015・20260921-001/003、GAS側task 20260921-004): 初回実装
+#     （pendingの単純な置き換え削除→insert）に対し、第1回レビューで並行batchとGAS
+#     fetch/ACKの競合（S014-B01・B02）を指摘され、readygo_outboxをpending→claimed→
+#     deliveredの3状態＋partial unique indexへ再設計した。第2回レビューでさらに、
+#     並行claimの二重取得（S014-B03、`FOR UPDATE SKIP LOCKED`＋status再確認で解消）、
+#     既存重複を含む状態でのmigration失敗（S014-B04、migration内でのDELETE整理で解消）、
+#     未ACK claimedの永久滞留（S014-B05、30分leaseでの回収で解消）を指摘され対応した。
+#     第3回レビューで、lease回収処理がdaily_batchの並行insertと競合すると未処理の
+#     一意制約違反で500になる問題（S014-B06、household単位の楽観的update＋P2002捕捉時
+#     フォールバックdeleteへ変更して解消）と、GAS側でACK不達時に同じ内容がReadyGo
+#     Inboxへ二重投入されうる問題（S014-B07、GAS側`ApiBridge.js`へScript Properties
+#     ベースの配信済みid記録・TTL 7日を追加して解消）を指摘され対応した。
+#     data.data_retentionのreadygo_outbox項目を新しい状態遷移・原子性保証・lease回収
+#     の説明へ更新済み（GAS側の冪等化はScript Properties上の記録であり本ファイルの
+#     対象であるAPI側DBには影響しないため、ここへは記載しない）。schema変更は
+#     claimed_at列＋partial unique index追加のみ（migration 20260920222509）。
+#     production未反映。
 
 schema_version: 1
 app: stockhome
