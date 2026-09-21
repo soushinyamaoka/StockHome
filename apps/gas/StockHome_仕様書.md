@@ -1165,7 +1165,10 @@ ReadyGo Bot 側が定義する受け口で、StockHome は仕様に従って書�
 - resolveNotificationReason(stockData)
 - hasRecentNotification(itemId, notificationType, targetUserId, days) ※将来再導入用に残置
 - createNotificationRecord(itemId, notificationData)
-- processAllNotifications() — 集約メッセージを生成し ReadyGo Inbox に投入
+- ~~processAllNotifications()~~ — 2026-09-21削除。在庫計算・通知判定・ReadyGo投入はAPI側
+  daily_batch（apps/api/src/services/batch.ts）へ移行済み。GAS側は
+  `ApiBridge.deliverStockHomeNotifications`経由の配信ブリッジのみを担当する
+  （notice 20260920-STOCKHOME-014、第5回VPS管理レビュー対応）
 - getNotificationLogs(limit)
 
 ### SnoozeService
@@ -1176,7 +1179,9 @@ ReadyGo Bot 側が定義する受け口で、StockHome は仕様に従って書�
 - isSnoozed(itemId)
 
 ### ReadyGoBotService
-- appendToInbox(body) — ReadyGo 側 Inbox シートに1行追加（失敗時もログ出力のみで例外を投げない）
+- appendToInbox(body, outboxId) — ReadyGo 側 Inbox シートに1行追加（失敗時もログ出力のみで
+  例外を投げない）。2026-09-21、outboxId引数を追加（必須）し、同じoutboxIdは再投入を
+  スキップして冪等に振る舞うよう変更した（notice 20260920-STOCKHOME-014、S014-B07対応）
 
 ### GmailImportService
 - runMyGmailImport()

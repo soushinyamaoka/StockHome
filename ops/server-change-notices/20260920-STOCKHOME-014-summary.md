@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 1e8b51418bbdf5075efe80416331f149d6e0724e
+source_commit: e3aa95bb8450270094421db4ee1d4a932b6ea481
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
@@ -55,11 +55,19 @@ notice 010〜019の提出内容を参照）
   のみ。**第3回提出分。第4回レビューで「Inbox投入とID記録が別操作のため
   その間の中断で二重投入しうる」と部分対応の指摘を受け、下記commitで
   Inbox行への同時書き込み方式へ置き換えた**）
-- `1e8b514`（**本notice対象・最終source。S014-B07再対応**。GAS側の冪等化を
-  Script Properties方式から、ReadyGo Inbox行のE列（`stockhome_outbox_id`）へ
-  outbox idを本文と同じ`appendRow`呼び出しで同時書き込みする方式へ置き換え
-  （投入と記録が単一操作になり中間状態が無い）。`deliverStockHomeNotifications`
-  全体を`LockService`で排他し、並行実行による二重投入も防ぐ。`apps/gas`のみ）
+- `1e8b514`（S014-B07再対応。GAS側の冪等化をScript Properties方式から、
+  ReadyGo Inbox行のE列（`stockhome_outbox_id`）へoutbox idを本文と同じ
+  `appendRow`呼び出しで同時書き込みする方式へ置き換え（投入と記録が単一
+  操作になり中間状態が無い）。`deliverStockHomeNotifications`全体を
+  `LockService`で排他し、並行実行による二重投入も防ぐ。`apps/gas`のみ。
+  **第4回提出分**）
+- `e3aa95b`（**本notice対象・最終source。旧・日次バッチ経路の完全廃止**。
+  `BatchController.js`から`runDailyBatch`・`createDailyBatchTrigger`を
+  削除、`NotificationService.js`から`processAllNotifications`・
+  `evaluateAlertTarget_`・`buildBroadcastMessage_`・`buildItemSummaryLine_`
+  を削除（`ReadyGoBotService.appendToInbox`のoutboxId必須化(S014-B07)に
+  伴い、この旧経路は呼び出しても必ず失敗する状態だった）。新規
+  `legacyBatchRetirement.gas.test.cjs`（8シナリオ）を追加。`apps/gas`のみ）
 
 **本noticeが対象とするのは所見A-5・A-6への対応（夜間バッチのReadyGoキュー重複抑止・
 世帯スコープ・保持期間・claim方式による二重配信防止）。notice 010〜013・016〜019は
@@ -261,6 +269,64 @@ S014-B03・B04・B05の解消は確認されたが、新たに2点の指摘を�
   表現のまま残っていた。実際のS014-B06実装（楽観的update＋P2002捕捉時
   フォールバック）に合わせて表現を訂正した。
 
+## VPS管理レビュー結果への対応（第5回：blocked→再提出）
+
+第5回VPS管理レビューで、S014-B07（Inbox側での冪等化）の解消は確認された
+（前回参照）が、新たに2点の指摘を受けblocked継続となった。
+
+- **後方互換性の欠落**: `apps/gas/src/NotificationService.js`の
+  `processAllNotifications()`が`ReadyGoBotService.appendToInbox(message)`を
+  引数1つのまま呼んでいた。前回（S014-B07再対応）で`appendToInbox(body,
+  outboxId)`のoutboxId必須化を行ったため、この呼び出しは常に失敗する状態に
+  なっていた。VPS管理側の指摘: 「NotificationServiceがappendToInbox(message)
+  のままで、outboxId必須化により旧runDailyBatch経路のReadyGo通知が必ず
+  失敗します。互換対応するか、旧経路をコード・trigger作成・運用文書から
+  完全に廃止し、テストを追加してください。」
+- **notice記載の矛盾**: 「noticeの「schema/migration変更なし」「deploy手順
+  変更なし」という記載を、実際のmigration・GAS反映・rollback手順へ
+  合わせてください。」
+
+対応:
+
+- **旧経路の完全廃止**: 調査の結果、`processAllNotifications()`の呼び出し元
+  `BatchController.runDailyBatch()`は、2026-09-13のAPI bridge統合以降完全に
+  不要（GAS単体でspreadsheetを在庫DBとして使っていた移行前アーキテクチャの
+  残骸）と判定した。API移行時に`setupStockHomeBridge()`が
+  `deleteDailyBatchTrigger()`で旧triggerを削除する設計だったが、コード自体は
+  削除されずに残っていた。`runDailyBatch`・`createDailyBatchTrigger`・
+  `processAllNotifications`・専用private helper（`evaluateAlertTarget_`・
+  `buildBroadcastMessage_`・`buildItemSummaryLine_`）を完全に削除した
+  （`grep`で他のどのfileからも呼ばれていないことを確認済み。
+  `deleteDailyBatchTrigger`は未移行環境の一括削除用に残置、
+  `getNotificationLogs`等は`WebController.js`の管理画面が使用するため残置）。
+  新規`apps/gas/test/legacyBatchRetirement.gas.test.cjs`（8シナリオ:
+  削除確認5件＋「`appendToInbox`を呼ぶのは`ApiBridge.js`のみ」という
+  静的ソーススキャンによる同種バグの再発防止2件＋引数数確認1件）を追加し、
+  既存の`readygoDelivery.gas.test.cjs`（9件）・
+  `reparseHistoricalCandidates.gas.test.cjs`（34件）とあわせて回帰なしを
+  確認した。運用文書（`apps/gas/CLAUDE.md`・`SETUP_GUIDE.md`・
+  `StockHome_仕様書.md`）もあわせて訂正した（下記参照）。
+- **notice記載の矛盾修正**: 「server_impact判定」セクションが
+  「DB schema/migration...は変更していない」と記載したままだった
+  （S014-B01以前、claim方式への再設計前に書かれたまま放置されていた）。
+  実際にはmigration `20260920222509_readygo_outbox_claim`でschema変更が
+  あるため訂正した。「## Deploy・rollback」セクションも「deploy前提: なし」
+  「deploy手順の変更: なし」のまま放置されており、GAS側deploy手順
+  （`push.bat`→`deploy.bat`）の追加を反映していなかったため、migration
+  適用・GAS反映手順・rollback手順（API側・GAS側）を具体的に記載する形へ
+  全面的に書き直した。
+- **運用文書の訂正（Claudeが直接編集）**: `apps/gas/CLAUDE.md`の
+  「トリガー管理」「LINE通知（ReadyGo Bot連携）」セクションが、旧
+  `runDailyBatch`経路を現行の仕組みであるかのように記載していたため、
+  現在の`deliverStockHomeNotifications`経由の配信ブリッジへ書き直した。
+  `apps/gas/SETUP_GUIDE.md`は文書全体が移行前（GAS単体・spreadsheetがDB）
+  時代の手順であり、全面改訂は本noticeの範囲を超えるため、冒頭へ
+  明示的な廃止・注意喚起banner（現在の正しい手順は`apps/gas/CLAUDE.md`
+  参照、`runDailyBatch`関連の手順は実行不能である旨）を追加した。
+  `apps/gas/StockHome_仕様書.md`の関数一覧から`processAllNotifications()`を
+  削除済みと明記し、`appendToInbox(body)`を`appendToInbox(body,
+  outboxId)`へ訂正した。
+
 ## 変更理由
 
 2026-09-03の全体点検所見への対応（優先度「中」2件）。詳細は
@@ -273,8 +339,12 @@ server_impact: notify
 判定理由: 夜間バッチ（19:55 JST）の挙動と`readygo_outbox`の保持内容が変わり、
 LINE通知の配信内容（重複の有無）に影響するため。あわせて`job_end`ログへ4fieldを追加し、
 新規ログイベント2種（`readygo_queue_superseded`・`readygo_outbox_cleaned`）を出す。
-port/bind/domain/health endpoint/起動command/DB schema/migration/volume/cron schedule/
-既存API contract（エンドポイントの追加削除・レスポンス形状の破壊的変更）は変更していない。
+**DB schema/migrationは変更あり**（`readygo_outbox`へ`claimed_at`列＋partial unique
+indexを追加するmigration `20260920222509_readygo_outbox_claim`。詳細は下記
+「現在と変更後」「Data・migration・backup」参照）。GAS側もReadyGo Inboxシートへ
+列Eを追加する変更を伴う（詳細は「production変更」参照）。
+port/bind/domain/health endpoint/起動command/volume/cron schedule/既存API contract
+（エンドポイントの追加削除・レスポンス形状の破壊的変更）は変更していない。
 
 ## 現在と変更後
 
@@ -300,7 +370,11 @@ port/bind/domain/health endpoint/起動command/DB schema/migration/volume/cron s
   加えてGAS側`apps/gas/src/ApiBridge.js`（`deliverStockHomeNotifications`へ
   `LockService`排他を追加、S014-B07）・`apps/gas/src/ReadyGoBotService.js`
   （`appendToInbox`がoutbox idを受け取り、ReadyGo Inboxシートの新規E列
-  `stockhome_outbox_id`へ本文と同時書き込みするよう変更、S014-B07）。
+  `stockhome_outbox_id`へ本文と同時書き込みするよう変更、S014-B07）・
+  `apps/gas/src/BatchController.js`（旧`runDailyBatch`・
+  `createDailyBatchTrigger`を削除、第5回対応）・
+  `apps/gas/src/NotificationService.js`（旧`processAllNotifications`等の
+  通知投入pipelineを削除、`getNotificationLogs`等は維持、第5回対応）。
   新規Script Propertyは無い（配信済み記録はReadyGo Inboxシート自体に
   持たせる設計としたため）。反映にはプロジェクト規約どおり
   `apps/gas/push.bat`→`apps/gas/deploy.bat`（clasp）が必要（production
@@ -419,12 +493,26 @@ secret値は記載していない。
 
 ## Deploy・rollback
 
-- deploy前提: なし
-- deploy手順の変更: なし
-- rollback方法: 旧image tagへの切り替え（従来手順、またはnotice 010のrollback機構）
+- deploy前提: API側は`prisma migrate deploy`でmigration
+  `20260920222509_readygo_outbox_claim`（既存pending重複の整理・
+  `claimed_at`列追加・partial unique index追加）が正常に適用されること。
+  GAS側はReadyGo Inboxシートへ列E（`stockhome_outbox_id`）を追加できる
+  こと（ReadyGo Bot側が許容するかは未確認。下記「未解決事項」参照）
+- deploy手順の変更: **あり**。従来のAPI単体deploy（`docker compose up -d
+  --build api`）に加え、GAS側の反映（`apps/gas/push.bat`→
+  `apps/gas/deploy.bat`）が新たに必要になった。反映順・version確認の
+  詳細は上記「production変更」内の「GAS→APIの反映順」「GAS versionの
+  確認」を参照
+- rollback方法: API側は旧image tagへの切り替え（従来手順、またはnotice
+  010のrollback機構）。GAS側は上記「production変更」内の
+  「rollback（GAS側）」を参照（対象commit`9c20a5d`へ戻し
+  `push.bat`→`deploy.bat`を再実行）
 - rollback不能条件: 特になし。ただし**rollback前に削除された`readygo_outbox`行は戻らない**
   （image rollbackで削除ロジックは無効化されるが、既に削除済みの行はDB restoreしない限り
   復元されない）。削除対象は上記のとおり再生成可能な通知キューのため、実害は無いと判断する。
+  なお、migration自体（`claimed_at`列・partial unique index追加、既存重複の整理DELETE）は
+  API imageのrollbackだけでは戻らない（通常のimage rollback手順にschema rollbackは含まない）。
+  新規列・indexが残存しても既存機能への実害は無く、DB restoreを要する事態ではないと判断する。
 
 ## Health・テスト
 
@@ -477,6 +565,22 @@ secret値は記載していない。
     sheet不在はfalse／配信統合4件: 通常配信でid付き1行投入しACK・
     ACK不達後の再取得でInbox再投入せずACKのみ再試行・lock保持中は
     Inbox・ACKとも一切触れない・lock解放後は次回実行が取得可能）
+  - `node apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`: **34件
+    すべて成功**（既存。回帰なし）
+
+  **(A'''''') Codex実施分（第5回再対応、旧経路完全廃止、task `20260921-006`。GAS側）**
+
+  - `node --check apps/gas/src/BatchController.js`: passed
+  - `node --check apps/gas/src/NotificationService.js`: passed
+  - `node apps/gas/test/legacyBatchRetirement.gas.test.cjs`: **8件すべて成功**
+    （新規。削除確認5件（`runDailyBatch`・`createDailyBatchTrigger`が
+    存在しない、`deleteDailyBatchTrigger`等は残存、`processAllNotifications`
+    が存在しない、`NotificationService`の他exportは残存）＋
+    `appendToInbox`呼び出し元の静的ソーススキャン2件（`ApiBridge.js`・
+    `ReadyGoBotService.js`以外に呼び出しが無い、`ApiBridge.js`の呼び出しは
+    2引数）＋引数数確認1件）
+  - `node apps/gas/test/readygoDelivery.gas.test.cjs`: **9件すべて成功**
+    （既存。回帰なし）
   - `node apps/gas/test/reparseHistoricalCandidates.gas.test.cjs`: **34件
     すべて成功**（既存。回帰なし）
 
@@ -556,15 +660,17 @@ secret値は記載していない。
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
-- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`1e8b514`までのcommitを実際の時系列順で確認。上記release_commits参照）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`1e8b514`はpush済み、local/origin一致確認済み。本noticeの確定分はこれからcommit・pushする）
+- [x] production baselineとrelease全commit・build入力差分を確認した（baseline`ec6e541`から`e3aa95b`までのcommitを実際の時系列順で確認。上記release_commits参照）
+- [x] source commitとnoticeをremoteの対象branchへpushした（`e3aa95b`はpush済み、local/origin一致確認済み。本noticeの確定分はこれからcommit・pushする）
 - [x] data更新のtransaction・同時実行・途中失敗を確認した（キューの置き換え削除→insertは
   同一バッチ内の連続操作。途中失敗時はpendingが0件になり得るが、翌日の実行で最新内容が
   再度積まれるため復旧する。購入履歴等の業務データは一切変更しない）
 - [x] image rollbackとdata rollback、backup/restore条件を分けた（上記「Deploy・rollback」参照）
 - [x] job/log/retention、runtime/dependency、client配信の該当有無を確認した（job: daily_batchの
   処理内容変更。log: field追加・新規イベント2種。retention: `readygo_outbox`のdelivered 30日。
-  runtime/dependency: 変更なし。client配信: mobile側の変更を含まないため該当なし）
+  runtime/dependency: 変更なし。client配信（mobile EAS Update）: mobile側の変更を含まない
+  ため該当なし。**GAS側の反映（`push.bat`→`deploy.bat`）は別途必要**。「client配信」とは
+  区別される運用手順であり、詳細は上記「production変更」「Deploy・rollback」参照）
 - [ ] app owner、VPS review、production承認、client配信承認を分離した — いずれも未実施。下記Approval参照
 - [x] secret非混入とtracked working tree cleanを確認した（`git status --short`で確認。既知の無関係な未追跡ファイルのみ残存）
 
@@ -609,4 +715,5 @@ secret値は記載していない。
   20260920-018（並行実行の恒久対策、notice 015と共通）、
   20260921-001（S014-B03・B04・B05対応）、20260921-003（S014-B06対応）、
   20260921-004（S014-B07初回対応、GAS側）、
-  20260921-005（S014-B07再対応、Inbox側での冪等化、GAS側）
+  20260921-005（S014-B07再対応、Inbox側での冪等化、GAS側）、
+  20260921-006（旧・日次バッチ経路の完全廃止、GAS側）

@@ -74,22 +74,39 @@ HTML 画面と WebController は並行運用のため残置中。Gmail 設定画
 
 ### トリガー管理
 
-- 日次バッチ (`runDailyBatch`) は管理者が 1 度だけ `createDailyBatchTrigger` で作成する共通トリガー。
+- 旧・日次バッチ (`runDailyBatch`・`createDailyBatchTrigger`) は2026-09-21に完全に削除した。
+  在庫計算・通知判定・ReadyGo投入はAPI側daily_batchへ移行済みで、GAS側のReadyGo通知配信は
+  `deliverStockHomeNotifications`（毎晩20時台のinstallable trigger、`createStockHomeNotifyTrigger`
+  で作成）のみが担う。`deleteDailyBatchTrigger`は、未移行環境に残る旧triggerを
+  `setupStockHomeBridge()`が一括削除するためだけに残置している（notice
+  20260920-STOCKHOME-014、第5回VPS管理レビュー対応）。
 - Gmail 自動取込はユーザーごとの installable trigger で、各ユーザーが Gmail 設定画面から有効化する。`runMyGmailImport` 実行時の実行者の Gmail だけが対象になる仕組みは崩さないこと。
 - トリガー変更を伴う実装の場合は、変更内容を事前に明示すること。
 
 ### LINE 通知（ReadyGo Bot 連携）
 
 - **StockHome から LINE Messaging API を直接呼ばない。** アラート配信は ReadyGo Bot（家族向け生活自動化Bot）に委譲。
-- 日次バッチが [ReadyGoBotService.appendToInbox](src/ReadyGoBotService.js) を呼び、ReadyGo 側スプレッドシートの `Inbox` シートに1行追加する。ReadyGo が 21:00 LINE 通知の末尾に「📨 お知らせ」として配信する。
+- API側daily_batchが積んだ配信待ちキューを、GASの`deliverStockHomeNotifications`
+  （毎晩20時台のtrigger）が`GET /api/bridge/readygo-pending`で取得し、
+  [ReadyGoBotService.appendToInbox](src/ReadyGoBotService.js) を呼んでReadyGo 側
+  スプレッドシートの `Inbox` シートに1行追加、`POST /api/bridge/readygo-ack`でAPIへ
+  完了報告する。ReadyGo が 21:00 LINE 通知の末尾に「📨 お知らせ」として配信する。
+  在庫計算・通知判定自体はAPI側daily_batchが行う（`apps/api/src/services/batch.ts`）。
+  GAS側の旧・日次バッチ（`runDailyBatch`経由でGAS自身が在庫計算・通知判定・Inbox投入
+  すべてを行う経路）は2026-09-21に完全に削除した。
 - 仕様:
-  - 集約モデル — 全アラート品目を1つのメッセージにまとめて1行投入（ユーザー別ループはしない）
-  - 配信対象 — `notify_target_type=all` の品目のみ（`representative` / `specific_user` は ReadyGo に流れない。ホーム画面アラートでは別途フィルタ）
-  - 重複防止 — 現状実施せず（連日同じ品目が出続けてもそのまま投入）。`NotificationService.hasRecentNotification` は将来再導入用に残置
-  - 失敗時 — `READYGO_SPREADSHEET_ID` 未設定や権限不足等は Logger.log のみ、`notification_log` は記録せず、バッチは継続
+  - 集約モデル — 全アラート品目を1つのメッセージにまとめて1行投入（世帯単位。API側で判定）
+  - 配信対象 — `notify_target_type=all` の品目のみ（API側`batch.ts`の判定に準拠）
+  - 冪等性 — `appendToInbox(body, outboxId)`がInbox行のE列（`stockhome_outbox_id`）へ
+    outbox idを本文と同時書き込みし、既存idは再投入をスキップする（notice
+    20260920-STOCKHOME-014、S014-B07対応。2026-09-21以前は重複防止を実施していなかった）。
+    `deliverStockHomeNotifications`全体を`LockService`で排他し並行実行による二重投入も防ぐ
+  - 失敗時 — `READYGO_SPREADSHEET_ID` 未設定や権限不足等は Logger.log のみ、ACKされないため
+    API側が該当行を`claimed`のまま保持し、lease（30分）超過後に自動的に再送を試みる
 - 必須設定:
   - スクリプトプロパティ `READYGO_SPREADSHEET_ID` に ReadyGo 側スプレッドシート ID
-  - StockHome の日次バッチを実行する Google アカウントが ReadyGo スプレッドシートの編集者であること
+  - GASの`deliverStockHomeNotifications`trigger を実行する Google アカウントが
+    ReadyGo スプレッドシートの編集者であること
 - 旧 `line_outbox` フローは完全に廃止済み（コード・`SHEET_NAMES` から削除）。スプレッドシート上の `line_outbox` シートタブは手動削除推奨。
 
 ### 在庫計算
