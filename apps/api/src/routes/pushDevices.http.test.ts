@@ -21,3 +21,33 @@ async function createTwoUserScope() {
 test('GET /api/push-devices は自分の端末だけを返す（同世帯の他ユーザー・他世帯は含まない）', async () => { const scope = await createTwoUserScope(); const app = await buildAuthedApp(); try { const response = await app.inject({ method: 'GET', url: '/api/push-devices', headers: bearerToken(app, scope.userA.id) }); assert.equal(response.statusCode, 200); const devices = response.json().devices as { id: string; platform: string }[]; assert.deepEqual(devices.map((d) => d.id), [scope.deviceA.id]); assert.equal(devices[0].platform, 'ios'); } finally { await app.close(); await scope.cleanup(); } });
 test('POST /api/push-devices/test は自分の端末へなら送信し200を返す', async () => { const scope = await createTwoUserScope(); const app = await buildAuthedApp(); const stub = stubFetchOnce({ status: 200, body: { data: [{ status: 'ok', id: `http-ticket-${Date.now()}` }] } }); try { const response = await app.inject({ method: 'POST', url: '/api/push-devices/test', headers: bearerToken(app, scope.userA.id), payload: { expoPushToken: scope.deviceA.expoPushToken } }); assert.equal(response.statusCode, 200); assert.deepEqual(response.json(), { ok: true }); } finally { stub.restore(); await app.close(); await scope.cleanup(); } });
 for (const [label, device] of [['他世帯の端末', 'deviceB'], ['同世帯でも別ユーザーの端末', 'deviceA2']] as const) test(`POST /api/push-devices/test は${label}に対して404を返す`, async () => { const scope = await createTwoUserScope(); const app = await buildAuthedApp(); const stub = stubFetchOnce({ status: 200, body: { data: [{ status: 'ok', id: 'unused' }] } }); try { const response = await app.inject({ method: 'POST', url: '/api/push-devices/test', headers: bearerToken(app, scope.userA.id), payload: { expoPushToken: scope[device].expoPushToken } }); assert.equal(response.statusCode, 404); } finally { stub.restore(); await app.close(); await scope.cleanup(); } });
+
+// S020-B01: cooldown中の2回目は429＋Retry-Afterを返す
+test('POST /api/push-devices/test はcooldown中の2回目に429とRetry-Afterを返す', async () => {
+  const scope = await createTwoUserScope();
+  const app = await buildAuthedApp();
+  const stub = stubFetchOnce({ status: 200, body: { data: [{ status: 'ok', id: `http-cooldown-${Date.now()}` }] } });
+  try {
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/push-devices/test',
+      headers: bearerToken(app, scope.userA.id),
+      payload: { expoPushToken: scope.deviceA.expoPushToken },
+    });
+    assert.equal(first.statusCode, 200);
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/push-devices/test',
+      headers: bearerToken(app, scope.userA.id),
+      payload: { expoPushToken: scope.deviceA.expoPushToken },
+    });
+    assert.equal(second.statusCode, 429);
+    assert.ok(second.headers['retry-after']);
+    assert.equal(second.json().reason, 'rate_limited');
+  } finally {
+    stub.restore();
+    await app.close();
+    await scope.cleanup();
+  }
+});

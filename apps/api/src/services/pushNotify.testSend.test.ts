@@ -39,3 +39,81 @@ test('無効化済み(isActive:false)の端末へ成功送信すると、isActiv
   const scope = await createDeviceScope({ isActive: false }); const stub = stubFetchOnce({ status: 200, body: { data: [{ status: 'ok', id: 'ticket-reactivate-1' }] } });
   try { assert.deepEqual(await sendTestPushToDevice(scope.expoPushToken, scope.householdId, scope.userId), { ok: true }); assert.equal((await prisma.pushDevice.findUniqueOrThrow({ where: { id: scope.deviceId } })).isActive, true); } finally { stub.restore(); await scope.cleanup(); }
 });
+
+// ---- cooldown（S020-B01: VPS管理レビューでサーバー側の連打防止が無いと指摘） ----
+
+function stubFetchCounting(response: { status: number; body: unknown }) {
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  (globalThis as any).fetch = async () => {
+    callCount += 1;
+    return new Response(JSON.stringify(response.body), { status: response.status });
+  };
+  return {
+    getCallCount: () => callCount,
+    restore: () => {
+      (globalThis as any).fetch = originalFetch;
+    },
+  };
+}
+
+test('制限超過: 直後の2回目はExpoへ到達せずrate_limitedを返す', async () => {
+  const scope = await createDeviceScope();
+  const stub = stubFetchCounting({ status: 200, body: { data: [{ status: 'ok', id: 'cooldown-1' }] } });
+  try {
+    const first = await sendTestPushToDevice(scope.expoPushToken, scope.householdId, scope.userId);
+    assert.deepEqual(first, { ok: true });
+    assert.equal(stub.getCallCount(), 1);
+
+    const second = await sendTestPushToDevice(scope.expoPushToken, scope.householdId, scope.userId);
+    assert.equal(second?.ok, false);
+    assert.equal(second?.reason, 'rate_limited');
+    assert.ok(typeof second?.retryAfterSeconds === 'number' && second.retryAfterSeconds > 0);
+    // cooldownで弾かれたため、2回目はExpoへの呼び出しが増えていない
+    assert.equal(stub.getCallCount(), 1);
+  } finally {
+    stub.restore();
+    await scope.cleanup();
+  }
+});
+
+test('時間経過後: cooldown期間を過ぎていれば再送できる', async () => {
+  const scope = await createDeviceScope();
+  const stub = stubFetchCounting({ status: 200, body: { data: [{ status: 'ok', id: 'cooldown-2' }] } });
+  try {
+    // cooldownウィンドウ（30秒）よりも十分古いlastTestSentAtを直接設定し、
+    // 実際に待たずに「時間経過後」の状態を再現する
+    await prisma.pushDevice.update({
+      where: { id: scope.deviceId },
+      data: { lastTestSentAt: new Date(Date.now() - 60_000) },
+    });
+
+    const result = await sendTestPushToDevice(scope.expoPushToken, scope.householdId, scope.userId);
+    assert.deepEqual(result, { ok: true });
+    assert.equal(stub.getCallCount(), 1);
+  } finally {
+    stub.restore();
+    await scope.cleanup();
+  }
+});
+
+test('並行実行: 同時に2回呼んでも成功するのはちょうど1回', async () => {
+  const scope = await createDeviceScope();
+  const stub = stubFetchCounting({ status: 200, body: { data: [{ status: 'ok', id: 'cooldown-3' }] } });
+  try {
+    const [a, b] = await Promise.all([
+      sendTestPushToDevice(scope.expoPushToken, scope.householdId, scope.userId),
+      sendTestPushToDevice(scope.expoPushToken, scope.householdId, scope.userId),
+    ]);
+    const results = [a, b];
+    const succeeded = results.filter((r) => r?.ok === true);
+    const rateLimited = results.filter((r) => r?.ok === false && r?.reason === 'rate_limited');
+    assert.equal(succeeded.length, 1, `expected exactly 1 success, got ${JSON.stringify(results)}`);
+    assert.equal(rateLimited.length, 1, `expected exactly 1 rate_limited, got ${JSON.stringify(results)}`);
+    // Expoへ実際に到達したのも1回だけ
+    assert.equal(stub.getCallCount(), 1);
+  } finally {
+    stub.restore();
+    await scope.cleanup();
+  }
+});

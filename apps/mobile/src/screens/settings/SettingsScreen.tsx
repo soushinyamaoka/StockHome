@@ -35,7 +35,13 @@ export default function SettingsScreen() {
   const testPushMutation = useMutation({
     mutationFn: async () => { const token = await registerForPushNotifications(); if (!token) throw new Error('permission_denied'); return sendTestPush(token); },
     onSuccess: (result) => { queryClient.invalidateQueries({ queryKey: ['pushDevices'] }); if (result.ok) { Alert.alert('送信しました', 'この端末に通知を送信しました。数秒待っても届かない場合は、端末側の通知設定をご確認ください。'); return; } Alert.alert('送信できませんでした', result.reason === 'device_not_registered' ? 'この端末の通知登録が無効になっています。アプリを再起動し、通知を許可しなおしてください。' : '通知の送信に失敗しました。しばらくしてから再度お試しください。'); },
-    onError: () => Alert.alert('エラー', '通知が許可されていないか、通信に失敗しました。端末の通知設定をご確認ください。'),
+    onError: (e: any) => {
+      if (e?.response?.status === 429) {
+        Alert.alert('少し待ってください', 'テスト通知の送信間隔が短すぎます。しばらく待ってから再試行してください。');
+        return;
+      }
+      Alert.alert('エラー', '通知が許可されていないか、通信に失敗しました。端末の通知設定をご確認ください。');
+    },
   });
   const gmailSettingsUrl = (Constants.expoConfig?.extra as any)?.gmailSettingsUrl as string | undefined;
   const linkRow = (icon: any, label: string, onPress: () => void, color = COLORS.ink) => <TouchableOpacity onPress={onPress} activeOpacity={0.7}><View style={styles.linkRow}><Ionicons name={icon} size={18} color={color} /><Text style={[styles.linkText, { color }]}>{label}</Text><Ionicons name="chevron-forward" size={16} color={COLORS.inkFaint} /></View></TouchableOpacity>;

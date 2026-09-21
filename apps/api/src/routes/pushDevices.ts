@@ -56,7 +56,8 @@ const pushDeviceRoutes: FastifyPluginAsync = async (app) => {
 
   // 指定した1台へテスト通知を送る（B-6: 設定画面「この端末に通知を送ってみる」）。
   // 送信を試みた結果（成功／DeviceNotRegistered／送信失敗）は診断結果として200で返す。
-  // 対象の端末がこの世帯・ユーザーに存在しない場合のみ404
+  // 対象の端末がこの世帯・ユーザーに存在しない場合は404、cooldown中は429＋Retry-After
+  // （S020-B01対応。VPS管理レビューで、サーバー側の連打防止が無いと指摘された）
   app.post('/test', async (req, reply) => {
     const data = parseBody(pushDeviceTestSchema, req.body, reply);
     if (!data) return;
@@ -64,6 +65,10 @@ const pushDeviceRoutes: FastifyPluginAsync = async (app) => {
     const result = await sendTestPushToDevice(data.expoPushToken, req.auth.householdId, req.auth.userId);
     if (result === null) {
       return reply.code(404).send({ message: '指定された端末が見つかりません' });
+    }
+    if (result.reason === 'rate_limited') {
+      reply.header('Retry-After', String(result.retryAfterSeconds));
+      return reply.code(429).send(result);
     }
     return result;
   });

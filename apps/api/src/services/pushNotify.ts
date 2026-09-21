@@ -420,8 +420,16 @@ export async function sendPushToUser(
 
 export interface TestPushResult {
   ok: boolean;
-  reason?: 'device_not_registered' | 'send_failed';
+  reason?: 'device_not_registered' | 'send_failed' | 'rate_limited';
+  // reason==='rate_limited'の場合のみ、次に送れるまでの秒数（切り上げ）
+  retryAfterSeconds?: number;
 }
+
+// テスト送信のcooldown期間。誤タップの連打・意図しない自動再試行がExpo Push APIへの
+// 連続送信にならないようにするため（S020-B01対応。VPS管理レビューで指摘）。
+// Claudeの提案値。実配信（sendPushToUser）には適用しない（lastPushAtとは別の
+// lastTestSentAt列で判定するため、実アラート配信の頻度には影響しない）
+const TEST_PUSH_COOLDOWN_MS = 30_000;
 
 // 設定画面の「この端末に通知を送ってみる」用。sendPushToUserは対象ユーザーの
 // 全active端末へ一括送信する設計のため、1台だけを狙って送るテスト送信は
@@ -437,6 +445,27 @@ export async function sendTestPushToDevice(
     where: { expoPushToken, householdId, userId },
   });
   if (!device) return null;
+
+  // cooldown判定＋枠の確保を1つのupdateMany（WHERE条件に判定を含める）で原子的に行う。
+  // 「まずSELECTでcooldown中か判定してからUPDATEする」方式だと、2つの並行リクエストが
+  // どちらも判定をすり抜けてから更新でき二重送信になりうる（TOCTOU）。一意制約への
+  // 楽観的updateで解決したS014-B06の並行claim対応と同じ考え方
+  const cooldownThreshold = new Date(Date.now() - TEST_PUSH_COOLDOWN_MS);
+  const claimed = await prisma.pushDevice.updateMany({
+    where: {
+      id: device.id,
+      OR: [{ lastTestSentAt: null }, { lastTestSentAt: { lt: cooldownThreshold } }],
+    },
+    data: { lastTestSentAt: new Date() },
+  });
+  if (claimed.count === 0) {
+    const lastSentAt = device.lastTestSentAt?.getTime() ?? 0;
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil((lastSentAt + TEST_PUSH_COOLDOWN_MS - Date.now()) / 1000)
+    );
+    return { ok: false, reason: 'rate_limited', retryAfterSeconds };
+  }
 
   const sent = await postJsonWithRetry(
     EXPO_PUSH_ENDPOINT,
