@@ -1,66 +1,29 @@
 /**
  * NotificationService.gs
- * 通知判定 / 通知文面生成 / 通知ログ記録
+ * 通知理由判定 / 通知ログ記録
  *
  * 仕様書 Section 15, 17, 20 (NotificationService) 準拠
  *
- * このサービスは LINE API を直接呼ばない。
- * ReadyGo Bot の Inbox に集約メッセージを投入し、notification_log に履歴を残すまでが責務。
- *
- * 通知対象条件:
- *   - items.is_active = TRUE
- *   - notification_enabled = TRUE
- *   - alert_needed = TRUE
- *   - item_runtime_state.snooze_until が過去または空
- *   - notify_target_type = 'all'（ReadyGo はブロードキャストのみ）
+ * 2026-09-21、ReadyGo Inboxへの通知投入（旧`processAllNotifications`・
+ * `evaluateAlertTarget_`・`buildBroadcastMessage_`・`buildItemSummaryLine_`）
+ * は完全に削除した。在庫計算・通知判定・ReadyGo投入はAPI側daily_batch
+ * （apps/api/src/services/batch.ts）へ移行済みで、GAS側は
+ * `ApiBridge.deliverStockHomeNotifications`経由の配信ブリッジのみを担当
+ * する（notice 20260920-STOCKHOME-014、第5回VPS管理レビュー対応。
+ * `ReadyGoBotService.appendToInbox`がoutboxId必須化(S014-B07)されて以降、
+ * この旧経路は呼び出しても必ず失敗する状態だった）。
+ * このfileに残るのは、通知理由の解決（`resolveNotificationReason`。API側
+ * batch.tsの通知判定とは独立し呼ばれていないが、他の判定ロジックからの
+ * 参照可能性を考慮し残置）と、通知履歴の記録・取得
+ * （`createNotificationRecord`・`getNotificationLogs`。`getNotificationLogs`
+ * は`WebController.js`の管理画面が使用）のみ。
  *
  * 重複防止:
- *   - 現在は実施しない（毎日のバッチで同じ品目が出続けても再通知する）
+ *   - 現在は実施しない
  *   - 将来再導入する場合は hasRecentNotification と notification_log を流用する想定
  */
 
 var NotificationService = (function() {
-
-  /** 集約メッセージの送信先識別子（notification_log.target_user_id 用） */
-  var BROADCAST_TARGET = 'broadcast';
-
-  // ----------------------------------------------------------
-  // 通知対象判定
-  // ----------------------------------------------------------
-
-  /**
-   * 指定品目が ReadyGo 通知対象かどうか判定する
-   *
-   * @param {string} itemId
-   * @param {Object} stockData StockService.calculateStockForItem の戻り値
-   * @param {Object|null} runtimeState ItemRuntimeStateService.getRuntimeState の戻り値
-   * @return {Object|null} 通知対象なら { item, reason }、対象外なら null
-   * @private
-   */
-  function evaluateAlertTarget_(itemId, stockData, runtimeState) {
-    if (!stockData || !stockData.has_purchase_history) return null;
-    if (!toBool(stockData.alert_needed)) return null;
-
-    var item = ItemService.getItemById(itemId);
-    if (!item) return null;
-    if (!toBool(item.is_active)) return null;
-    if (!toBool(item.notification_enabled)) return null;
-
-    // notify_target_type が all 以外は ReadyGo に流さない
-    var targetType = toStr(item.notify_target_type) || ENUMS.NOTIFY_TARGET_TYPE.ALL;
-    if (targetType !== ENUMS.NOTIFY_TARGET_TYPE.ALL) return null;
-
-    // スヌーズ中なら通知しない
-    if (runtimeState && runtimeState.snooze_until) {
-      var until = parseDate(runtimeState.snooze_until);
-      if (until && until > new Date()) {
-        return null;
-      }
-    }
-
-    var reason = resolveNotificationReason(stockData);
-    return { item: item, reason: reason };
-  }
 
   // ----------------------------------------------------------
   // 通知理由
@@ -110,70 +73,6 @@ var NotificationService = (function() {
   }
 
   // ----------------------------------------------------------
-  // 通知文面生成
-  // ----------------------------------------------------------
-
-  /**
-   * 単一品目の1行要約を生成する
-   *
-   * @param {Object} item 品目データ
-   * @param {Object} stockData 在庫計算結果
-   * @param {string} reason 通知理由
-   * @return {string} 例: 「ティッシュ：残3日 / 約2個」
-   * @private
-   */
-  function buildItemSummaryLine_(item, stockData, reason) {
-    var name = toStr(item.item_name);
-    var daysLeft = Math.round(toNumber(stockData.estimated_days_left));
-    var remainQty = Math.round(toNumber(stockData.estimated_remaining_qty) * 10) / 10;
-    var unit = toStr(item.unit);
-    var remainStr = remainQty + (unit || '');
-
-    switch (reason) {
-      case ENUMS.NOTIFICATION_REASON.DAYS:
-        return name + '：残' + daysLeft + '日';
-      case ENUMS.NOTIFICATION_REASON.QTY:
-        return name + '：しきい値以下 (残' + remainStr + ')';
-      case ENUMS.NOTIFICATION_REASON.BOTH:
-        return name + '：残' + daysLeft + '日 / 残' + remainStr;
-      default:
-        return name;
-    }
-  }
-
-  /**
-   * ReadyGo Inbox に投入する集約メッセージを生成する
-   *
-   * フォーマット:
-   *   📦 在庫アラート (3件)
-   *
-   *   ・ティッシュ：残3日 / 約2個
-   *   ・牛乳：残2日 / 約1.0L
-   *
-   *   → 在庫予測画面で確認
-   *   https://script.google.com/.../exec?page=stocks
-   *
-   * @param {Object[]} alertTargets [{ item, stockData, reason }]
-   * @return {string}
-   * @private
-   */
-  function buildBroadcastMessage_(alertTargets) {
-    var lines = [];
-    lines.push('📦 在庫アラート (' + alertTargets.length + '件)');
-    lines.push('');
-    for (var i = 0; i < alertTargets.length; i++) {
-      lines.push('・' + buildItemSummaryLine_(alertTargets[i].item, alertTargets[i].stockData, alertTargets[i].reason));
-    }
-    var url = getWebAppBaseUrl();
-    if (url) {
-      lines.push('');
-      lines.push('→ 在庫予測画面で確認');
-      lines.push(url + '?page=stocks');
-    }
-    return lines.join('\n');
-  }
-
-  // ----------------------------------------------------------
   // 通知レコード生成
   // ----------------------------------------------------------
 
@@ -204,91 +103,6 @@ var NotificationService = (function() {
 
     SheetRepository.appendRow(SHEET_NAMES.NOTIFICATION_LOG, record);
     return record;
-  }
-
-  // ----------------------------------------------------------
-  // 一括通知処理（BatchController から呼ばれる）
-  // ----------------------------------------------------------
-
-  /**
-   * 全品目について通知判定を行い、対象品目を ReadyGo Inbox に集約投入する
-   *
-   * 仕様:
-   *   - notify_target_type = 'all' の品目のみ対象
-   *   - 全アラート品目を1つのメッセージにまとめて1行 Inbox 投入
-   *   - notification_log には品目ごとに記録（target_user_id = 'broadcast'）
-   *   - 重複チェックは行わない（毎日のバッチで同じ品目が出続けても再通知する）
-   *
-   * @return {Object} { processed: number, alerts: number, notified: number, skipped: number }
-   */
-  function processAllNotifications() {
-    var stocks = StockService.calculateAllStocks();
-    var runtimeStates = ItemRuntimeStateService.getAllRuntimeStates();
-
-    var alertTargets = [];
-    var processed = 0;
-    var skipped = 0;
-
-    for (var i = 0; i < stocks.length; i++) {
-      var stockData = stocks[i];
-      var itemId = stockData.item_id;
-      var runtimeState = runtimeStates[itemId] || null;
-
-      processed++;
-
-      var target = evaluateAlertTarget_(itemId, stockData, runtimeState);
-      if (!target) {
-        skipped++;
-        continue;
-      }
-
-      alertTargets.push({
-        item: target.item,
-        stockData: stockData,
-        reason: target.reason
-      });
-    }
-
-    var notified = 0;
-
-    if (alertTargets.length === 0) {
-      Logger.log('[NotificationService] アラート対象なし。ReadyGo 投入はスキップ。');
-    } else {
-      var message = buildBroadcastMessage_(alertTargets);
-      var success = ReadyGoBotService.appendToInbox(message);
-
-      if (!success) {
-        Logger.log('[NotificationService] ReadyGo 投入失敗のため notification_log は記録しません');
-      } else {
-        // 投入成功時のみ、品目ごとの履歴を残す
-        for (var k = 0; k < alertTargets.length; k++) {
-          var at = alertTargets[k];
-          try {
-            createNotificationRecord(at.item.item_id, {
-              notification_type: 'stock_alert',
-              notification_reason: at.reason,
-              target_user_id: BROADCAST_TARGET,
-              outbox_id: '',
-              message: buildItemSummaryLine_(at.item, at.stockData, at.reason)
-            });
-            ItemRuntimeStateService.updateLastNotification(at.item.item_id, at.reason);
-            notified++;
-          } catch (e) {
-            Logger.log('[NotificationService] notification_log 記録失敗: item=' + at.item.item_id + ' | ' + e.message);
-          }
-        }
-      }
-    }
-
-    Logger.log('[NotificationService] 処理完了: processed=' + processed +
-      ', alerts=' + alertTargets.length + ', notified=' + notified + ', skipped=' + skipped);
-
-    return {
-      processed: processed,
-      alerts: alertTargets.length,
-      notified: notified,
-      skipped: skipped
-    };
   }
 
   // ----------------------------------------------------------
@@ -324,7 +138,6 @@ var NotificationService = (function() {
     resolveNotificationReason: resolveNotificationReason,
     hasRecentNotification: hasRecentNotification,
     createNotificationRecord: createNotificationRecord,
-    processAllNotifications: processAllNotifications,
     getNotificationLogs: getNotificationLogs
   };
 

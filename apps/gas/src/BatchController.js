@@ -1,69 +1,26 @@
 /**
  * BatchController.gs
- * 日次バッチ / ユーザー別 Gmail 取込のエントリーポイント
+ * ユーザー別 Gmail 取込のエントリーポイント / 在庫再計算（手動実行用）
  *
  * 仕様書 Section 18, 19 (BatchController) 準拠
  *
- * バッチ処理は installable trigger から呼ばれる。
- * 日次バッチ: runDailyBatch()
- *   1. counted_in_inventory の定期更新
- *   2. 全品目の在庫計算 → stock_snapshot 更新
- *   3. 通知判定 → ReadyGo Bot の Inbox に集約メッセージ投入
+ * 旧・日次バッチ（在庫計算→通知判定→ReadyGo Inbox投入）はAPI側
+ * daily_batch（apps/api/src/services/batch.ts）へ移行済みのため
+ * 2026-09-21に完全に削除した（旧`runDailyBatch`・`createDailyBatchTrigger`。
+ * notice 20260920-STOCKHOME-014、第5回VPS管理レビュー対応。
+ * `ReadyGoBotService.appendToInbox`がoutboxId必須化(S014-B07)されて
+ * 以降、この旧経路は呼び出しても必ず失敗する状態だった。ReadyGo通知の
+ * 配信は現在`ApiBridge.deliverStockHomeNotifications`のみが担う）。
+ * `deleteDailyBatchTrigger()`は、未移行環境に残る可能性のある旧trigger
+ * を`setupStockHomeBridge()`が一括削除するために残置している。
  *
  * ユーザー別 Gmail 取込: runMyGmailImport()
  *   各ユーザーの trigger が実行。GmailImportService に委譲。
  */
 
 // ============================================================
-// 日次バッチ（1日1回、朝に実行）
+// ユーザー別 Gmail 取込バッチ
 // ============================================================
-
-/**
- * 日次バッチのメイン関数
- * installable trigger から呼ばれる
- *
- * 処理順序（Section 18.1）:
- *   1. inventory_effective_at が到来した purchase_log の counted_in_inventory を更新
- *   2. 有効な全消耗品の在庫を計算
- *   3. stock_snapshot を更新
- *   4. item_runtime_state を参照して通知対象を抽出
- *   5. スヌーズ確認
- *   6. ReadyGo Bot の Inbox に集約メッセージを投入
- *   7. notification_log を更新
- *
- * ステップ 4〜7 は NotificationService.processAllNotifications() に集約。
- */
-function runDailyBatch() {
-  Logger.log('=== 日次バッチ開始 ===');
-  var startTime = new Date();
-
-  try {
-    // Step 1: counted_in_inventory の定期更新
-    Logger.log('[Batch] Step 1: counted_in_inventory 更新');
-    var updatedCount = PurchaseService.updateCountedInInventory();
-    Logger.log('[Batch] → ' + updatedCount + ' 件の在庫有効フラグを更新');
-
-    // Step 2-3: 全品目の在庫計算 & snapshot 保存
-    Logger.log('[Batch] Step 2-3: 在庫計算 & snapshot 保存');
-    var stocks = StockService.calculateAndSaveAllStocks();
-    Logger.log('[Batch] → ' + stocks.length + ' 件の在庫 snapshot を更新');
-
-    // Step 4-7: 通知判定 & ReadyGo Inbox 投入
-    Logger.log('[Batch] Step 4-7: 通知判定 & ReadyGo Inbox 投入');
-    var notifResult = NotificationService.processAllNotifications();
-    Logger.log('[Batch] → 処理=' + notifResult.processed +
-      ', アラート=' + notifResult.alerts +
-      ', 通知=' + notifResult.notified +
-      ', スキップ=' + notifResult.skipped);
-
-    var elapsed = (new Date().getTime() - startTime.getTime()) / 1000;
-    Logger.log('=== 日次バッチ完了 (' + elapsed + '秒) ===');
-
-  } catch (e) {
-    Logger.log('[Batch] エラー発生: ' + e.message);
-    Logger.log(e.stack);
-  }
-}
 
 // ============================================================
 // ユーザー別 Gmail 取込バッチ
@@ -142,35 +99,14 @@ function runStockRecalculation() {
 }
 
 // ============================================================
-// 日次バッチ trigger の作成・削除
+// 旧・日次バッチ trigger の削除（移行用に残置。作成側は廃止済み）
 // ============================================================
 
 /**
- * 日次バッチ用の trigger を作成する
- * GAS エディタから手動実行する
- *
- * 毎晩 20:00〜21:00 に runDailyBatch を実行する。
- * ReadyGo Bot が 21:00 に LINE 通知を送る仕組みのため、その直前に
- * 在庫計算とアラート投入が完了している必要がある。
+ * 旧・日次バッチ用の trigger（ハンドラ関数`runDailyBatch`。本file上には
+ * 既に存在しない）が残っていれば削除する。`ApiBridge.setupStockHomeBridge()`
+ * が移行時に呼ぶ
  */
-function createDailyBatchTrigger() {
-  // 既存の日次バッチ trigger を確認
-  var triggers = ScriptApp.getProjectTriggers();
-  for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === 'runDailyBatch') {
-      Logger.log('日次バッチ trigger は既に存在します。');
-      return;
-    }
-  }
-
-  ScriptApp.newTrigger('runDailyBatch')
-    .timeBased()
-    .atHour(20)
-    .everyDays(1)
-    .create();
-
-  Logger.log('日次バッチ trigger を作成しました（毎晩 20:00〜21:00）');
-}
 
 /**
  * 日次バッチ用の trigger を削除する
