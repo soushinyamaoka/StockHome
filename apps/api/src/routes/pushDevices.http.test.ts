@@ -43,8 +43,51 @@ test('POST /api/push-devices/test はcooldown中の2回目に429とRetry-After�
       payload: { expoPushToken: scope.deviceA.expoPushToken },
     });
     assert.equal(second.statusCode, 429);
-    assert.ok(second.headers['retry-after']);
     assert.equal(second.json().reason, 'rate_limited');
+    // S020-B02: Retry-Afterは実際の残りcooldown（30秒設定なのでほぼ30秒）に
+    // 近い値であること。1のような不当に小さい値ではないことを確認する
+    const retryAfter = Number(second.headers['retry-after']);
+    assert.ok(
+      Number.isFinite(retryAfter) && retryAfter >= 25,
+      `expected Retry-After close to the full 30s cooldown, got ${second.headers['retry-after']}`
+    );
+  } finally {
+    stub.restore();
+    await app.close();
+    await scope.cleanup();
+  }
+});
+
+// S020-B02: 真に並行した2リクエストでも、負けた側のRetry-Afterは満了に近い値
+test('POST /api/push-devices/test は並行した2リクエストでも、負けた側に妥当なRetry-Afterを返す', async () => {
+  const scope = await createTwoUserScope();
+  const app = await buildAuthedApp();
+  const stub = stubFetchOnce({ status: 200, body: { data: [{ status: 'ok', id: `http-concurrent-${Date.now()}` }] } });
+  try {
+    const [first, second] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: '/api/push-devices/test',
+        headers: bearerToken(app, scope.userA.id),
+        payload: { expoPushToken: scope.deviceA.expoPushToken },
+      }),
+      app.inject({
+        method: 'POST',
+        url: '/api/push-devices/test',
+        headers: bearerToken(app, scope.userA.id),
+        payload: { expoPushToken: scope.deviceA.expoPushToken },
+      }),
+    ]);
+    const responses = [first, second];
+    const succeeded = responses.filter((r) => r.statusCode === 200);
+    const limited = responses.filter((r) => r.statusCode === 429);
+    assert.equal(succeeded.length, 1, `expected exactly 1 success, got statuses ${responses.map((r) => r.statusCode)}`);
+    assert.equal(limited.length, 1, `expected exactly 1 rate limited, got statuses ${responses.map((r) => r.statusCode)}`);
+    const retryAfter = Number(limited[0].headers['retry-after']);
+    assert.ok(
+      Number.isFinite(retryAfter) && retryAfter >= 25,
+      `expected Retry-After close to the full 30s cooldown, got ${limited[0].headers['retry-after']}`
+    );
   } finally {
     stub.restore();
     await app.close();

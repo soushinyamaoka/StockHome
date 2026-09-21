@@ -97,7 +97,7 @@ test('時間経過後: cooldown期間を過ぎていれば再送できる', asyn
   }
 });
 
-test('並行実行: 同時に2回呼んでも成功するのはちょうど1回', async () => {
+test('並行実行: 同時に2回呼んでも成功するのはちょうど1回、負けた方のRetry-Afterはcooldown満了に近い値', async () => {
   const scope = await createDeviceScope();
   const stub = stubFetchCounting({ status: 200, body: { data: [{ status: 'ok', id: 'cooldown-3' }] } });
   try {
@@ -112,7 +112,61 @@ test('並行実行: 同時に2回呼んでも成功するのはちょうど1回'
     assert.equal(rateLimited.length, 1, `expected exactly 1 rate_limited, got ${JSON.stringify(results)}`);
     // Expoへ実際に到達したのも1回だけ
     assert.equal(stub.getCallCount(), 1);
+    // S020-B02: claimに負けた側は、呼び出し開始時点の古いスナップショット
+    // （lastTestSentAtがまだnullのまま）ではなく、勝った側が書き込んだ最新値を
+    // 再取得してから計算すること。古い値のまま計算すると不当に小さい値
+    // （このcooldown設定では1）になる
+    const retryAfterSeconds = rateLimited[0]?.retryAfterSeconds ?? 0;
+    assert.ok(
+      retryAfterSeconds >= 25,
+      `expected retryAfterSeconds close to the full 30s cooldown, got ${retryAfterSeconds}`
+    );
   } finally {
+    stub.restore();
+    await scope.cleanup();
+  }
+});
+
+test('claimに負けた場合、呼び出し開始時点の古いスナップショットではなく再取得した現在値からRetry-Afterを計算する（決定的再現）', async () => {
+  // 上の「並行実行」testは実DB上の真の並行アクセスに依存するため、
+  // このスナップショット鮮度バグ自体は再現したりしなかったりする
+  // （ローカルPostgresのクエリが速すぎて、2つのfindFirstが実際には
+  // 重ならないことが多い。実測で8/8回、修正前コードでも偶然パスした）。
+  // このtestはfindFirstだけを差し替え、「呼び出し開始時点ではまだ
+  // claimされていなかった（lastTestSentAt: null）」という古いスナップショットを
+  // 強制的に返しつつ、実際のDB行は既に2秒前に別のrequestがclaim済みという
+  // 状況を作ることで、並行アクセスのタイミングに依存せず確実に再現する
+  // （S020-B02: VPS管理レビューで、この再取得漏れによりRetry-After: 1を
+  // 返す不具合を指摘された）。
+  const scope = await createDeviceScope();
+  const stub = stubFetchCounting({ status: 200, body: { data: [{ status: 'ok', id: 'cooldown-stale' }] } });
+  const originalFindFirst = prisma.pushDevice.findFirst.bind(prisma.pushDevice);
+  try {
+    // 実際のDB行: 2秒前に別のrequestがclaim済み（cooldown中、残り約28秒）
+    const recentClaim = new Date(Date.now() - 2000);
+    await prisma.pushDevice.update({ where: { id: scope.deviceId }, data: { lastTestSentAt: recentClaim } });
+
+    // findFirstだけ、呼び出し元には「まだclaimされていなかった」古いスナップショット
+    // （lastTestSentAt: null）を返すよう差し替える。updateMany等、他のクエリは
+    // 実際のDB状態のまま（cooldown中なのでclaimは必ず失敗しcount:0になる）
+    (prisma.pushDevice as any).findFirst = async (...args: unknown[]) => {
+      const real = await originalFindFirst(...(args as Parameters<typeof originalFindFirst>));
+      return real ? { ...real, lastTestSentAt: null } : real;
+    };
+
+    const result = await sendTestPushToDevice(scope.expoPushToken, scope.householdId, scope.userId);
+    assert.equal(result?.ok, false);
+    assert.equal(result?.reason, 'rate_limited');
+    // 実際の残り時間（約28秒）に近い値であること。呼び出し開始時点の
+    // 古いスナップショット（null）のまま計算すると1になってしまう
+    assert.ok(
+      (result?.retryAfterSeconds ?? 0) >= 25,
+      `expected retryAfterSeconds close to the actual remaining ~28s cooldown, got ${result?.retryAfterSeconds}`
+    );
+    // Expoへは到達しない（claimに失敗しているため）
+    assert.equal(stub.getCallCount(), 0);
+  } finally {
+    (prisma.pushDevice as any).findFirst = originalFindFirst;
     stub.restore();
     await scope.cleanup();
   }

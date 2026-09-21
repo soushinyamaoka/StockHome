@@ -459,7 +459,18 @@ export async function sendTestPushToDevice(
     data: { lastTestSentAt: new Date() },
   });
   if (claimed.count === 0) {
-    const lastSentAt = device.lastTestSentAt?.getTime() ?? 0;
+    // claimに負けた場合、呼び出し開始時点で取得したdeviceのスナップショット
+    // （lastTestSentAtがまだnull/古いままの可能性がある。並行して他のrequestが
+    // 直前にclaimしていると、そのrequestが書き込んだ最新値をこちらのSELECTは
+    // 見ていない）ではなく、現在の値を再取得してから残り時間を計算する。
+    // 古いスナップショットのまま計算すると「今からちょうどcooldown分待てる」と
+    // 誤認しretryAfterSecondsが不当に小さくなる（S020-B02対応。VPS管理
+    // レビューで、並行claimに負けたrequestがRetry-After: 1を返す不具合を指摘された）
+    const current = await prisma.pushDevice.findUnique({
+      where: { id: device.id },
+      select: { lastTestSentAt: true },
+    });
+    const lastSentAt = current?.lastTestSentAt?.getTime() ?? Date.now();
     const retryAfterSeconds = Math.max(
       1,
       Math.ceil((lastSentAt + TEST_PUSH_COOLDOWN_MS - Date.now()) / 1000)
