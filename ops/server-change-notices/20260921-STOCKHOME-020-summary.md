@@ -12,7 +12,7 @@ app: stockhome
 
 source_branch: main
 
-source_commit: cdf2481461d80620687ad08e4196fac1e3cc1668
+source_commit: 85c5f8ffa2fa4b180f293a5c21130870dbbe0fd5
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
@@ -29,14 +29,26 @@ notice 010〜019の提出内容を参照）
   別関数）、設定画面へ「プッシュ通知」セクション（端末一覧・テスト送信
   ボタン）を追加。task `20260921-007`、Codexが実装。**第1回提出分。第1回
   VPS管理レビューでサーバー側のrate limit不足を指摘されblocked**）
-- `cdf2481`（**本notice対象・最終source。S020-B01対応**。`PushDevice`へ
+- `cdf2481`（S020-B01対応。`PushDevice`へ
   `lastTestSentAt`列を追加（`lastPushAt`とは別。実配信の頻度に影響しない
   ため）。`sendTestPushToDevice`へ、cooldown判定＋枠確保を1つの原子的な
   `updateMany`で行う処理を追加（TOCTOU無し。household当たりpending最大1件
   を保証したS014-B06の並行claim対応と同じ考え方）。`POST
   /api/push-devices/test`はcooldown中に429＋`Retry-After`ヘッダを返す。
   mobile設定画面は429時に「少し待ってください」の案内を表示。task
-  `20260921-008`、Codexが実装）
+  `20260921-008`、Codexが実装。**第2回提出分。第2回VPS管理レビューで、
+  並行claimに負けたrequestが古いスナップショットからRetry-Afterを計算し
+  不当に小さい値（1）を返す不具合を指摘されblocked**）
+- `85c5f8f`（**本notice対象・最終source。S020-B02対応**。`sendTestPushToDevice`の
+  cooldown claim失敗時、呼び出し開始時点の古い`device`スナップショットでは
+  なく、`prisma.pushDevice.findUnique`で現在の`lastTestSentAt`を再取得して
+  から`retryAfterSeconds`を計算するよう修正（schema変更は無い。既存の
+  `lastTestSentAt`列をそのまま使う）。並行実行test・HTTP testの両方へ
+  Retry-Afterの実際の値（cooldown満了に近い値であること）を確認する
+  アサーションを追加し、さらに実DBの真の並行タイミングに依存せず確実に
+  不具合を再現する決定的test（`findFirst`の戻り値だけを差し替え、DB行は
+  実際に2秒前にclaim済みという状況を作る）を新規追加。task `20260921-009`、
+  Codexが実装）
 
 **本noticeが対象とするのは所見B-6への対応（プッシュ通知の疎通確認機能の新設）。
 notice 010〜019は別変更のため分離したままとする。**
@@ -114,6 +126,59 @@ Claudeが実DBで、通常（1回目は成功）・制限超過（直後の2回�
 Expoへの到達も1回だけであることを確認。5回連続実行して毎回安定して成功する
 ことも確認）の4シナリオを検証した。
 
+## VPS管理レビュー結果への対応（第3回：blocked→再提出）
+
+第2回VPS管理レビューで、DBによる原子的cooldownと二重送信防止は確認できたが、
+並行claimに負けたrequestが返す`Retry-After`の値が不正確だと指摘されblockedと
+なった。
+
+> DBによる原子的cooldownと二重送信防止は確認できました。ただし並行claimで
+> 負けたrequestが古い値から計算するため、実際は約30秒待つ必要があるのに
+> Retry-After: 1を返します。claim失敗後に最新値を再取得するか、30秒を返す
+> よう修正し、並行・HTTPテストでRetry-Afterの値も確認してください。
+
+原因（S020-B02）: `sendTestPushToDevice`は関数の先頭で`device`を1度だけ
+`findFirst`で取得しており、cooldown claim（`updateMany`）に失敗した場合
+（`claimed.count === 0`）、この呼び出し開始時点の古いスナップショット
+（`device.lastTestSentAt`）を使って`retryAfterSeconds`を計算していた。
+2つのリクエストが並行して同じ端末へテスト送信しようとした場合、負けた方は
+自分自身の`findFirst`が「まだ誰もclaimしていなかった（`lastTestSentAt:
+null`）」時点の状態を読んでいるため、`lastSentAt = 0`として計算され、
+`Math.ceil((0 + 30000 - Date.now()) / 1000)`が大きな負数になり、
+`Math.max(1, ...)`で常に1になっていた。
+
+対応（S020-B02）: cooldown claimに失敗した場合、`prisma.pushDevice.findUnique`
+で`lastTestSentAt`を再取得してから`retryAfterSeconds`を計算するよう修正した
+（`current`が万一取得できない場合は`Date.now()`をfallbackにし、cooldown
+丸ごと＝30秒を返す安全側の挙動にした）。schema変更は無い。task
+`20260921-009`、Codexが実装。
+
+Claudeが以下を検証した:
+- 並行実行test（`pushNotify.testSend.test.ts`）に、負けた側の
+  `retryAfterSeconds`が25秒以上（cooldown満了30秒に近い値）であることの
+  アサーションを追加。ただし実DB上の真の並行アクセスタイミングに依存する
+  ため、この単体testだけでは不具合を確実に検出できないことも確認した
+  （ローカルPostgresのクエリが速すぎて2つの`findFirst`が実際には重ならない
+  ことが多く、修正前のコードでも8回連続でたまたまpassした）
+- そのため、実際の並行タイミングに依存せず確実に不具合を再現する決定的
+  testを新規追加した。`prisma.pushDevice.findFirst`の戻り値だけを
+  `lastTestSentAt: null`に差し替えつつ、実際のDB行は「2秒前に別のrequestが
+  claim済み（残りcooldown約28秒）」という状態に直接設定する。この
+  決定的testは、**修正前のコードで確実に`got 1`で失敗し、修正後は確実に
+  成功する**ことを確認した（回帰検出力の実証）
+- HTTPレベルのtest（`pushDevices.http.test.ts`）にも、既存の
+  cooldown testへ`Retry-After`ヘッダの実際の値が25秒以上であることの
+  アサーションを追加し、さらに真に並行した2つの`app.inject()`呼び出しで
+  同じ検証を行う新規testを追加した
+- `npx tsx --test --test-concurrency=1
+  apps/api/src/services/pushNotify.testSend.test.ts
+  apps/api/src/routes/pushDevices.http.test.ts`: **15件すべて成功**
+  （既存13件＋今回の決定的再現test 1件＋並行HTTPtest 1件）
+- `npm test --workspace=@stockhome/api`: **190件すべて成功**（既存188件＋
+  新規2件。リグレッションなし）
+- `npm run build --workspace=@stockhome/shared` / `--workspace=@stockhome/api`・
+  `npx tsc --noEmit -p apps/mobile/tsconfig.json`: すべてpassed
+
 ## server_impact判定
 
 server_impact: notify
@@ -133,7 +198,7 @@ contract（既存エンドポイントの破壊的変更）は変更していな
 | 端末一覧の確認手段 | 無し（DBを直接見るしかない） | `GET /api/push-devices`で自分の登録端末（機種・有効/無効・最終送信日時）を取得できる |
 | 通知疎通の確認手段 | 無し（実際にアラートが出るまで分からない） | `POST /api/push-devices/test`で任意のタイミングにテスト通知を送信し、Expo API側の成否（`DeviceNotRegistered`等）を即座に確認できる |
 | 設定画面 | プッシュ通知に関する表示なし | 「プッシュ通知」セクションを新設。端末一覧とテスト送信ボタンを表示 |
-| テスト送信の連打防止 | 無し（サーバー側に回数制限なし） | 端末単位で30秒のcooldownを原子的な`updateMany`で保証。cooldown中は429＋`Retry-After`、mobile側は「少し待ってください」の案内を表示（S020-B01対応） |
+| テスト送信の連打防止 | 無し（サーバー側に回数制限なし） | 端末単位で30秒のcooldownを原子的な`updateMany`で保証。cooldown中は429＋`Retry-After`、mobile側は「少し待ってください」の案内を表示（S020-B01対応）。並行claimに負けた場合もcooldown満了に近い正確な`Retry-After`値を返す（S020-B02対応） |
 
 ## 影響対象
 
@@ -224,23 +289,33 @@ secret値は記載していない。
   - `npx tsc --noEmit -p apps/mobile/tsconfig.json`: passed
   - 新規test 4fileの追加分もDB必須のためCodexは実行せず、Claudeが実行
 
+  **(A'') Codex実施分（第3回再対応S020-B02、task `20260921-009`）**
+  - `npm run build --workspace=@stockhome/shared` / `--workspace=@stockhome/api`
+    （内部で`prisma generate`。DB接続なし）: passed
+  - `npx tsc --noEmit -p apps/mobile/tsconfig.json`: passed
+  - 新規test 2fileの追加分もDB必須のためCodexは実行せず、Claudeが実行
+
   **(B) 実DBテスト（ローカルPostgres、Claude実施）**
   - migration検証: `prisma migrate diff`で差分SQLを生成（`ALTER TABLE ADD
     COLUMN`のみ）、ローカル開発DBへ適用し成功を確認
   - `npx tsx --test --test-concurrency=1
     apps/api/src/services/pushNotify.testSend.test.ts
-    apps/api/src/routes/pushDevices.http.test.ts`: **13件すべて成功**
-    （`sendTestPushToDevice`単体8件: 成功時のlastPushAt更新・ticket記録、
+    apps/api/src/routes/pushDevices.http.test.ts`: **15件すべて成功**
+    （`sendTestPushToDevice`単体9件: 成功時のlastPushAt更新・ticket記録、
     存在しないtoken・他世帯端末はnull、DeviceNotRegistered時の無効化、
     Expo API失敗時のsend_failed、無効化済み端末への成功送信での復帰の
-    既存5件＋cooldown新規3件（制限超過・時間経過後・並行実行）／
-    HTTPレベル5件: 自分の端末だけを一覧取得、自分の端末へのテスト送信、
-    他世帯の端末への404、同世帯でも他ユーザーの端末への404の既存4件＋
-    cooldown中の2回目が429＋Retry-Afterを返す新規1件）
+    既存5件＋cooldown4件（制限超過・時間経過後・並行実行＝Retry-Afterの
+    値も確認・S020-B02の決定的再現）／HTTPレベル6件: 自分の端末だけを
+    一覧取得、自分の端末へのテスト送信、他世帯の端末への404、同世帯でも
+    他ユーザーの端末への404の既存4件＋cooldown中の2回目が429＋
+    Retry-Afterを返す（値も確認）・並行した2リクエストでも妥当な
+    Retry-Afterを返す新規2件）
   - 並行実行テスト（`Promise.all`で同時に2回呼ぶ）は5回連続実行し、毎回
-    安定して「成功1件・rate_limited 1件・Expo到達1回」を確認済み
-  - `npm test --workspace=@stockhome/api`: **188件すべて成功**（既存184件＋
-    新規4件。リグレッションなし）
+    安定して「成功1件・rate_limited 1件・Expo到達1回」を確認済み。加えて
+    S020-B02対応の決定的再現testが、修正前コードでは確実に失敗し
+    （`got 1`）、修正後は確実に成功することも確認済み（回帰検出力の実証）
+  - `npm test --workspace=@stockhome/api`: **190件すべて成功**（既存188件＋
+    新規2件。リグレッションなし）
 
 - 結果: すべて成功
 - 未実施テストと理由: production VPS上での実Expo Push API疎通確認は未実施
@@ -260,9 +335,9 @@ secret値は記載していない。
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
 - [x] production baselineとrelease全commit・build入力差分を確認した（baseline
-  `ec6e541`から`cdf2481`までのcommitを実際の時系列順で確認。上記
+  `ec6e541`から`85c5f8f`までのcommitを実際の時系列順で確認。上記
   release_commits参照）
-- [x] source commitとnoticeをremoteの対象branchへpushした（`cdf2481`はpush済み、
+- [x] source commitとnoticeをremoteの対象branchへpushした（`85c5f8f`はpush済み、
   local/origin一致確認済み。本noticeの確定分はこれからcommit・pushする）
 - [x] data更新のtransaction・同時実行・途中失敗を確認した（テスト送信は1端末に
   対する単発の`update`のみで、他のデータへの副作用は無い。失敗時もticket記録の
@@ -305,4 +380,5 @@ secret値は記載していない。
 - VPS management review: 未実施
 - production approval: 未実施
 - related task_id: 20260921-007（初回実装）、20260921-008（S020-B01対応、
-  cooldown/rate limit追加）
+  cooldown/rate limit追加）、20260921-009（S020-B02対応、Retry-Afterの
+  値の正確性を修正）
