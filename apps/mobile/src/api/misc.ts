@@ -1,5 +1,14 @@
 import { api } from './client';
-import type { CandidateDto, DashboardData, FamilyUser, NotificationDto, PurchaseDto, ReflectionDto } from './types';
+import type {
+  CandidateDto,
+  DashboardData,
+  FamilyUser,
+  NotificationDto,
+  PurchaseDto,
+  PushDeviceDto,
+  ReflectionDto,
+  TestPushResult,
+} from './types';
 
 // --- ダッシュボード ---
 export async function fetchDashboard(): Promise<DashboardData> {
@@ -102,4 +111,14 @@ export async function registerPushDevice(
   platform: 'ios' | 'android'
 ): Promise<void> {
   await api.post('/api/push-devices', { expoPushToken, platform });
+}
+
+export async function fetchPushDevices(): Promise<{ devices: PushDeviceDto[] }> {
+  const res = await api.get('/api/push-devices');
+  return res.data;
+}
+
+export async function sendTestPush(expoPushToken: string): Promise<TestPushResult> {
+  const res = await api.post('/api/push-devices/test', { expoPushToken });
+  return res.data;
 }

@@ -417,3 +417,80 @@ export async function sendPushToUser(
   }
   return result;
 }
+
+export interface TestPushResult {
+  ok: boolean;
+  reason?: 'device_not_registered' | 'send_failed';
+}
+
+// 設定画面の「この端末に通知を送ってみる」用。sendPushToUserは対象ユーザーの
+// 全active端末へ一括送信する設計のため、1台だけを狙って送るテスト送信は
+// 意図的に別関数として持つ（chunking等の複数端末向けロジックを流用しない）。
+// household・userでの所有確認は呼び出し側の責務ではなくこの関数の内側で行う
+export async function sendTestPushToDevice(
+  expoPushToken: string,
+  householdId: string,
+  userId: string,
+  logger: AppLogger = appLogger
+): Promise<TestPushResult | null> {
+  const device = await prisma.pushDevice.findFirst({
+    where: { expoPushToken, householdId, userId },
+  });
+  if (!device) return null;
+
+  const sent = await postJsonWithRetry(
+    EXPO_PUSH_ENDPOINT,
+    [
+      {
+        to: device.expoPushToken,
+        title: 'StockHome',
+        body: 'テスト通知です。これが届いていれば通知は正常に届く状態です。',
+        sound: 'default',
+      },
+    ],
+    logger
+  );
+
+  if (!sent.ok) {
+    logger.warn({
+      event: LOG_EVENTS.PUSH_SEND_FAILED,
+      error_kind: ERROR_KINDS.INTERNAL,
+      ...(sent.status != null ? { status: sent.status } : {}),
+      ...(sent.errName ? { err: { name: sent.errName } } : {}),
+      count: 1,
+      attempts: sent.attempts,
+    });
+    return { ok: false, reason: 'send_failed' };
+  }
+
+  const ticket = (
+    sent.body as { data?: { status?: string; id?: string; details?: { error?: string } }[] }
+  )?.data?.[0];
+
+  if (ticket?.status === 'ok') {
+    await prisma.pushDevice.update({
+      where: { id: device.id },
+      data: { lastPushAt: new Date(), isActive: true },
+    });
+    if (ticket.id) {
+      try {
+        await prisma.pushTicket.create({ data: { pushDeviceId: device.id, expoTicketId: ticket.id } });
+      } catch (e) {
+        // ticket記録の失敗でテスト送信自体を失敗扱いにしない（一意制約違反等）
+        logger.warn({
+          event: LOG_EVENTS.PUSH_SEND_FAILED,
+          error_kind: ERROR_KINDS.DB,
+          err: safeErr(e),
+        });
+      }
+    }
+    return { ok: true };
+  }
+
+  if (ticket?.details?.error === 'DeviceNotRegistered') {
+    await prisma.pushDevice.update({ where: { id: device.id }, data: { isActive: false } });
+    return { ok: false, reason: 'device_not_registered' };
+  }
+
+  return { ok: false, reason: 'send_failed' };
+}

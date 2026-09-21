@@ -13,3 +13,8 @@ export const pushDeviceRegisterSchema = z.object({
 });
 
 export type PushDeviceRegisterInput = z.infer<typeof pushDeviceRegisterSchema>;
+
+// テスト通知の送信先を1台だけ指定する（B-6: 設定画面の疎通確認）
+export const pushDeviceTestSchema = pushDeviceRegisterSchema.pick({ expoPushToken: true });
+
+export type PushDeviceTestInput = z.infer<typeof pushDeviceTestSchema>;

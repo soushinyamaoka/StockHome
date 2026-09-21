@@ -166,3 +166,16 @@ export interface ReflectionDto {
   category: 'auto' | 'manual';
   vendor: string | null;
 }
+
+export interface PushDeviceDto {
+  id: string;
+  platform: 'ios' | 'android';
+  isActive: boolean;
+  lastPushAt: string | null;
+  createdAt: string;
+}
+
+export interface TestPushResult {
+  ok: boolean;
+  reason?: 'device_not_registered' | 'send_failed';
+}

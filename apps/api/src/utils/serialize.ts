@@ -8,6 +8,7 @@ import type {
   ImportOrderCandidate,
   StockCorrectionLog,
   NotificationLog,
+  PushDevice,
 } from '@prisma/client';
 import { candidatePriceReliability, CERTAIN_UNIT_PRICE_SOURCES } from '../services/candidateIntake';
 import { formatDateOnly } from './date';
@@ -138,5 +139,15 @@ export function serializeNotification(n: NotificationLog) {
     notificationReason: n.notificationReason,
     message: n.message,
     createdAt: n.createdAt.toISOString(),
+  };
+}
+
+export function serializePushDevice(d: PushDevice) {
+  return {
+    id: d.id,
+    platform: d.platform,
+    isActive: d.isActive,
+    lastPushAt: d.lastPushAt ? d.lastPushAt.toISOString() : null,
+    createdAt: d.createdAt.toISOString(),
   };
 }

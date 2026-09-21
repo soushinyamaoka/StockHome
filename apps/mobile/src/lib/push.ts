@@ -22,7 +22,9 @@ export function navigateToStockItem(itemId?: string): boolean {
   }
 }
 
-export async function registerForPushNotifications(): Promise<boolean> {
+// 成功時はExpo Push Tokenを返す（設定画面のテスト送信で、現在のtokenの再取得・
+// 再登録を兼ねて呼べるようにするため）。許可が得られない等の場合はnull
+export async function registerForPushNotifications(): Promise<string | null> {
   // 通知の表示方法（アプリ起動中でもバナーを出す）
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
@@ -45,12 +47,12 @@ export async function registerForPushNotifications(): Promise<boolean> {
   if (status !== 'granted') {
     status = (await Notifications.requestPermissionsAsync()).status;
   }
-  if (status !== 'granted') return false;
+  if (status !== 'granted') return null;
 
   const projectId = (Constants.expoConfig?.extra as any)?.eas?.projectId as string | undefined;
-  if (!projectId) return false;
+  if (!projectId) return null;
 
   const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
   await registerPushDevice(token, Platform.OS === 'ios' ? 'ios' : 'android');
-  return true;
+  return token;
 }
