@@ -32,6 +32,7 @@ export type SettingsStackParamList = {
   ReflectionLog: undefined;
   ChangePassword: undefined;
   Family: undefined;
+  OperatorNotices: undefined;
 };
 
 export type MainTabParamList = {

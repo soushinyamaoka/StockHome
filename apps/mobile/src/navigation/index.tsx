@@ -25,6 +25,7 @@ import NotificationLogScreen from '../screens/settings/NotificationLogScreen';
 import ReflectionLogScreen from '../screens/settings/ReflectionLogScreen';
 import ChangePasswordScreen from '../screens/settings/ChangePasswordScreen';
 import FamilyScreen from '../screens/settings/FamilyScreen';
+import OperatorNoticesScreen from '../screens/settings/OperatorNoticesScreen';
 
 import type {
   AuthStackParamList,
@@ -135,6 +136,7 @@ function SettingsNavigator() {
         options={{ title: 'パスワード変更' }}
       />
       <SettingsStack.Screen name="Family" component={FamilyScreen} options={{ title: '家族のメンバー' }} />
+      <SettingsStack.Screen name="OperatorNotices" component={OperatorNoticesScreen} options={{ title: '運営からのお知らせ' }} />
     </SettingsStack.Navigator>
   );
 }

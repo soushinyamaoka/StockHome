@@ -19,6 +19,7 @@ import { Button } from '../components/Button';
 import { DaysCounter } from '../components/DaysCounter';
 import { ErrorState } from '../components/ErrorState';
 import { BatchStatusBanner } from '../components/BatchStatusBanner';
+import { NoticeBanner } from '../components/NoticeBanner';
 import { useAuth } from '../hooks/useAuth';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../theme';
 import { remainQtyLabel, isSnoozed } from '../lib/stockUtils';
@@ -79,6 +80,8 @@ export default function DashboardScreen() {
           <Text style={styles.heroStampText}>Stock{'\n'}Home</Text>
         </View>
       </View>
+
+      <NoticeBanner />
 
       {/* きょうの数字（3項目の帯） */}
       <View style={styles.statsStrip}>

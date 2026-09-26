@@ -14,6 +14,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../hooks/useAuth';
 import { Button } from '../../components/Button';
 import { TextField } from '../../components/TextField';
+import { NoticeBanner } from '../../components/NoticeBanner';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../../theme';
 import type { AuthStackParamList } from '../../navigation/types';
 
@@ -57,6 +58,8 @@ const LoginScreen: React.FC = () => {
           <Text style={styles.subtitle}>わが家の消耗品ノート</Text>
           <View style={styles.rule} />
         </View>
+
+        <NoticeBanner />
 
         <View style={styles.sheet}>
           <TextField

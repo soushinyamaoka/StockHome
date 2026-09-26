@@ -13,6 +13,7 @@ import {
 } from '@expo-google-fonts/zen-maru-gothic';
 import { Fraunces_700Bold, Fraunces_900Black } from '@expo-google-fonts/fraunces';
 import { AuthProvider } from './src/hooks/useAuth';
+import { NoticesProvider } from './src/hooks/useNoticesFeed';
 import { queryClient } from './src/lib/queryClient';
 import { RootNavigator } from './src/navigation';
 import { COLORS } from './src/theme';
@@ -39,12 +40,14 @@ export default function App() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <QueryClientProvider client={queryClient}>
+          <NoticesProvider>
           <AuthProvider>
             {/* SDK55+ で Android は edge-to-edge 必須化により backgroundColor は無効。
                 各画面のコンテナ背景色(COLORS.paper)がステータスバー下に透けて見える */}
             <StatusBar style="dark" />
             <RootNavigator />
           </AuthProvider>
+          </NoticesProvider>
         </QueryClientProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
