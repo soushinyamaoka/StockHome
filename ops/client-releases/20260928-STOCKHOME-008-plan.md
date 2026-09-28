@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: published（2026-09-28、両branch・両platformへ配信済み。利用者端末での確認待ち）
+status: verified（2026-09-28、app ownerが実機で表示確認済み）
 
 created_by: Claude
 
@@ -71,6 +71,5 @@ StockHome API・DB・port/bind・cron・deploy・ログ形式・API契約のい�
 - 両branchのiOS・Android bundle（4ファイルとも）に`console.homehub-tools.dedyn.io`
   （お知らせfeed）と`stockhome.homehub-tools.dedyn.io`（既存API）の両方が含まれる
   ことを確認した。
-- 利用者端末でのiOS・Android表示確認: 未実施、本人確認報告待ち。報告受領後に
-  `verified`へ更新する。
+- 利用者端末でのiOS・Android表示確認: 2026-09-28、app ownerがこのチャットで確認済み。
 - production API、DB、GAS、VPS設定の変更はなし。
