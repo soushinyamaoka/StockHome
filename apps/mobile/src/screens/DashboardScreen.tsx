@@ -20,6 +20,7 @@ import { DaysCounter } from '../components/DaysCounter';
 import { ErrorState } from '../components/ErrorState';
 import { BatchStatusBanner } from '../components/BatchStatusBanner';
 import { NoticeBanner } from '../components/NoticeBanner';
+import { NoticeUnreadCard } from '../components/NoticeUnreadCard';
 import { useAuth } from '../hooks/useAuth';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../theme';
 import { remainQtyLabel, isSnoozed } from '../lib/stockUtils';
@@ -34,6 +35,7 @@ export default function DashboardScreen() {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const openNotices = () => navigation.navigate('OperatorNotices');
   const { data, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['dashboard'],
     queryFn: fetchDashboard,
@@ -81,7 +83,8 @@ export default function DashboardScreen() {
         </View>
       </View>
 
-      <NoticeBanner />
+      <NoticeBanner onPress={openNotices} />
+      <NoticeUnreadCard onPress={openNotices} />
 
       {/* きょうの数字（3項目の帯） */}
       <View style={styles.statsStrip}>

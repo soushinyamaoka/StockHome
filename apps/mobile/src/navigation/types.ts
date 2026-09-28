@@ -7,6 +7,7 @@ export type AuthStackParamList = {
 
 export type HomeStackParamList = {
   Dashboard: undefined;
+  OperatorNotices: undefined;
 };
 
 export type StocksStackParamList = {

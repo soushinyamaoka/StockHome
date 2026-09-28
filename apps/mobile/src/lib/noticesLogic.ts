@@ -12,3 +12,15 @@ export function selectActiveMaintenanceNotices(notices: Notice[], nowMs: number)
 }
 export function isFeedStale(lastSuccessAtMs: number | null, nowMs: number): boolean { return lastSuccessAtMs !== null && nowMs - lastSuccessAtMs > STALE_THRESHOLD_MS; }
 export function countUnread(notices: Notice[], readIds: ReadonlySet<string>): number { return notices.filter((n) => !readIds.has(n.notice_id)).length; }
+
+// ホームの未読カードに出すお知らせ。メンテナンスバナーの内容は重複表示しない。
+export function selectHomeUnreadNotices(
+  visibleNotices: Notice[],
+  maintenanceBanners: Notice[],
+  readIds: ReadonlySet<string>
+): Notice[] {
+  const bannerIds = new Set(maintenanceBanners.map((n) => n.notice_id));
+  return visibleNotices
+    .filter((n) => !readIds.has(n.notice_id) && !bannerIds.has(n.notice_id))
+    .sort((a, b) => Date.parse(b.visible_from) - Date.parse(a.visible_from));
+}

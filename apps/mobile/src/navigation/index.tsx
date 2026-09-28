@@ -5,6 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator, type BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useNotices } from '../hooks/useNoticesFeed';
 
 import { useAuth } from '../hooks/useAuth';
 import { COLORS, FONTS, HEADER_OPTIONS, SPACING } from '../theme';
@@ -75,6 +76,7 @@ function HomeNavigator() {
   return (
     <HomeStack.Navigator screenOptions={HEADER_OPTIONS}>
       <HomeStack.Screen name="Dashboard" component={DashboardScreen} options={{ headerShown: false }} />
+      <HomeStack.Screen name="OperatorNotices" component={OperatorNoticesScreen} options={{ title: '運営からのお知らせ' }} />
     </HomeStack.Navigator>
   );
 }
@@ -152,15 +154,19 @@ const TAB_META: Record<string, { icon: keyof typeof Ionicons.glyphMap; label: st
 // カスタムタブバー: 紙の帯にアイコン。選択中は朱印（朱色の丸）が押される
 function PaperTabBar({ state, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
+  const { unreadCount } = useNotices();
   return (
     <View style={[styles.tabBar, { paddingBottom: Math.max(insets.bottom, SPACING.sm) }]}>
       {state.routes.map((route, index) => {
         const focused = state.index === index;
         const meta = TAB_META[route.name] ?? { icon: 'ellipse', label: route.name };
+        const hasUnreadNotices = route.name === 'SettingsTab' && unreadCount > 0;
         return (
           <TouchableOpacity
             key={route.key}
             style={styles.tabItem}
+            accessibilityRole="button"
+            accessibilityLabel={hasUnreadNotices ? `${meta.label}（未読のお知らせあり）` : meta.label}
             activeOpacity={0.7}
             onPress={() => {
               const event = navigation.emit({
@@ -173,12 +179,11 @@ function PaperTabBar({ state, navigation }: BottomTabBarProps) {
               }
             }}
           >
-            <View style={[styles.tabIconWrap, focused && styles.tabIconWrapActive]}>
-              <Ionicons
-                name={meta.icon}
-                size={20}
-                color={focused ? '#FFFDF6' : COLORS.inkSub}
-              />
+            <View style={styles.tabIconPosition}>
+              <View style={[styles.tabIconWrap, focused && styles.tabIconWrapActive]}>
+                <Ionicons name={meta.icon} size={20} color={focused ? '#FFFDF6' : COLORS.inkSub} />
+              </View>
+              {hasUnreadNotices ? <View style={styles.unreadDot} accessibilityLabel="未読のお知らせあり" /> : null}
             </View>
             <Text style={[styles.tabLabel, focused && styles.tabLabelActive]}>{meta.label}</Text>
           </TouchableOpacity>
@@ -243,6 +248,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'transparent',
+  },
+  tabIconPosition: { position: 'relative' },
+  unreadDot: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: COLORS.accent,
+    borderWidth: 1,
+    borderColor: COLORS.paper,
   },
   tabIconWrapActive: {
     backgroundColor: COLORS.accent,
