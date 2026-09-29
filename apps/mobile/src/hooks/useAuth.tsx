@@ -4,6 +4,9 @@ import { fetchMe, loginRequest, registerRequest, type AuthUser } from '../api/au
 import { getStoredToken, setStoredToken, setUnauthorizedHandler } from '../api/client';
 import { navigateToStockItem, registerForPushNotifications } from '../lib/push';
 import { navigationRef, onNavigationReady } from '../navigation/navigationRef';
+import { isAuthRejection } from '../lib/authStartup';
+import { clearLastUser, loadLastUser, saveLastUser } from '../lib/lastUserStorage';
+import { clearPersistedQueries } from '../lib/queryClient';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -34,9 +37,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         const me = await fetchMe();
         setUser(me.user);
-      } catch {
-        await setStoredToken(null);
-        setUser(null);
+        await saveLastUser(me.user);
+      } catch (error) {
+        if (isAuthRejection(error)) {
+          await setStoredToken(null);
+          await clearLastUser();
+          setUser(null);
+        } else {
+          setUser(await loadLastUser());
+        }
       } finally {
         setLoading(false);
       }
@@ -44,7 +53,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   useEffect(() => {
-    setUnauthorizedHandler(() => setUser(null));
+    setUnauthorizedHandler(() => {
+      setUser(null);
+      void clearLastUser();
+      void clearPersistedQueries();
+    });
     return () => setUnauthorizedHandler(null);
   }, []);
 
@@ -79,6 +92,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const res = await loginRequest(email, password);
     await setStoredToken(res.token);
     setUser(res.user);
+    await saveLastUser(res.user);
   }, []);
 
   const register = useCallback(
@@ -86,12 +100,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const res = await registerRequest(input);
       await setStoredToken(res.token);
       setUser(res.user);
+      await saveLastUser(res.user);
     },
     []
   );
 
   const logout = useCallback(async () => {
     await setStoredToken(null);
+    await clearLastUser();
+    await clearPersistedQueries();
     setUser(null);
   }, []);
 

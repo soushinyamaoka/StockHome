@@ -16,6 +16,7 @@ import { fetchStocks, setSnooze } from '../../api/items';
 import type { StockEntry } from '../../api/types';
 import { DaysCounter } from '../../components/DaysCounter';
 import { ErrorState } from '../../components/ErrorState';
+import { OfflineNotice } from '../../components/OfflineNotice';
 import { ItemSearchBar } from '../../components/ItemSearchBar';
 import { StampBadge } from '../../components/StampBadge';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../../theme';
@@ -34,7 +35,7 @@ export default function StockListScreen() {
   const scrollRetriedRef = useRef(false);
   const queryClient = useQueryClient();
 
-  const { data, isLoading, isError, refetch, isRefetching } = useQuery({
+  const { data, dataUpdatedAt, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['stocks'],
     queryFn: fetchStocks,
   });
@@ -206,6 +207,7 @@ export default function StockListScreen() {
         keyExtractor={(s) => s.item.id}
         renderItem={renderItem}
         contentContainerStyle={{ padding: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: SPACING.xxl }}
+        ListHeaderComponent={isError && data ? <OfflineNotice updatedAt={dataUpdatedAt} onRetry={refetch} /> : null}
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={COLORS.accent} />}
         onScrollToIndexFailed={(info) => {
           // FlatListの仮想化で対象indexがまだ計測されていないと失敗する。

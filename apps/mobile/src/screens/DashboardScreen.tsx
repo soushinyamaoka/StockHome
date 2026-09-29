@@ -24,6 +24,7 @@ import { ErrorState } from '../components/ErrorState';
 import { BatchStatusBanner } from '../components/BatchStatusBanner';
 import { NoticeBanner } from '../components/NoticeBanner';
 import { NoticeUnreadCard } from '../components/NoticeUnreadCard';
+import { OfflineNotice } from '../components/OfflineNotice';
 import { useAuth } from '../hooks/useAuth';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../theme';
 import { remainQtyLabel, isSnoozed } from '../lib/stockUtils';
@@ -46,7 +47,7 @@ export default function DashboardScreen() {
   const undoTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const undoTargetRef = React.useRef<UndoPurchase | null>(null);
   const openNotices = () => navigation.navigate('OperatorNotices');
-  const { data, isLoading, isError, refetch, isRefetching } = useQuery({
+  const { data, dataUpdatedAt, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['dashboard'],
     queryFn: fetchDashboard,
   });
@@ -152,6 +153,7 @@ export default function DashboardScreen() {
 
       <NoticeBanner onPress={openNotices} />
       <NoticeUnreadCard onPress={openNotices} />
+      {isError && data ? <OfflineNotice updatedAt={dataUpdatedAt} onRetry={refetch} /> : null}
 
       {/* きょうの数字（3項目の帯） */}
       <View style={styles.statsStrip}>
@@ -182,7 +184,7 @@ export default function DashboardScreen() {
       <BatchStatusBanner lastBatchRun={data?.lastBatchRun ?? null} />
 
       <Section title="そろそろ切れそう" count={alertTotal}>
-        {isError ? (
+        {isError && !data ? (
           <ErrorState onRetry={refetch} />
         ) : isLoading ? (
           <Text style={styles.muted}>読み込み中…</Text>

@@ -3,7 +3,7 @@ import { ActivityIndicator, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { QueryClientProvider } from '@tanstack/react-query';
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import {
   useFonts,
   ZenMaruGothic_400Regular,
@@ -14,7 +14,7 @@ import {
 import { Fraunces_700Bold, Fraunces_900Black } from '@expo-google-fonts/fraunces';
 import { AuthProvider } from './src/hooks/useAuth';
 import { NoticesProvider } from './src/hooks/useNoticesFeed';
-import { queryClient } from './src/lib/queryClient';
+import { QUERY_CACHE_MAX_AGE_MS, queryClient, queryPersister, shouldPersistQuery } from './src/lib/queryClient';
 import { RootNavigator } from './src/navigation';
 import { COLORS } from './src/theme';
 
@@ -39,7 +39,15 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <QueryClientProvider client={queryClient}>
+        <PersistQueryClientProvider
+          client={queryClient}
+          persistOptions={{
+            persister: queryPersister,
+            maxAge: QUERY_CACHE_MAX_AGE_MS,
+            buster: 'v1',
+            dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery },
+          }}
+        >
           <NoticesProvider>
           <AuthProvider>
             {/* SDK55+ で Android は edge-to-edge 必須化により backgroundColor は無効。
@@ -48,7 +56,7 @@ export default function App() {
             <RootNavigator />
           </AuthProvider>
           </NoticesProvider>
-        </QueryClientProvider>
+        </PersistQueryClientProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
