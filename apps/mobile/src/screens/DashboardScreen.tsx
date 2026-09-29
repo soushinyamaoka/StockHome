@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Alert,
   AppState,
   RefreshControl,
   ScrollView,
@@ -9,11 +10,13 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { fetchDashboard } from '../api/misc';
+import { createPurchase, deletePurchase } from '../api/items';
+import type { StockEntry } from '../api/types';
 import { Section } from '../components/Section';
 import { Button } from '../components/Button';
 import { DaysCounter } from '../components/DaysCounter';
@@ -24,6 +27,9 @@ import { NoticeUnreadCard } from '../components/NoticeUnreadCard';
 import { useAuth } from '../hooks/useAuth';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../theme';
 import { remainQtyLabel, isSnoozed } from '../lib/stockUtils';
+import { buildQuickPurchaseInput, quickPurchaseMessage } from '../lib/quickPurchase';
+
+type UndoPurchase = { purchaseId: string; itemId: string; message: string };
 
 function todayLabel(): string {
   const d = new Date();
@@ -35,10 +41,70 @@ export default function DashboardScreen() {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const [undo, setUndo] = React.useState<UndoPurchase | null>(null);
+  const undoTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const undoTargetRef = React.useRef<UndoPurchase | null>(null);
   const openNotices = () => navigation.navigate('OperatorNotices');
   const { data, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['dashboard'],
     queryFn: fetchDashboard,
+  });
+
+  const clearUndoTimer = React.useCallback(() => {
+    if (undoTimer.current) {
+      clearTimeout(undoTimer.current);
+      undoTimer.current = null;
+    }
+  }, []);
+
+  React.useEffect(() => clearUndoTimer, [clearUndoTimer]);
+
+  const invalidatePurchaseQueries = React.useCallback((itemId: string) => {
+    void queryClient.invalidateQueries({ queryKey: ['stocks'] });
+    void queryClient.invalidateQueries({ queryKey: ['items'] });
+    void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    void queryClient.invalidateQueries({ queryKey: ['purchases', itemId] });
+  }, [queryClient]);
+
+  const purchaseMutation = useMutation({
+    mutationFn: (entry: StockEntry) => createPurchase(buildQuickPurchaseInput(entry.item)),
+    onSuccess: ({ purchase }, entry) => {
+      const itemId = entry.item.id;
+      invalidatePurchaseQueries(itemId);
+      clearUndoTimer();
+      const nextUndo = {
+        purchaseId: purchase.id,
+        itemId,
+        message: quickPurchaseMessage(entry.item.itemName, buildQuickPurchaseInput(entry.item).qty, entry.item.unit),
+      };
+      setUndo(nextUndo);
+      undoTimer.current = setTimeout(() => {
+        setUndo(null);
+        undoTimer.current = null;
+      }, 6000);
+    },
+    onError: (error: any) => {
+      Alert.alert('エラー', error?.response?.data?.message ?? '記録に失敗しました');
+    },
+  });
+
+  const undoMutation = useMutation({
+    mutationFn: (purchaseId: string) => deletePurchase(purchaseId),
+    onSuccess: (_result, purchaseId) => {
+      const target = undoTargetRef.current;
+      if (target?.purchaseId === purchaseId) {
+        invalidatePurchaseQueries(target.itemId);
+        if (undo?.purchaseId === purchaseId) setUndo(null);
+      }
+      clearUndoTimer();
+    },
+    onError: (error: any) => {
+      undoTargetRef.current = null;
+      clearUndoTimer();
+      setUndo(null);
+      Alert.alert('エラー', error?.response?.data?.message ?? '取り消しに失敗しました。購入履歴から削除してください');
+    },
   });
 
   // 他tabから戻ってきた時（画面focus）に最新状態を取得し直す
@@ -61,12 +127,13 @@ export default function DashboardScreen() {
   const moreAlerts = Math.max(0, alertTotal - alerts.length);
 
   return (
+    <View style={{ flex: 1 }}>
     <ScrollView
       style={styles.container}
       contentContainerStyle={{
         paddingTop: insets.top + SPACING.lg,
         padding: SPACING.lg,
-        paddingBottom: SPACING.xxl,
+        paddingBottom: undo ? SPACING.xxl + 64 : SPACING.xxl,
       }}
       refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={COLORS.accent} />}
     >
@@ -125,18 +192,19 @@ export default function DashboardScreen() {
             <Text style={styles.okText}>在庫はみんな足りています</Text>
           </View>
         ) : (
-          alerts.map(({ item, snapshot, runtimeState }) => (
-            <TouchableOpacity
-              key={item.id}
-              activeOpacity={0.75}
-              onPress={() =>
-                navigation.navigate('StocksTab', {
-                  screen: 'StockList',
-                  params: { highlightItemId: item.id },
-                })
-              }
-            >
-              <View style={styles.alertCard}>
+          alerts.map((entry) => {
+            const { item, snapshot, runtimeState } = entry;
+            const isRecorded = undo?.itemId === item.id;
+            return (
+              <View key={item.id} style={styles.alertCard}>
+                <TouchableOpacity
+                  style={styles.alertMain}
+                  activeOpacity={0.75}
+                  onPress={() => navigation.navigate('StocksTab', {
+                    screen: 'StockList',
+                    params: { highlightItemId: item.id },
+                  })}
+                >
                 <DaysCounter snapshot={snapshot} size="compact" />
                 <View style={{ flex: 1, marginLeft: SPACING.md }}>
                   <Text style={styles.alertName} numberOfLines={1}>
@@ -147,10 +215,21 @@ export default function DashboardScreen() {
                     {isSnoozed(runtimeState) ? '・スヌーズ中' : ''}
                   </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={18} color={COLORS.inkFaint} />
+                </TouchableOpacity>
+                <View style={styles.quickPurchaseButton} accessibilityLabel={`${item.itemName}を買ったとして記録`}>
+                  <Button
+                    title={isRecorded ? '記録済み' : '買った'}
+                    variant="primary"
+                    small
+                    icon={<Ionicons name="basket" size={14} color="#FFFDF6" />}
+                    onPress={() => purchaseMutation.mutate(entry)}
+                    disabled={purchaseMutation.isPending || undoMutation.isPending || isRecorded}
+                    loading={purchaseMutation.isPending && purchaseMutation.variables?.item.id === item.id}
+                  />
+                </View>
               </View>
-            </TouchableOpacity>
-          ))
+            );
+          })
         )}
         {moreAlerts > 0 ? (
           <TouchableOpacity
@@ -193,6 +272,23 @@ export default function DashboardScreen() {
         </View>
       </Section>
     </ScrollView>
+    {undo ? (
+      <View style={styles.undoBar}>
+        <Text style={styles.undoMessage} numberOfLines={2}>{undo.message}</Text>
+        <TouchableOpacity
+          onPress={() => {
+            clearUndoTimer();
+            undoTargetRef.current = undo;
+            undoMutation.mutate(undo.purchaseId);
+          }}
+          disabled={undoMutation.isPending}
+          style={styles.undoButton}
+        >
+          <Text style={styles.undoButtonText}>{undoMutation.isPending ? '取消中…' : '取り消す'}</Text>
+        </TouchableOpacity>
+      </View>
+    ) : null}
+    </View>
   );
 }
 
@@ -269,6 +365,23 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.sm,
     ...SHADOW.card,
   },
+  alertMain: { flex: 1, flexDirection: 'row', alignItems: 'center' },
+  quickPurchaseButton: { marginLeft: SPACING.sm },
+  undoBar: {
+    position: 'absolute',
+    left: SPACING.lg,
+    right: SPACING.lg,
+    bottom: SPACING.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.ink,
+    borderRadius: RADIUS.md,
+    paddingLeft: SPACING.md,
+    ...SHADOW.card,
+  },
+  undoMessage: { flex: 1, fontFamily: FONTS.medium, color: COLORS.surface },
+  undoButton: { paddingVertical: SPACING.sm, paddingHorizontal: SPACING.md },
+  undoButtonText: { fontFamily: FONTS.bold, color: COLORS.accentSoft },
   alertName: { fontFamily: FONTS.bold, fontSize: 15, color: COLORS.ink },
   alertSub: { fontFamily: FONTS.medium, fontSize: 12, color: COLORS.inkSub, marginTop: 2 },
   quickRow: { flexDirection: 'row' },
