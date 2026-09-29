@@ -101,7 +101,9 @@ function Invoke-DeployRemote([string]$Tag, [string]$ExtraArgs) {
   # cmd.exeの `<` によるファイルリダイレクトはバイト列をそのままssh.exeのstdinへ渡す。
   # PowerShellのパイプ（|）はテキストpipelineを経由し文字コード変換でバイナリを
   # 壊すおそれがあるため使わない。
-  $output = cmd /c "ssh $Remote ""$remoteCmd"" < ""$Tarball""" 2>&1
+  # stderr(docker buildの進捗等)の統合はcmd側の`2>&1`で行う。PowerShell 5.1側の`2>&1`だと
+  # stderr行がErrorRecord化され、$ErrorActionPreference='Stop'で途中終了する(deploy成功でも終了コード1になる)
+  $output = cmd /c "ssh $Remote ""$remoteCmd"" < ""$Tarball"" 2>&1"
   $exitCode = $LASTEXITCODE
   $output | ForEach-Object { Write-Host "  $_" }
 
