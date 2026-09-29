@@ -6,6 +6,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  View,
 } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -81,6 +82,16 @@ export default function StockCorrectionScreen() {
           </Card>
         ) : null}
 
+        <View style={styles.presetRow}>
+          <Button title="使い切った（0）" variant="outline" small disabled={mutation.isPending} onPress={() => setQty('0')} />
+          <Button
+            title={`半分くらい（0.5${item?.unit ?? ''}）`}
+            variant="outline"
+            small
+            disabled={mutation.isPending}
+            onPress={() => setQty('0.5')}
+          />
+        </View>
         <TextField
           label={`実際の残数${item?.unit ? `（${item.unit}）` : ''} *`}
           value={qty}
@@ -105,4 +116,5 @@ export default function StockCorrectionScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.paper },
   itemName: { fontFamily: FONTS.bold, fontSize: 17, color: COLORS.ink, marginBottom: SPACING.sm },
+  presetRow: { flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.md },
 });

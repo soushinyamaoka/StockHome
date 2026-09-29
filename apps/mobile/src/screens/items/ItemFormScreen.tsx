@@ -27,6 +27,14 @@ import { TextField } from '../../components/TextField';
 import { Section } from '../../components/Section';
 import { ChipSelector } from '../../components/ChipSelector';
 import { COLORS, FONTS, RADIUS, SPACING } from '../../theme';
+import {
+  DAYS_UNITS,
+  DAYS_UNIT_LABELS,
+  PROVISIONAL_DAYS_INPUT,
+  fromDaysPerUnit,
+  toDaysPerUnit,
+  type DaysUnit,
+} from '../../lib/daysPerUnitInput';
 
 interface AltRow {
   name: string;
@@ -61,7 +69,9 @@ export default function ItemFormScreen() {
   const [category, setCategory] = useState('');
   const [unit, setUnit] = useState('');
   const [defaultPurchaseQty, setDefaultPurchaseQty] = useState('1');
-  const [daysPerUnit, setDaysPerUnit] = useState('');
+  const [daysAmount, setDaysAmount] = useState('');
+  const [daysUnit, setDaysUnit] = useState<DaysUnit>('day');
+  const [daysProvisional, setDaysProvisional] = useState(false);
   const [leadDays, setLeadDays] = useState('0');
   const [safetyDays, setSafetyDays] = useState('0');
   const [thresholdQty, setThresholdQty] = useState('');
@@ -86,7 +96,9 @@ export default function ItemFormScreen() {
     setCategory(item.category ?? '');
     setUnit(item.unit ?? '');
     setDefaultPurchaseQty(String(item.defaultPurchaseQty));
-    setDaysPerUnit(String(item.daysPerUnit));
+    const daysInput = fromDaysPerUnit(item.daysPerUnit);
+    setDaysAmount(daysInput.amount);
+    setDaysUnit(daysInput.unit);
     setLeadDays(String(item.leadDays));
     setSafetyDays(String(item.safetyDays));
     setThresholdQty(item.lowStockThresholdQty != null ? String(item.lowStockThresholdQty) : '');
@@ -131,7 +143,8 @@ export default function ItemFormScreen() {
       Alert.alert('入力エラー', '品名を入力してください');
       return;
     }
-    if (daysPerUnit === '' || Number.isNaN(Number(daysPerUnit)) || Number(daysPerUnit) <= 0) {
+    const days = toDaysPerUnit(daysAmount, daysUnit);
+    if (days === null) {
       Alert.alert('入力エラー', '1単位あたり消費日数は正の数で入力してください');
       return;
     }
@@ -140,7 +153,7 @@ export default function ItemFormScreen() {
       category,
       unit,
       defaultPurchaseQty: Number(defaultPurchaseQty) || 1,
-      daysPerUnit: Number(daysPerUnit),
+      daysPerUnit: days,
       leadDays: Number(leadDays) || 0,
       safetyDays: Number(safetyDays) || 0,
       lowStockThresholdQty: thresholdQty === '' ? undefined : Number(thresholdQty),
@@ -181,17 +194,53 @@ export default function ItemFormScreen() {
             helper="1回の購入で買う数（Gmail取込のセット数換算にも使用）"
           />
           <TextField
-            label="1単位あたり消費日数 *"
-            value={daysPerUnit}
-            onChangeText={setDaysPerUnit}
+            label={`1${unit.trim() || '単位'}を使い切るまで *`}
+            value={daysAmount}
+            onChangeText={(value) => {
+              setDaysAmount(value);
+              setDaysProvisional(false);
+            }}
             keyboardType="decimal-pad"
-            helper="例: 1箱を10日で使うなら 10"
+            placeholder="例: 2"
           />
+          <ChipSelector
+            options={DAYS_UNITS.map((value) => ({ value, label: DAYS_UNIT_LABELS[value] }))}
+            value={daysUnit}
+            onChange={(value) => {
+              if (value === null) return;
+              setDaysUnit(value as DaysUnit);
+              setDaysProvisional(false);
+            }}
+          />
+          <Text style={styles.daysHelper}>
+            {daysProvisional
+              ? '仮の値（1か月）で登録します。購入を重ねると実績からペースを提案します'
+              : daysUnit !== 'day' && toDaysPerUnit(daysAmount, daysUnit) !== null
+                ? `= 約${Number(toDaysPerUnit(daysAmount, daysUnit)!.toFixed(1))}日`
+                : '例: 1箱を2週間で使うなら「2」「週」'}
+          </Text>
+          {!isEdit ? (
+            <Button
+              title="わからない（仮に1か月）"
+              variant="outline"
+              small
+              onPress={() => {
+                setDaysAmount(PROVISIONAL_DAYS_INPUT.amount);
+                setDaysUnit(PROVISIONAL_DAYS_INPUT.unit);
+                setDaysProvisional(true);
+              }}
+            />
+          ) : null}
           {suggestion ? (
             <TouchableOpacity
               style={styles.suggestionRow}
               activeOpacity={0.7}
-              onPress={() => setDaysPerUnit(String(suggestion.value))}
+              onPress={() => {
+                const daysInput = fromDaysPerUnit(suggestion.value);
+                setDaysAmount(daysInput.amount);
+                setDaysUnit(daysInput.unit);
+                setDaysProvisional(false);
+              }}
             >
               <Ionicons name="sparkles-outline" size={14} color={COLORS.indigo} />
               <Text style={styles.suggestionText}>
@@ -351,5 +400,6 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
   },
   suggestionText: { flex: 1, fontFamily: FONTS.medium, fontSize: 12, color: COLORS.indigo },
+  daysHelper: { fontFamily: FONTS.body, color: COLORS.inkFaint, marginTop: -SPACING.sm, marginBottom: SPACING.md, fontSize: 12 },
   suggestionAction: { fontFamily: FONTS.bold, fontSize: 12, color: COLORS.indigo, textDecorationLine: 'underline' },
 });
