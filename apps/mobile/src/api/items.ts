@@ -10,6 +10,7 @@ import type {
   ItemDto,
   ItemWithStock,
   PurchaseDto,
+  CorrectionDto,
   PriceStats,
   StockEntry,
   SuggestedDaysPerUnit,
@@ -59,6 +60,11 @@ export async function fetchPurchases(
   suggestedDaysPerUnit: SuggestedDaysPerUnit | null;
 }> {
   const res = await api.get(`/api/items/${itemId}/purchases`);
+  return res.data;
+}
+
+export async function fetchCorrections(itemId: string): Promise<{ corrections: CorrectionDto[] }> {
+  const res = await api.get(`/api/items/${itemId}/corrections`);
   return res.data;
 }
 

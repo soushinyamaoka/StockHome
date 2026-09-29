@@ -11,10 +11,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { VENDOR_LABELS, type ExternalVendor } from '@stockhome/shared';
+import { CORRECTION_REASON_LABELS, VENDOR_LABELS, type ExternalVendor } from '@stockhome/shared';
 
-import { deletePurchase, fetchItem, fetchPurchases } from '../../api/items';
-import type { PurchaseDto } from '../../api/types';
+import { deletePurchase, fetchCorrections, fetchItem, fetchPurchases } from '../../api/items';
+import type { CorrectionDto, PurchaseDto } from '../../api/types';
+import { buildHistoryTimeline, formatCorrectionQty } from '../../lib/historyTimeline';
 import { Card } from '../../components/Card';
 import { PriceSparkline } from '../../components/PriceSparkline';
 import { COLORS, FONTS, RADIUS, SPACING } from '../../theme';
@@ -37,6 +38,10 @@ export default function PurchaseHistoryScreen() {
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['purchases', itemId],
     queryFn: () => fetchPurchases(itemId),
+  });
+  const { data: correctionsData, refetch: refetchCorrections, isRefetching: isCorrectionsRefetching } = useQuery({
+    queryKey: ['corrections', itemId],
+    queryFn: () => fetchCorrections(itemId),
   });
 
   useLayoutEffect(() => {
@@ -77,13 +82,33 @@ export default function PurchaseHistoryScreen() {
     return p.source === 'manual' ? '手動' : p.source;
   };
 
+  const refreshHistory = async () => {
+    await Promise.all([refetch(), refetchCorrections()]);
+  };
+
+  const renderCorrection = (correction: CorrectionDto, date: string) => (
+    <Card style={styles.row}>
+      <Ionicons name="build-outline" size={16} color={COLORS.indigo} style={{ marginRight: SPACING.sm }} />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.rowDate}>
+          {date}　{formatCorrectionQty(correction.beforeEstimatedQty, correction.correctedQty, unit)}
+        </Text>
+        <Text style={[styles.rowSub, { color: COLORS.indigo }]}>
+          在庫補正 / {CORRECTION_REASON_LABELS[correction.correctionReason as keyof typeof CORRECTION_REASON_LABELS] ?? correction.correctionReason}
+          {correction.correctedByUserName ? ` / ${correction.correctedByUserName}` : ''}
+        </Text>
+        {correction.note ? <Text style={styles.rowNote}>{correction.note}</Text> : null}
+      </View>
+    </Card>
+  );
+
   return (
     <FlatList
       style={styles.container}
       contentContainerStyle={{ padding: SPACING.lg, paddingBottom: SPACING.xxl }}
-      data={data?.purchases ?? []}
-      keyExtractor={(p) => p.id}
-      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
+      data={buildHistoryTimeline(data?.purchases ?? [], correctionsData?.corrections ?? [])}
+      keyExtractor={(entry) => entry.key}
+      refreshControl={<RefreshControl refreshing={isRefetching || isCorrectionsRefetching} onRefresh={refreshHistory} />}
       ListHeaderComponent={
         stats && stats.count > 0 ? (
           <Card style={styles.statsCard}>
@@ -110,7 +135,9 @@ export default function PurchaseHistoryScreen() {
           </Card>
         ) : null
       }
-      renderItem={({ item: p }) => (
+      renderItem={({ item: entry }) => entry.kind === 'correction' ? renderCorrection(entry.correction, entry.date) : (() => {
+        const p = entry.purchase;
+        return (
         <Card style={styles.row}>
           <View style={{ flex: 1 }}>
             <Text style={styles.rowDate}>
@@ -135,9 +162,10 @@ export default function PurchaseHistoryScreen() {
             <Ionicons name="trash-outline" size={18} color={COLORS.inkFaint} />
           </TouchableOpacity>
         </Card>
-      )}
+        );
+      })()}
       ListEmptyComponent={
-        <Text style={styles.empty}>{isLoading ? '読み込み中...' : '購入履歴がありません'}</Text>
+        <Text style={styles.empty}>{isLoading ? '読み込み中...' : '購入・補正の履歴がありません'}</Text>
       }
     />
   );

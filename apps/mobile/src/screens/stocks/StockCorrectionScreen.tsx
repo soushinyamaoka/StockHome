@@ -41,6 +41,7 @@ export default function StockCorrectionScreen() {
       queryClient.invalidateQueries({ queryKey: ['items'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['item', itemId] });
+      queryClient.invalidateQueries({ queryKey: ['corrections', itemId] });
       Alert.alert('補正完了', '在庫を補正しました', [
         { text: 'OK', onPress: () => navigation.goBack() },
       ]);

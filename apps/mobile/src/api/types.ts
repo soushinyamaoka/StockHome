@@ -167,6 +167,17 @@ export interface ReflectionDto {
   vendor: string | null;
 }
 
+export interface CorrectionDto {
+  id: string;
+  itemId: string;
+  correctedAt: string;
+  correctedByUserName: string | null;
+  beforeEstimatedQty: number | null;
+  correctedQty: number;
+  correctionReason: string;
+  note: string | null;
+}
+
 export interface PushDeviceDto {
   id: string;
   platform: 'ios' | 'android';
