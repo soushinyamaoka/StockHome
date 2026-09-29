@@ -20,7 +20,7 @@ release_commits:（baseline以降。notice 010〜020の分は各noticeを参照�
 
 impact_level: L1
 
-status: draft
+status: ready
 
 created_by: Claude
 
@@ -76,7 +76,7 @@ cron・依存の変更は無い。
 - 必要性: あり（通常のAPI deployで反映）
 - downtime: 既存と同じ（brief-restart）
 - maintenance window: 不要
-- mobile側: 在庫一覧の変更を含むため次回EAS Update配信が必要（`ops/client-releases/`で別途管理）
+- mobile側: EAS Update配信済み（client release `20260930-STOCKHOME-009`、source `dae77df`、2026-09-30）。API未反映の間は印が出ないだけで支障なし
 - 反映順: 順不同で安全（旧mobileは追加フィールドを読まない。新mobileは旧APIではフィールドが無く印が出ないだけ）
 
 ## 利用者への影響
@@ -138,7 +138,7 @@ cron・依存の変更は無い。
 
 ## Approval
 
-- app owner: 未実施
+- app owner: 2026-09-30、内容確認のうえVPS管理へ引き継ぐことを承認
 - VPS management review: 未実施
 - production approval: 未実施
 - related task_id: 20260929-004
