@@ -12,12 +12,11 @@ app: stockhome
 
 source_branch: main
 
-source_commit: （実装commit後にClaudeが記入）
+source_commit: dea7c89a0d60a103e20fae824a65e30a3003d4eb
 
 production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
 
-release_commits:（baseline以降。notice 010〜020の分は各noticeを参照。本notice対象は
-実装commit後にClaudeが追記）
+release_commits:（baseline以降。notice 010〜020の分は各noticeを参照。本notice対象は `dea7c89`）
 
 impact_level: L1
 
