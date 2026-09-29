@@ -139,6 +139,6 @@ cron・依存の変更は無い。
 ## Approval
 
 - app owner: 2026-09-30、内容確認のうえVPS管理へ引き継ぐことを承認
-- VPS management review: 未実施
+- VPS management review: 受理（2026-09-30、訂正後のL2 / baseline 85c5f8f を確認。APIコードの追加修正は不要）
 - production approval: 未実施
 - related task_id: 20260929-004
