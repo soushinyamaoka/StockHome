@@ -14,13 +14,13 @@ source_branch: main
 
 source_commit: dea7c89a0d60a103e20fae824a65e30a3003d4eb
 
-production_baseline_commit: ec6e541b8bf88654baa68c3dd3b1c2fcbdb9d6ad
+production_baseline_commit: 85c5f8ffa2fa4b180f293a5c21130870dbbe0fd5
 
-release_commits:（baseline以降。notice 010〜020の分は各noticeを参照。本notice対象は `dea7c89`）
+release_commits: `85c5f8f..dea7c89`（baseline除く。API・shared・prismaに影響する変更は `dea7c89` の `apps/api/src/routes/stocks.ts` と `stocks.http.test.ts` の2ファイルのみ。他はmobile・ops文書のcommit）
 
-impact_level: L1
+impact_level: L2
 
-status: ready
+status: ready_for_review
 
 created_by: Claude
 
@@ -127,7 +127,7 @@ cron・依存の変更は無い。
 
 ## 希望時期
 
-特に指定なし。notice 010〜020と同じ計画にまとめてproduction反映する想定。
+特に指定なし。API単独で本番反映する想定（VPS管理レビュー後、別承認）。
 
 ## VPS管理チャットへの引き継ぎ
 
