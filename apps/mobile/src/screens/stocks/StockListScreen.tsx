@@ -21,6 +21,7 @@ import { StampBadge } from '../../components/StampBadge';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../../theme';
 import { collectItemCategories, matchesItemFilter } from '../../lib/itemFilter';
 import { remainQtyLabel, isSnoozed, shortDate, showSnoozeSheet } from '../../lib/stockUtils';
+import { needsPaceReview } from '../../lib/paceReview';
 
 export default function StockListScreen() {
   const navigation = useNavigation<any>();
@@ -104,6 +105,14 @@ export default function StockListScreen() {
             <View style={styles.badgeRow}>
               {alert ? <StampBadge label="そろそろ" color={COLORS.accent} tilt /> : null}
               {snoozed ? <StampBadge label="スヌーズ中" color={COLORS.indigo} /> : null}
+              {needsPaceReview(item.daysPerUnit, entry.suggestedDaysPerUnit) ? (
+                <TouchableOpacity
+                  onPress={() => navigation.navigate('ItemsTab', { screen: 'ItemForm', params: { itemId: item.id } })}
+                  activeOpacity={0.7}
+                >
+                  <StampBadge label="ペース見直し?" color={COLORS.inkSub} />
+                </TouchableOpacity>
+              ) : null}
             </View>
           </View>
         </View>

@@ -56,6 +56,7 @@ export interface StockEntry {
   item: ItemDto;
   snapshot: SnapshotDto | null;
   runtimeState: RuntimeStateDto | null;
+  suggestedDaysPerUnit?: SuggestedDaysPerUnit | null;
 }
 
 export interface PurchaseDto {
