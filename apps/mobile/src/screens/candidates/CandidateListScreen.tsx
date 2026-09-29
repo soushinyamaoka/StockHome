@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -33,10 +33,14 @@ import { ItemPicker } from '../../components/ItemPicker';
 import { StampBadge } from '../../components/StampBadge';
 import { TextField } from '../../components/TextField';
 import { COLORS, FONTS, RADIUS, SPACING } from '../../theme';
+import { effectiveSelection, isUnresolvedCandidateStatus, runBulkIgnore, selectableCandidateIds } from '../../lib/candidateBulkIgnore';
 
 export default function CandidateListScreen() {
   const navigation = useNavigation<any>();
   const [includeResolved, setIncludeResolved] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [bulkRunning, setBulkRunning] = useState(false);
   // 候補ごとに選択中の品目を保持
   const [selections, setSelections] = useState<Record<string, string>>({});
   const [priceInputs, setPriceInputs] = useState<Record<string, string>>({});
@@ -90,8 +94,34 @@ export default function CandidateListScreen() {
     onSuccess: invalidate,
   });
 
-  const isResolved = (status: string) =>
-    !['detected', 'ordered', 'shipped'].includes(status);
+  const isResolved = (status: string) => !isUnresolvedCandidateStatus(status);
+  const candidates = data?.candidates ?? [];
+  const selectableIds = useMemo(() => selectableCandidateIds(candidates), [candidates]);
+  const effectiveIds = effectiveSelection(selected, selectableIds);
+  const allSelected = selectableIds.length > 0 && effectiveIds.length === selectableIds.length;
+
+  const toggleSelected = (id: string) => setSelected((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const startBulkIgnore = () => {
+    const ids = effectiveSelection(selected, selectableIds);
+    if (ids.length === 0) return;
+    Alert.alert('まとめて無視', `選んだ${ids.length}件の候補を無視しますか？\n無視した候補は「処理済みも見る」から1件ずつ取り消せます。`, [
+      { text: 'キャンセル', style: 'cancel' },
+      { text: '無視する', style: 'destructive', onPress: async () => {
+        setBulkRunning(true);
+        const result = await runBulkIgnore(ids, ignoreCandidate);
+        invalidate();
+        setBulkRunning(false);
+        setSelected(new Set());
+        setSelectMode(false);
+        if (result.failed.length > 0) Alert.alert('一部失敗', `${result.succeeded.length}件を無視しました。${result.failed.length}件は無視できませんでした。時間をおいてもう一度お試しください。`);
+      } },
+    ]);
+  };
 
   const renderItem = ({ item: c }: { item: CandidateDto }) => {
     const statusColor = COLORS.candidate[c.candidateStatus] ?? COLORS.inkFaint;
@@ -103,10 +133,14 @@ export default function CandidateListScreen() {
         : c.priceLikelyUnitPrice && c.detectedPrice != null
           ? String(c.detectedPrice)
           : '';
+    const CardPressable: any = selectMode && !resolved ? TouchableOpacity : View;
 
     return (
       <Card style={styles.card}>
+        <CardPressable activeOpacity={0.75} onPress={() => toggleSelected(c.id)}>
+          <View>
         <View style={styles.headerRow}>
+          {selectMode && !resolved ? <Ionicons name={selected.has(c.id) ? 'checkbox' : 'square-outline'} size={22} color={selected.has(c.id) ? COLORS.accent : COLORS.inkFaint} /> : null}
           <StampBadge
             label={VENDOR_LABELS[c.vendor as ExternalVendor] ?? c.vendor}
             color={statusColor}
@@ -186,7 +220,7 @@ export default function CandidateListScreen() {
           </View>
         ) : null}
 
-        {!resolved ? (
+        {!resolved && !selectMode ? (
           <View style={styles.actions}>
             <ItemPicker
               label="紐付ける品目"
@@ -260,6 +294,8 @@ export default function CandidateListScreen() {
             </TouchableOpacity>
           </View>
         ) : null}
+          </View>
+        </CardPressable>
       </Card>
     );
   };
@@ -267,6 +303,11 @@ export default function CandidateListScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.toolbar}>
+        {selectableIds.length > 0 ? <TouchableOpacity
+          style={[styles.filterChip, selectMode && styles.filterChipActive]}
+          onPress={() => { if (selectMode) setSelected(new Set()); setSelectMode((value) => !value); }}
+          activeOpacity={0.7}
+        ><Text style={[styles.filterText, selectMode && styles.filterTextActive]}>{selectMode ? '選択をやめる' : 'まとめて選ぶ'}</Text></TouchableOpacity> : null}
         <TouchableOpacity
           style={[styles.filterChip, includeResolved && styles.filterChipActive]}
           onPress={() => setIncludeResolved((v) => !v)}
@@ -278,7 +319,7 @@ export default function CandidateListScreen() {
         </TouchableOpacity>
       </View>
       <FlatList
-        data={data?.candidates ?? []}
+        data={candidates}
         keyExtractor={(c) => c.id}
         renderItem={renderItem}
         contentContainerStyle={{ padding: SPACING.lg, paddingBottom: SPACING.xxl }}
@@ -291,6 +332,12 @@ export default function CandidateListScreen() {
           </Text>
         }
       />
+      {selectMode ? <View style={styles.bulkBar}>
+        <TouchableOpacity onPress={() => setSelected(allSelected ? new Set() : new Set(selectableIds))} disabled={bulkRunning}>
+          <Text style={styles.bulkSelectText}>{allSelected ? 'すべて外す' : 'すべて選ぶ'}</Text>
+        </TouchableOpacity>
+        <Button title={`${effectiveIds.length}件を無視`} onPress={startBulkIgnore} disabled={effectiveIds.length === 0} loading={bulkRunning} />
+      </View> : null}
     </View>
   );
 }
@@ -303,6 +350,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.lg,
     paddingTop: SPACING.md,
   },
+  bulkBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.md, borderTopWidth: 1, borderTopColor: COLORS.border, backgroundColor: COLORS.paper },
+  bulkSelectText: { fontFamily: FONTS.bold, fontSize: 13, color: COLORS.indigo },
   filterChip: {
     borderWidth: 1.5,
     borderColor: COLORS.border,
