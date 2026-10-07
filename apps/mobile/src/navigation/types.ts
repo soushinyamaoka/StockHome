@@ -18,13 +18,13 @@ export type StocksStackParamList = {
 
 export type ItemsStackParamList = {
   ItemList: undefined;
-  ItemForm: { itemId?: string; prefillName?: string } | undefined;
+  ItemForm: { itemId?: string; prefillName?: string; returnToCandidateId?: string } | undefined;
   PurchaseHistory: { itemId: string };
   PurchaseForm: { itemId?: string; purchaseId?: string } | undefined;
 };
 
 export type CandidatesStackParamList = {
-  CandidateList: undefined;
+  CandidateList: { linkCandidateId?: string; linkItemId?: string } | undefined;
 };
 
 export type SettingsStackParamList = {

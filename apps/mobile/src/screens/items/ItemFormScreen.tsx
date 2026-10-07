@@ -20,13 +20,14 @@ import {
   type Alternative,
 } from '@stockhome/shared';
 
-import { createItem, fetchItem, fetchPurchases, updateItem } from '../../api/items';
+import { createCorrection, createItem, fetchItem, fetchPurchases, updateItem } from '../../api/items';
 import { fetchUsers } from '../../api/misc';
 import { Button } from '../../components/Button';
 import { TextField } from '../../components/TextField';
 import { Section } from '../../components/Section';
 import { ChipSelector } from '../../components/ChipSelector';
 import { COLORS, FONTS, RADIUS, SPACING } from '../../theme';
+import { itemSavedAlert, parseInitialQty } from '../../lib/itemFormFlow';
 import {
   DAYS_UNITS,
   DAYS_UNIT_LABELS,
@@ -48,6 +49,7 @@ export default function ItemFormScreen() {
   const itemId: string | undefined = route.params?.itemId;
   // 取込候補の「新規品目として登録」から渡される品名（新規作成時のみ初期値に使う）
   const prefillName: string | undefined = route.params?.prefillName;
+  const returnToCandidateId: string | undefined = route.params?.returnToCandidateId;
   const isEdit = !!itemId;
   const queryClient = useQueryClient();
 
@@ -69,6 +71,7 @@ export default function ItemFormScreen() {
   const [category, setCategory] = useState('');
   const [unit, setUnit] = useState('');
   const [defaultPurchaseQty, setDefaultPurchaseQty] = useState('1');
+  const [initialQty, setInitialQty] = useState('');
   const [daysAmount, setDaysAmount] = useState('');
   const [daysUnit, setDaysUnit] = useState<DaysUnit>('day');
   const [daysProvisional, setDaysProvisional] = useState(false);
@@ -119,14 +122,38 @@ export default function ItemFormScreen() {
   }, [itemData, loaded]);
 
   const mutation = useMutation({
-    mutationFn: (input: any) => (isEdit ? updateItem(itemId!, input) : createItem(input)),
-    onSuccess: () => {
+    mutationFn: async (input: any) => {
+      if (isEdit) return { ...(await updateItem(itemId!, input)), initialQtySaved: false, initialQtyFailed: false };
+      const { item } = await createItem(input);
+      const parsedQty = parseInitialQty(initialQty);
+      let initialQtySaved = false;
+      let initialQtyFailed = false;
+      if (parsedQty.kind === 'value') {
+        try {
+          await createCorrection({ itemId: item.id, correctedQty: parsedQty.value, correctionReason: 'counted_actual_stock', note: '登録時の手元の数' });
+          initialQtySaved = true;
+        } catch {
+          initialQtyFailed = true;
+        }
+      }
+      return { item, initialQtySaved, initialQtyFailed };
+    },
+    onSuccess: ({ item, initialQtySaved, initialQtyFailed }) => {
       queryClient.invalidateQueries({ queryKey: ['items'] });
       queryClient.invalidateQueries({ queryKey: ['stocks'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       if (itemId) queryClient.invalidateQueries({ queryKey: ['item', itemId] });
-      Alert.alert('保存完了', isEdit ? '消耗品を更新しました' : '消耗品を登録しました', [
-        { text: 'OK', onPress: () => navigation.goBack() },
+      if (initialQtySaved) queryClient.invalidateQueries({ queryKey: ['corrections', item.id] });
+      const alert = itemSavedAlert({ isEdit, itemName: itemName.trim(), returnToCandidate: !isEdit && !!returnToCandidateId, initialQtySaved, initialQtyFailed });
+      Alert.alert(alert.title, alert.message, [
+        { text: 'OK', onPress: () => {
+          if (!isEdit && returnToCandidateId) {
+            navigation.navigate('CandidatesTab', { screen: 'CandidateList', params: { linkCandidateId: returnToCandidateId, linkItemId: item.id } });
+            navigation.reset({ index: 0, routes: [{ name: 'ItemList' }] });
+          } else {
+            navigation.goBack();
+          }
+        } },
       ]);
     },
     onError: (e: any) => {
@@ -146,6 +173,11 @@ export default function ItemFormScreen() {
     const days = toDaysPerUnit(daysAmount, daysUnit);
     if (days === null) {
       Alert.alert('入力エラー', '1単位あたり消費日数は正の数で入力してください');
+      return;
+    }
+    const parsedInitialQty = !isEdit ? parseInitialQty(initialQty) : { kind: 'empty' as const };
+    if (parsedInitialQty.kind === 'invalid') {
+      Alert.alert('入力エラー', 'いま手元にある数は0以上の数値で入力してください');
       return;
     }
     mutation.mutate({
@@ -193,6 +225,16 @@ export default function ItemFormScreen() {
             keyboardType="decimal-pad"
             helper="1回の購入で買う数（Gmail取込のセット数換算にも使用）"
           />
+          {!isEdit ? (
+            <TextField
+              label={`いま手元にある数（${unit.trim() || '個'}）`}
+              value={initialQty}
+              onChangeText={setInitialQty}
+              keyboardType="decimal-pad"
+              placeholder="空欄可"
+              helper="入れると今日から在庫の予測が始まります。空欄なら最初の購入記録から"
+            />
+          ) : null}
           <TextField
             label={`1${unit.trim() || '単位'}を使い切るまで *`}
             value={daysAmount}

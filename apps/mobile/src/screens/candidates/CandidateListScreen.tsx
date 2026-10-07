@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import {
   CANDIDATE_STATUS_LABELS,
   VENDOR_LABELS,
@@ -37,6 +37,9 @@ import { effectiveSelection, isUnresolvedCandidateStatus, runBulkIgnore, selecta
 
 export default function CandidateListScreen() {
   const navigation = useNavigation<any>();
+  const route = useRoute<any>();
+  const linkCandidateId: string | undefined = route.params?.linkCandidateId;
+  const linkItemId: string | undefined = route.params?.linkItemId;
   const [includeResolved, setIncludeResolved] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -44,6 +47,11 @@ export default function CandidateListScreen() {
   // 候補ごとに選択中の品目を保持
   const [selections, setSelections] = useState<Record<string, string>>({});
   const [priceInputs, setPriceInputs] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!linkCandidateId || !linkItemId) return;
+    setSelections((s) => ({ ...s, [linkCandidateId]: linkItemId }));
+    navigation.setParams({ linkCandidateId: undefined, linkItemId: undefined });
+  }, [linkCandidateId, linkItemId]);
   const queryClient = useQueryClient();
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
@@ -285,7 +293,7 @@ export default function CandidateListScreen() {
               onPress={() =>
                 navigation.navigate('ItemsTab', {
                   screen: 'ItemForm',
-                  params: { prefillName: c.itemNameRaw ?? '' },
+                  params: { prefillName: c.itemNameRaw ?? '', returnToCandidateId: c.id },
                 })
               }
             >
