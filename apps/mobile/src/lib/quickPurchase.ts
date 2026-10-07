@@ -9,6 +9,11 @@ export function quickPurchaseQty(defaultPurchaseQty: number): number {
   return Number.isFinite(defaultPurchaseQty) && defaultPurchaseQty >= 1 ? defaultPurchaseQty : 1;
 }
 
+export function stepQuickPurchaseQty(current: number, delta: 1 | -1): number {
+  const base = Number.isFinite(current) ? current : 1;
+  return Math.max(1, base + delta);
+}
+
 export function buildQuickPurchaseInput(
   item: { id: string; defaultPurchaseQty: number },
   today: Date = new Date()

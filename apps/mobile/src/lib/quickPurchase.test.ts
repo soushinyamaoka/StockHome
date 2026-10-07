@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildQuickPurchaseInput, localDateStr, quickPurchaseMessage, quickPurchaseQty } from './quickPurchase';
+import { buildQuickPurchaseInput, localDateStr, quickPurchaseMessage, quickPurchaseQty, stepQuickPurchaseQty } from './quickPurchase';
 
 test('localDateStr formats local month and day with zero padding', () => {
   assert.equal(localDateStr(new Date(2026, 0, 5)), '2026-01-05');
@@ -9,6 +9,15 @@ test('localDateStr formats local month and day with zero padding', () => {
 test('quickPurchaseQty preserves valid quantities and falls back to one', () => {
   for (const [input, expected] of [[12, 12], [1, 1], [2.5, 2.5], [0, 1], [0.5, 1], [-3, 1], [NaN, 1]] as const) {
     assert.equal(quickPurchaseQty(input), expected);
+  }
+});
+
+test('stepQuickPurchaseQty increments and decrements without going below one', () => {
+  for (const [current, delta, expected] of [
+    [3, -1, 2], [1, -1, 1], [2.5, -1, 1.5], [1.5, -1, 1], [12, 1, 13],
+    [NaN, 1, 2], [NaN, -1, 1],
+  ] as const) {
+    assert.equal(stepQuickPurchaseQty(current, delta), expected);
   }
 });
 

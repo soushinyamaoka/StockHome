@@ -2,6 +2,7 @@ import React from 'react';
 import {
   Alert,
   AppState,
+  Modal,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -15,7 +16,7 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { fetchDashboard } from '../api/misc';
-import { createPurchase, deletePurchase } from '../api/items';
+import { createPurchase, deletePurchase, updatePurchase } from '../api/items';
 import type { StockEntry } from '../api/types';
 import { Section } from '../components/Section';
 import { Button } from '../components/Button';
@@ -28,9 +29,16 @@ import { OfflineNotice } from '../components/OfflineNotice';
 import { useAuth } from '../hooks/useAuth';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../theme';
 import { remainQtyLabel, isSnoozed } from '../lib/stockUtils';
-import { buildQuickPurchaseInput, quickPurchaseMessage } from '../lib/quickPurchase';
+import { buildQuickPurchaseInput, quickPurchaseMessage, stepQuickPurchaseQty } from '../lib/quickPurchase';
 
-type UndoPurchase = { purchaseId: string; itemId: string; message: string };
+type UndoPurchase = {
+  purchaseId: string;
+  itemId: string;
+  itemName: string;
+  unit: string | null | undefined;
+  qty: number;
+  message: string;
+};
 
 function todayLabel(): string {
   const d = new Date();
@@ -44,8 +52,12 @@ export default function DashboardScreen() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [undo, setUndo] = React.useState<UndoPurchase | null>(null);
+  const undoRef = React.useRef<UndoPurchase | null>(null);
+  undoRef.current = undo;
+  const [qtyEdit, setQtyEdit] = React.useState<number | null>(null);
   const undoTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const undoTargetRef = React.useRef<UndoPurchase | null>(null);
+  const qtyTargetRef = React.useRef<UndoPurchase | null>(null);
   const openNotices = () => navigation.navigate('OperatorNotices');
   const { data, dataUpdatedAt, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['dashboard'],
@@ -68,27 +80,79 @@ export default function DashboardScreen() {
     void queryClient.invalidateQueries({ queryKey: ['purchases', itemId] });
   }, [queryClient]);
 
+  const startUndoTimer = React.useCallback(() => {
+    clearUndoTimer();
+    undoTimer.current = setTimeout(() => {
+      undoRef.current = null;
+      setUndo(null);
+      undoTimer.current = null;
+    }, 6000);
+  }, [clearUndoTimer]);
+
   const purchaseMutation = useMutation({
     mutationFn: (entry: StockEntry) => createPurchase(buildQuickPurchaseInput(entry.item)),
     onSuccess: ({ purchase }, entry) => {
       const itemId = entry.item.id;
       invalidatePurchaseQueries(itemId);
       clearUndoTimer();
-      const nextUndo = {
+      const nextUndo: UndoPurchase = {
         purchaseId: purchase.id,
         itemId,
+        itemName: entry.item.itemName,
+        unit: entry.item.unit,
+        qty: buildQuickPurchaseInput(entry.item).qty,
         message: quickPurchaseMessage(entry.item.itemName, buildQuickPurchaseInput(entry.item).qty, entry.item.unit),
       };
+      undoRef.current = nextUndo;
       setUndo(nextUndo);
-      undoTimer.current = setTimeout(() => {
-        setUndo(null);
-        undoTimer.current = null;
-      }, 6000);
+      startUndoTimer();
     },
     onError: (error: any) => {
       Alert.alert('エラー', error?.response?.data?.message ?? '記録に失敗しました');
     },
   });
+
+  const qtyMutation = useMutation({
+    mutationFn: ({ purchaseId, qty }: { purchaseId: string; qty: number }) => updatePurchase(purchaseId, { qty }),
+    onSuccess: (_result, variables) => {
+      const target = qtyTargetRef.current;
+      if (target?.purchaseId !== variables.purchaseId) return;
+      invalidatePurchaseQueries(target.itemId);
+      const current = undoRef.current;
+      if (current?.purchaseId !== variables.purchaseId) return;
+      const updated: UndoPurchase = {
+        ...current,
+        qty: variables.qty,
+        message: quickPurchaseMessage(current.itemName, variables.qty, current.unit),
+      };
+      undoRef.current = updated;
+      setUndo(updated);
+      setQtyEdit(null);
+      startUndoTimer();
+    },
+    onError: (error: any, variables) => {
+      if (qtyTargetRef.current?.purchaseId === variables.purchaseId && undoRef.current?.purchaseId === variables.purchaseId) {
+        setQtyEdit(null);
+        Alert.alert('エラー', error?.response?.data?.message ?? '個数を変更できませんでした。購入履歴から直してください');
+        startUndoTimer();
+      }
+    },
+  });
+
+  const cancelQtyEdit = React.useCallback(() => {
+    setQtyEdit(null);
+    if (undoRef.current) startUndoTimer();
+  }, [startUndoTimer]);
+
+  const confirmQtyEdit = () => {
+    if (!undo || qtyEdit === null) return;
+    if (qtyEdit === undo.qty) {
+      cancelQtyEdit();
+      return;
+    }
+    qtyTargetRef.current = undo;
+    qtyMutation.mutate({ purchaseId: undo.purchaseId, qty: qtyEdit });
+  };
 
   const undoMutation = useMutation({
     mutationFn: (purchaseId: string) => deletePurchase(purchaseId),
@@ -225,7 +289,7 @@ export default function DashboardScreen() {
                     small
                     icon={<Ionicons name="basket" size={14} color="#FFFDF6" />}
                     onPress={() => purchaseMutation.mutate(entry)}
-                    disabled={purchaseMutation.isPending || undoMutation.isPending || isRecorded}
+                    disabled={purchaseMutation.isPending || undoMutation.isPending || qtyMutation.isPending || isRecorded}
                     loading={purchaseMutation.isPending && purchaseMutation.variables?.item.id === item.id}
                   />
                 </View>
@@ -280,16 +344,63 @@ export default function DashboardScreen() {
         <TouchableOpacity
           onPress={() => {
             clearUndoTimer();
+            setQtyEdit(undo.qty);
+          }}
+          disabled={undoMutation.isPending || qtyMutation.isPending}
+          style={styles.undoButton}
+        >
+          <Text style={styles.undoButtonText}>個数を変える</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => {
+            clearUndoTimer();
             undoTargetRef.current = undo;
             undoMutation.mutate(undo.purchaseId);
           }}
-          disabled={undoMutation.isPending}
+          disabled={undoMutation.isPending || qtyMutation.isPending}
           style={styles.undoButton}
         >
           <Text style={styles.undoButtonText}>{undoMutation.isPending ? '取消中…' : '取り消す'}</Text>
         </TouchableOpacity>
       </View>
     ) : null}
+    <Modal
+      visible={qtyEdit !== null && undo !== null}
+      transparent
+      animationType="fade"
+      onRequestClose={cancelQtyEdit}
+    >
+      {undo && qtyEdit !== null ? (
+        <View style={styles.qtyModalBackdrop}>
+          <View style={styles.qtyModalCard}>
+            <Text style={styles.qtyModalTitle}>「{undo.itemName}」を何{undo.unit || 'つ'}買いましたか？</Text>
+            <View style={styles.qtyStepper}>
+              <TouchableOpacity
+                accessibilityLabel="1つ減らす"
+                disabled={qtyEdit <= 1 || qtyMutation.isPending}
+                onPress={() => setQtyEdit((current) => current === null ? null : stepQuickPurchaseQty(current, -1))}
+                style={[styles.qtyStepButton, (qtyEdit <= 1 || qtyMutation.isPending) && styles.qtyStepButtonDisabled]}
+              >
+                <Ionicons name="remove" size={24} color={COLORS.ink} />
+              </TouchableOpacity>
+              <Text style={styles.qtyValue}>{qtyEdit}{undo.unit ? undo.unit : 'つ'}</Text>
+              <TouchableOpacity
+                accessibilityLabel="1つ増やす"
+                disabled={qtyMutation.isPending}
+                onPress={() => setQtyEdit((current) => current === null ? null : stepQuickPurchaseQty(current, 1))}
+                style={styles.qtyStepButton}
+              >
+                <Ionicons name="add" size={24} color={COLORS.ink} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.qtyModalActions}>
+              <View style={styles.qtyModalAction}><Button title="キャンセル" variant="outline" onPress={cancelQtyEdit} /></View>
+              <View style={styles.qtyModalAction}><Button title="決定" variant="primary" loading={qtyMutation.isPending} onPress={confirmQtyEdit} /></View>
+            </View>
+          </View>
+        </View>
+      ) : null}
+    </Modal>
     </View>
   );
 }
@@ -384,6 +495,20 @@ const styles = StyleSheet.create({
   undoMessage: { flex: 1, fontFamily: FONTS.medium, color: COLORS.surface },
   undoButton: { paddingVertical: SPACING.sm, paddingHorizontal: SPACING.md },
   undoButtonText: { fontFamily: FONTS.bold, color: COLORS.accentSoft },
+  qtyModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    paddingHorizontal: SPACING.lg,
+  },
+  qtyModalCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: SPACING.lg },
+  qtyModalTitle: { fontFamily: FONTS.bold, fontSize: 17, color: COLORS.ink, textAlign: 'center' },
+  qtyStepper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginVertical: SPACING.lg },
+  qtyStepButton: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', borderRadius: RADIUS.md, backgroundColor: COLORS.paper },
+  qtyStepButtonDisabled: { opacity: 0.4 },
+  qtyValue: { minWidth: 100, textAlign: 'center', fontFamily: FONTS.bold, fontSize: 28, color: COLORS.ink },
+  qtyModalActions: { flexDirection: 'row', gap: SPACING.md },
+  qtyModalAction: { flex: 1 },
   alertName: { fontFamily: FONTS.bold, fontSize: 15, color: COLORS.ink },
   alertSub: { fontFamily: FONTS.medium, fontSize: 12, color: COLORS.inkSub, marginTop: 2 },
   quickRow: { flexDirection: 'row' },
