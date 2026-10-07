@@ -2,14 +2,15 @@
 
 家庭用 消耗品在庫管理アプリ。購入履歴と消費設定から在庫切れ時期を予測し、在庫切れ前に LINE（ReadyGo Bot 経由）で通知する。
 
-GAS + スプレッドシート版（`C:\work\PRG\GAS\StockHome`）からの移行版。
+GAS + スプレッドシート版からの移行版（GAS ブリッジは `apps/gas/` に統合済み）。
 構成は HomeAsset と同型のモノレポ（Expo モバイル + Fastify API + PostgreSQL + さくらVPS Docker）。
 
 ## 構成
 
 ```
 apps/api      Fastify 5 + Prisma 5 + PostgreSQL 16（API ポート 4002）
-apps/mobile   Expo SDK 54 / React Native 0.81（Expo Go で動作）
+apps/mobile   Expo SDK 57 / React Native 0.86（Expo Go で動作）
+apps/gas      Google Apps Script ブリッジ（Gmail 取込・ReadyGo 通知）
 packages/shared  Zod スキーマ・定数（API は dist 参照 / mobile は src 直参照）
 scripts       app.ps1（起動） / deploy.ps1（VPSデプロイ）
 ```
@@ -63,6 +64,8 @@ npm run app:start:local  # ローカル開発（DB+API+Expo）
 npm run app:stop         # 停止
 npm run deploy           # VPS 再デプロイ（-- -DryRun で送信内容確認）
 ```
+
+本番の構成・デプロイ/ロールバック・mobile 配信・GAS 反映の手順は [docs/OPERATIONS.md](docs/OPERATIONS.md) を参照。
 
 ## 夜間バッチ
 
