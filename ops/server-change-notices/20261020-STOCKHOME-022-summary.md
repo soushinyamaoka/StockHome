@@ -26,7 +26,7 @@ release_commits: `dea7c89..16918f8`（baseline除く）。build入力に影響�
 
 impact_level: L2
 
-status: ready_for_review
+status: accepted
 
 created_by: Claude
 
@@ -34,7 +34,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: applied
+deployment_status: verified
 
 ## 変更概要
 
@@ -237,7 +237,9 @@ secret値は記載していない。
 - アプリ側の read-only 確認（同日）: 稼働中image `stockhome-api:git-16918f80393461eaeed6f66a6b7fd17c29e964f7`（StartedAt 2026-10-20T05:18:44Z）、
   `_prisma_migrations` に `20261020120000_add_storage_locations` が適用済み（finished・rollbackなし）、`storage_locations` は0件、
   `GET /health` 200、`GET /api/storage/locations`（認証なし）401（ルートが存在し認証で保護されていることを確認）
-- **未完了**: 認証付きの保管場所APIの確認。app owner がCLIの認証情報（`apps/api/.env.local`）を設定後、`npm run storage -- lookup` で確認し、`verified` へ更新する
+- 認証付き確認（2026-10-20 21:46 JST、アプリ側）: app owner のアカウントで `npm run storage -- lookup` を実行し成功。ログイン→`GET /api/storage/locations`・`GET /api/storage/tags`・品目一覧が応答（場所0件・用途タグ0件・消耗品25件、既存の品目データと整合）。保管場所データの書き込みはまだ行っていない
+  - 補足: 直前の初回実行は、ログインのアカウント単位レート制限（15分5回）に当たり429。待機後の再実行で成功（制限は想定どおり動作）
+- 以上により `deployment_status: verified` へ更新
 
 ## Approval
 
