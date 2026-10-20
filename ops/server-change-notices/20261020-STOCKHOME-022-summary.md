@@ -34,7 +34,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_started
+deployment_status: applied
 
 ## 変更概要
 
@@ -231,10 +231,18 @@ secret値は記載していない。
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20261020-STOCKHOME-022-summary.md`
 
+## 本番反映結果（2026-10-20）
+
+- VPS管理側: 指定commitを本番反映。deploy成功、migration適用、health確認済み
+- アプリ側の read-only 確認（同日）: 稼働中image `stockhome-api:git-16918f80393461eaeed6f66a6b7fd17c29e964f7`（StartedAt 2026-10-20T05:18:44Z）、
+  `_prisma_migrations` に `20261020120000_add_storage_locations` が適用済み（finished・rollbackなし）、`storage_locations` は0件、
+  `GET /health` 200、`GET /api/storage/locations`（認証なし）401（ルートが存在し認証で保護されていることを確認）
+- **未完了**: 認証付きの保管場所APIの確認。app owner がCLIの認証情報（`apps/api/.env.local`）を設定後、`npm run storage -- lookup` で確認し、`verified` へ更新する
+
 ## Approval
 
 - app owner: 2026-10-20、このチャットで内容確認のうえVPS管理へ引き継ぐことを承認
 - VPS management review: 第1回（2026-10-20）指摘あり（baseline欄の表記、場所階層の同時更新対策）→ 対応し再提出。
   第2回（2026-10-20）技術レビュー受理、VPS管理の受理台帳へ登録（baseline `dea7c89` と同時更新対策を確認済み。review対象: source `16918f8`・通知書 `7bac5e6`）
-- production approval: 未実施
+- production approval: 2026-10-20、VPS管理側の承認・実行で本番反映（指定commit `16918f8`）。deploy成功・migration適用・health確認はVPS管理側で実施
 - related task_id: なし（ai-watch不使用。app ownerの指示によりClaudeが直接実装）
