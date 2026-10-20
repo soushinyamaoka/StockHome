@@ -23,6 +23,10 @@ import PurchaseFormScreen from '../screens/purchases/PurchaseFormScreen';
 import CandidateListScreen from '../screens/candidates/CandidateListScreen';
 import StorageHomeScreen from '../screens/storage/StorageHomeScreen';
 import StorageLocationScreen from '../screens/storage/StorageLocationScreen';
+import StorageTargetScreen from '../screens/storage/StorageTargetScreen';
+import StorageThingFormScreen from '../screens/storage/StorageThingFormScreen';
+import StorageLocationFormScreen from '../screens/storage/StorageLocationFormScreen';
+import StorageTagsScreen from '../screens/storage/StorageTagsScreen';
 import SettingsScreen from '../screens/settings/SettingsScreen';
 import NotificationLogScreen from '../screens/settings/NotificationLogScreen';
 import ReflectionLogScreen from '../screens/settings/ReflectionLogScreen';
@@ -119,6 +123,10 @@ function StorageNavigator() {
     <StorageStack.Navigator screenOptions={HEADER_OPTIONS}>
       <StorageStack.Screen name="StorageHome" component={StorageHomeScreen} options={{ title: '置き場所さがし' }} />
       <StorageStack.Screen name="StorageLocation" component={StorageLocationScreen} options={{ title: '置き場所' }} />
+      <StorageStack.Screen name="StorageTarget" component={StorageTargetScreen} options={{ title: '置き場所' }} />
+      <StorageStack.Screen name="StorageThingForm" component={StorageThingFormScreen} options={{ title: '物の登録' }} />
+      <StorageStack.Screen name="StorageLocationForm" component={StorageLocationFormScreen} options={{ title: '場所の追加' }} />
+      <StorageStack.Screen name="StorageTags" component={StorageTagsScreen} options={{ title: '用途タグの整理' }} />
     </StorageStack.Navigator>
   );
 }

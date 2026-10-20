@@ -14,6 +14,8 @@ interface Props {
   placementFilter?: (placement: StoragePlacementDto) => boolean;
   onPressPlacement?: (placement: StoragePlacementDto) => void;
   onPressTag?: (tag: { id: string; name: string }) => void;
+  /** 名前の部分をタップしたとき（詳細・編集画面へ） */
+  onPress?: () => void;
 }
 
 // 置き場所の検索結果1件。名前・置き場所（複数）・用途タグを1枚の札にまとめる
@@ -23,16 +25,24 @@ export const StorageResultCard: React.FC<Props> = ({
   placementFilter,
   onPressPlacement,
   onPressTag,
+  onPress,
 }) => {
   const placements = placementFilter ? result.placements.filter(placementFilter) : result.placements;
   return (
     <View style={styles.card}>
-      <View style={styles.titleRow}>
+      <TouchableOpacity
+        style={styles.titleRow}
+        onPress={onPress}
+        disabled={!onPress}
+        activeOpacity={0.7}
+        accessibilityRole={onPress ? 'button' : undefined}
+      >
         <Text style={styles.name} numberOfLines={2}>
           {result.name}
         </Text>
         {result.kind === 'item' ? <StampBadge label="消耗品" color={COLORS.indigo} /> : null}
-      </View>
+        {onPress ? <Ionicons name="create-outline" size={16} color={COLORS.inkFaint} /> : null}
+      </TouchableOpacity>
       {result.memo ? <Text style={styles.memo}>{result.memo}</Text> : null}
 
       {placements.length === 0 ? (
@@ -87,7 +97,7 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.sm,
     ...SHADOW.card,
   },
-  titleRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, minHeight: 32 },
   name: { flex: 1, fontFamily: FONTS.bold, fontSize: 15, color: COLORS.ink },
   memo: { fontFamily: FONTS.body, fontSize: 12, color: COLORS.inkSub, marginTop: 2 },
   unplaced: { fontFamily: FONTS.medium, fontSize: 12, color: COLORS.inkFaint, marginTop: SPACING.sm },

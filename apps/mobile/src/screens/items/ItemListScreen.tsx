@@ -151,6 +151,21 @@ export default function ItemListScreen() {
           <Ionicons name="receipt-outline" size={15} color={COLORS.inkSub} />
           <Text style={styles.toolText}>きろく</Text>
         </TouchableOpacity>
+        {item.isActive ? (
+          <TouchableOpacity
+            style={styles.tool}
+            onPress={() =>
+              navigation.navigate('StorageTab', {
+                screen: 'StorageTarget',
+                params: { kind: 'item', id: item.id },
+                initial: false,
+              })
+            }
+          >
+            <Ionicons name="location-outline" size={15} color={COLORS.inkSub} />
+            <Text style={styles.toolText}>置き場所</Text>
+          </TouchableOpacity>
+        ) : null}
         {item.purchaseUrl ? (
           <TouchableOpacity style={styles.tool} onPress={() => Linking.openURL(item.purchaseUrl!)}>
             <Ionicons name="cart-outline" size={15} color={COLORS.indigo} />

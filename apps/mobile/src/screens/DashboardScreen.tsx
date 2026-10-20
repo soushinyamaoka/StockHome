@@ -368,7 +368,28 @@ export default function DashboardScreen() {
     </ScrollView>
     {undo ? (
       <View style={styles.undoBar}>
-        <Text style={styles.undoMessage} numberOfLines={2}>{undo.message}</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.undoMessage, { flex: 0 }]} numberOfLines={2}>{undo.message}</Text>
+          {/* 買った物をしまう場所（前回と同じ置き場所）を見せ、タップで変えられるようにする */}
+          <TouchableOpacity
+            onPress={() => {
+              startUndoTimer();
+              navigation.navigate('StorageTab', {
+                screen: 'StorageTarget',
+                params: { kind: 'item', id: undo.itemId },
+                initial: false,
+              });
+            }}
+            style={styles.undoStorage}
+            accessibilityRole="button"
+          >
+            <Text style={styles.undoStorageText} numberOfLines={1}>
+              {stockLocationLabel(stockPlaces.get(undo.itemId))
+                ? `しまう場所: ${stockLocationLabel(stockPlaces.get(undo.itemId))} ›`
+                : 'しまう場所を決める ›'}
+            </Text>
+          </TouchableOpacity>
+        </View>
         <TouchableOpacity
           onPress={() => {
             clearUndoTimer();
@@ -521,6 +542,8 @@ const styles = StyleSheet.create({
     ...SHADOW.card,
   },
   undoMessage: { flex: 1, fontFamily: FONTS.medium, color: COLORS.surface },
+  undoStorage: { paddingVertical: 4 },
+  undoStorageText: { fontFamily: FONTS.medium, fontSize: 12, color: COLORS.accentSoft, textDecorationLine: 'underline' },
   undoButton: { paddingVertical: SPACING.sm, paddingHorizontal: SPACING.md },
   undoButtonText: { fontFamily: FONTS.bold, color: COLORS.accentSoft },
   qtyModalBackdrop: {

@@ -26,6 +26,10 @@ export type ItemsStackParamList = {
 export type StorageStackParamList = {
   StorageHome: undefined;
   StorageLocation: { locationId: string };
+  StorageTarget: { kind: 'item' | 'thing'; id: string };
+  StorageThingForm: { thingId?: string; locationId?: string } | undefined;
+  StorageLocationForm: { locationId?: string; parentId?: string | null } | undefined;
+  StorageTags: undefined;
 };
 
 export type CandidatesStackParamList = {

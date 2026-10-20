@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { FlatList, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
@@ -48,6 +48,33 @@ export default function StorageHomeScreen() {
   }, [locations]);
 
   const openLocation = (locationId: string) => navigation.navigate('StorageLocation', { locationId });
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <TouchableOpacity
+          onPress={() => navigation.navigate('StorageThingForm', {})}
+          style={styles.headerAdd}
+          accessibilityLabel="物を登録"
+        >
+          <Ionicons name="add" size={20} color="#FFFDF6" />
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation]);
+
+  const footer = (
+    <View style={styles.footer}>
+      <TouchableOpacity style={styles.footerLink} onPress={() => navigation.navigate('StorageLocationForm', {})}>
+        <Ionicons name="add-circle-outline" size={16} color={COLORS.indigo} />
+        <Text style={styles.footerLinkText}>最上位に場所を追加（例: 1階・2階）</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.footerLink} onPress={() => navigation.navigate('StorageTags')}>
+        <Ionicons name="pricetags-outline" size={16} color={COLORS.indigo} />
+        <Text style={styles.footerLinkText}>用途タグの整理</Text>
+      </TouchableOpacity>
+    </View>
+  );
   const refreshing = locationsQuery.isRefetching || tagsQuery.isRefetching || searchQuery.isRefetching;
   const refresh = () => {
     void locationsQuery.refetch();
@@ -121,6 +148,7 @@ export default function StorageHomeScreen() {
             result={item}
             onPressPlacement={(p) => openLocation(p.locationId)}
             onPressTag={(tag) => setTagId(tag.id)}
+            onPress={() => navigation.navigate('StorageTarget', { kind: item.kind, id: item.id })}
           />
         )}
         ListEmptyComponent={
@@ -150,6 +178,7 @@ export default function StorageHomeScreen() {
       data={roots}
       keyExtractor={(l) => l.id}
       ListHeaderComponent={header}
+      ListFooterComponent={footer}
       keyboardShouldPersistTaps="handled"
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={COLORS.accent} />}
       renderItem={({ item }) => (
@@ -182,7 +211,7 @@ export default function StorageHomeScreen() {
           <View style={styles.emptyBox}>
             <Text style={styles.emptyTitle}>まだ置き場所が登録されていません</Text>
             <Text style={styles.empty}>
-              物と場所をチャットで伝えると、まとめて登録できます（例:「ほうき、ちりとり → 1階 パントリー A棚」）。
+              右上の＋から物を登録するか、下の「最上位に場所を追加」から場所を作れます。物と場所をチャットで伝えて、まとめて登録することもできます。
             </Text>
           </View>
         )
@@ -257,4 +286,17 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.indigoSoft,
   },
   clearTagText: { fontFamily: FONTS.bold, fontSize: 13, color: COLORS.indigo },
+  headerAdd: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: COLORS.accent,
+    borderWidth: 1.5,
+    borderColor: COLORS.borderInk,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  footer: { marginTop: SPACING.lg },
+  footerLink: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: SPACING.md, minHeight: 44 },
+  footerLinkText: { fontFamily: FONTS.medium, fontSize: 13, color: COLORS.indigo },
 });
