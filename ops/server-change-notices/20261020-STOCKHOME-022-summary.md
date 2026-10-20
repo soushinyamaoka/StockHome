@@ -12,12 +12,14 @@ app: stockhome
 
 source_branch: main
 
-source_commit: 8ae098643cff0ea957a76417cf6262dc017ab23a
+source_commit: 16918f80393461eaeed6f66a6b7fd17c29e964f7
 
-production_baseline_commit: dea7c89a0d60a103e20fae824a65e30a3003d4eb（稼働中コンテナの実測値。**正本 `production_deployments.yaml` の値 `85c5f8ffa2fa4b180f293a5c21130870dbbe0fd5` と食い違う**。下記「未解決事項」1を参照）
+production_baseline_commit: dea7c89a0d60a103e20fae824a65e30a3003d4eb
 
-release_commits: `dea7c89..8ae0986`（baseline除く）。build入力に影響するのは次のとおり。
+release_commits: `dea7c89..16918f8`（baseline除く）。build入力に影響するのは次のとおり。
 - `8ae0986` 本notice対象の保管場所機能（`apps/api`・`packages/shared`・Prisma schema/migration）
+- `16918f8` 第1回レビュー指摘対応: 保管場所の更新を世帯単位で直列化（場所階層の同時更新による循環の防止）と回帰テスト
+- `da0dce7` 開発PC用CLI（`apps/api/scripts/storage-cli.ts`）のトークン保存権限の修正（builder stageのbuild contextには入るが、final imageには含まれない）
 - `b137d37` `scripts/deploy.ps1` の終了コード修正（artifact外。deploy実行経路のみ。修正後の版で実VPSへ通しで流すのは今回が初）
 - `5b09a0a` mobile依存の追加でルート `package-lock.json` が変化（mobile専用package。API imageの `npm ci` はworkspace指定のため対象外だが、lockfile自体はbuild入力）
 - 他（`dae77df`・`2a0f5d3`・`cf6b92c`・`3efe1b7`）はmobileのみ、残りはops/docs文書のみ
@@ -89,7 +91,7 @@ env・port/bind・cron・依存packageの変更は無い。
 ## production変更
 
 - 必要性: あり
-- 想定作業: 通常のAPI deploy（`npm run deploy -- -Commit 8ae098643cff0ea957a76417cf6262dc017ab23a`）。
+- 想定作業: 通常のAPI deploy（`npm run deploy -- -Commit 16918f80393461eaeed6f66a6b7fd17c29e964f7`）。
   コンテナ起動時の `prisma migrate deploy` が migration `20261020120000_add_storage_locations` を自動適用する
 - downtime: 既存と同じ（brief-restart）
 - maintenance window: 不要（新規テーブル作成のみで既存テーブルのlock・書き換えなし）
@@ -144,19 +146,25 @@ secret値は記載していない。
 
 - health contract変更: なし
 - 実施テスト（Claude、ローカル開発DB=PostgreSQL 16）:
-  - `npx tsx --test --test-concurrency=1 apps/api/src/routes/storage.http.test.ts`: 11件すべて成功
+  - `npx tsx --test --test-concurrency=1 apps/api/src/routes/storage.http.test.ts`: 14件すべて成功（`16918f8`）
     （正規化した名前・兄弟名重複409・木の順の一覧／循環移動400・段数上限／中身のある場所の削除409・
     再帰統合と置き場所メモの引き継ぎ／検索（名前・タグ・場所パス・配下）／消耗品への置き場所・タグ置換／
     タグ改名衝突409・統合／物の論理削除／**他世帯の場所・品目・置き場所へ到達不可**／
-    一括登録のdry run非書込・本登録・再実行の冪等性／エラー時の全件ロールバック422／DBのCHECK制約）
-  - `npm test --workspace=@stockhome/api`: 202件中197件成功、5件失敗。失敗はReadyGo関連2ファイル
-    （`bridge.readygoRace.test.ts`・`bridge.readygoReclaim.test.ts`）で、**変更を退避したbaseline相当の状態でも同じく失敗**することを確認
-    （notice 021でも記録した、開発DBの残留データによる既知の不安定と同種。本変更はReadyGoのコードに触れていない）
+    一括登録のdry run非書込・本登録・再実行の冪等性／エラー時の全件ロールバック422／DBのCHECK制約／
+    **同時更新の回帰3件**（下記「第1回レビュー指摘と対応」）
+  - `npm test --workspace=@stockhome/api`（`16918f8`）: 205件中201件成功、4件失敗。失敗はReadyGo関連2ファイル
+    （`bridge.readygoRace.test.ts`・`bridge.readygoReclaim.test.ts`）のみで、**変更を退避したbaseline相当の状態でも同じく失敗**することを確認
+    （notice 021でも記録した、開発DBの残留データによる既知の不安定と同種。失敗件数は実行ごとに4〜5件で揺れる。本変更はReadyGoのコードに触れていない）
   - `npx tsc --noEmit`（API・mobile・CLI）: 成功
-  - `docker build -f apps/api/Dockerfile`（HEAD `8ae0986` を `git archive` で取り出したbuild context）: 成功
+  - `docker build -f apps/api/Dockerfile`（`16918f8` を `git archive` で取り出したbuild context）: 成功
   - CLI のsmoke test（ローカルAPI＋一時ユーザー）: dry run表示・本登録・検索・一覧が想定どおり。一時データは削除済み
 - 同時実行・再実行:
-  - 場所・置き場所の重複は事前確認＋DBの一意index（兄弟名・物×場所・タグ×物）で担保。競合時はP2002を409に変換
+  - 保管場所の更新系トランザクション（場所の作成・更新・削除・統合、置き場所の作成・移動、物の作成、タグの統合・付け替え、一括登録）は、
+    開始直後に世帯単位のアドバイザリーロック `pg_advisory_xact_lock(<保管場所の名前空間>, hashtext(household_id))` を取り、
+    同じ世帯の更新を1つずつ実行する。ロック取得後に場所の木を読み込んで循環・段数を検査するため、先行の確定済み変更を必ず見る
+  - ロックはトランザクション終了で自動解放。行ロックではないので、他機能の households への外部キー参照を妨げない。
+    ロック待ちを含むトランザクションのtimeoutは20秒（一括登録は60秒）
+  - 場所・置き場所の重複は上記の直列化に加え、DBの一意index（兄弟名・物×場所・タグ×物）でも担保。万一の競合時はP2002を409に変換
   - 一括登録はトランザクション内で処理するため、途中失敗で部分的に登録されることはない。同じ内容の再実行は冪等
     （既存の場所・物・置き場所・タグを再利用し、新規作成0件）
 - 未実施テストと理由: production相当データでの実行（単一世帯・数百件規模の想定で、検索は世帯分をメモリ上で処理）
@@ -167,12 +175,31 @@ secret値は記載していない。
 - 新しいalert条件: なし。なお一意index競合（同時操作時のみ）では、既存の仕組みでPrismaの `db_client_log`（error）が1行出る可能性がある
 - secret/個人情報対策: 新しいログ出力なし。物の名前・場所名はログに出さない
 
+## 第1回レビュー指摘と対応（2026-10-20）
+
+前回review対象: 通知書 `b7cd72b`（source `8ae0986`）。今回の差分は `8ae0986..16918f8` のうち
+`da0dce7`（CLIのみ・artifact外）と `16918f8`（下記）、および本通知書の更新。
+
+| 指摘 | 対応 |
+|---|---|
+| baseline欄をSHAのみにする | `production_baseline_commit` を `dea7c89a0d60a103e20fae824a65e30a3003d4eb` のみに修正 |
+| 場所階層の同時更新で循環が起きない対策と回帰確認 | `16918f8`: 保管場所の更新系トランザクションを世帯単位のアドバイザリーロックで直列化（上記「同時実行・再実行」）。回帰テスト3件を追加 |
+
+回帰テスト（各8回くり返し、Fastify inject で2リクエストを同時実行）:
+
+1. A を B の下へ、B を A の下へ同時に移動 → 一方は200、他方は循環として400。DB上の木に循環が無い
+2. X を Y へ統合しつつ、Y を X の下へ同時に移動 → 「統合200・移動404」か「統合400・移動200」のどちらか。循環が無い
+3. 同じ新しい場所パスへの一括登録を同時に2回 → 両方200、場所は1系統だけ作られ、2つの物が同じ末端の場所に置かれる
+
+**ロックを一時的に外した状態では3件とも失敗**することを確認済み（1は循環発生、2は500、3は兄弟名一意indexの競合）。
+ロックを戻した状態で3件を含む14件すべて成功。
+
 ## 提出前セルフチェック
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
-- [x] production baselineとrelease全commit・build入力差分を確認した（正本yamlと稼働中imageの食い違いを未解決事項1に記載）
-- [x] source commitとnoticeをremoteの対象branchへpushした（source `8ae0986` はpush済み。noticeのpushは本ファイルcommit後に実施し、引き継ぎ時にcommitを伝える）
+- [x] production baselineとrelease全commit・build入力差分を確認した（稼働baseline `dea7c89` はVPS管理側でも確認済み）
+- [x] source commitとnoticeをremoteの対象branchへpushした（再提出時に source `16918f8` と通知書の最新commitの両方がremoteと一致することを確認し、引き継ぎ時に伝える）
 - [x] data更新のtransaction・同時実行・途中失敗・再実行を確認した
 - [x] image rollbackとdata rollback、backup/restore条件を分けた
 - [x] job/log/retention（変更なし）、runtime/dependency（lockfileのmobile差分のみ。build成功確認）、client配信（本releaseなし）の該当有無を確認した
@@ -188,12 +215,9 @@ secret値は記載していない。
 
 ## 未解決事項
 
-1. **production baselineの食い違い**: VPS管理側の正本 `docs/runtime-state/production_deployments.yaml` の stockhome は
-   `deployed_source_commit: 85c5f8f…`（deployment 20260921-010）のままだが、2026-10-20 に read-only で確認した稼働中コンテナ
-   `stockhome-api-prod` のimageは `stockhome-api:git-dea7c89a0d60a103e20fae824a65e30a3003d4eb`（StartedAt 2026-09-29T22:24:05Z）。
-   notice 021（`dea7c89`）の本番反映が正本へ未記録の可能性がある。本noticeは稼働中の `dea7c89` をbaselineとした。
-   `85c5f8f..dea7c89` はnotice 021の範囲（受理済み）。正本の確認・更新をお願いしたい。
-   本番DBの適用済みmigrationの最新は `20260921140105_push_device_test_cooldown`（同日read-only確認）。
+1. ~~production baselineの食い違い~~ → 第1回レビューで、稼働baselineが `dea7c89` であることをVPS管理側が確認済み
+   （アプリ側の read-only 確認: 稼働中imageは `stockhome-api:git-dea7c89…`、本番DBの適用済みmigrationの最新は
+   `20260921140105_push_device_test_cooldown`。いずれも2026-10-20時点）。
 2. `scripts/deploy.ps1` の修正版（`b137d37`）は実VPSで未実行。今回のdeployで終了コードと `DEPLOY_RESULT=success` を確認したい。
 
 ## 希望時期
@@ -210,6 +234,6 @@ secret値は記載していない。
 ## Approval
 
 - app owner: 2026-10-20、このチャットで内容確認のうえVPS管理へ引き継ぐことを承認
-- VPS management review: 未実施
+- VPS management review: 第1回（2026-10-20）指摘あり（baseline欄の表記、場所階層の同時更新対策）→ 本版で対応し再提出
 - production approval: 未実施
 - related task_id: なし（ai-watch不使用。app ownerの指示によりClaudeが直接実装）
