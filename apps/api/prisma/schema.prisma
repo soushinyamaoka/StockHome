@@ -28,6 +28,11 @@ model Household {
   stockCorrectionLogs StockCorrectionLog[]
   appConfigs          AppConfig[]
   pushDevices         PushDevice[]
+  storageLocations    StorageLocation[]
+  storageThings       StorageThing[]
+  storagePlacements   StoragePlacement[]
+  usageTags           UsageTag[]
+  usageTagLinks       UsageTagLink[]
 
   @@map("households")
 }
@@ -91,13 +96,15 @@ model Item {
   createdAt            DateTime  @default(now()) @map("created_at")
   updatedAt            DateTime  @updatedAt @map("updated_at")
 
-  household        Household             @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  household        Household              @relation(fields: [householdId], references: [id], onDelete: Cascade)
   purchaseLogs     PurchaseLog[]
   stockSnapshot    StockSnapshot?
   runtimeState     ItemRuntimeState?
   notificationLogs NotificationLog[]
   correctionLogs   StockCorrectionLog[]
   importCandidates ImportOrderCandidate[]
+  placements       StoragePlacement[]
+  usageTagLinks    UsageTagLink[]
 
   @@index([householdId])
   @@map("items")
@@ -283,10 +290,10 @@ model PriceReparseTarget {
 // （probeで実証済み）。同一runの中では、品目ごとに最初に必要になった時点の値へ固定し、
 // 以後は同じrun内のどのchunk・どのmode（dry_run/write）でも同じ値を使い回す
 model PriceReparseItemSnapshot {
-  id             String  @id @default(cuid())
-  runId          String  @map("run_id")
-  itemId         String  @map("item_id")
-  referencePrice Float?  @map("reference_price") // nullは「参照できる購入履歴が無い」ことを表す
+  id             String @id @default(cuid())
+  runId          String @map("run_id")
+  itemId         String @map("item_id")
+  referencePrice Float? @map("reference_price") // nullは「参照できる購入履歴が無い」ことを表す
 
   @@unique([runId, itemId])
   @@map("price_reparse_item_snapshots")
@@ -358,12 +365,12 @@ model ReadyGoOutbox {
   createdAt   DateTime  @default(now()) @map("created_at")
   claimedAt   DateTime? @map("claimed_at") // GETがpendingをclaimした時刻（所見A-5/A-6再対応、S014-B02）
   deliveredAt DateTime? @map("delivered_at")
-
-  @@index([status])
-  @@map("readygo_outbox")
   // household_idごとにpending行は最大1件（並行batch実行での二重行を防ぐ、S014-B01）。
   // Prismaの@@uniqueは条件付きindexを表現できないため、migration.sqlへ手書きする
   // partial unique index（CREATE UNIQUE INDEX ... WHERE status = 'pending'）で保証する。
+
+  @@index([status])
+  @@map("readygo_outbox")
 }
 
 // プッシュ通知の送信先端末（Expo Push Token）
@@ -372,22 +379,22 @@ model ReadyGoOutbox {
 // 端末が通知を無効化・再インストールするとトークンが変わるため、
 // 送信失敗（DeviceNotRegistered）時は is_active=false にして送信対象から外す。
 model PushDevice {
-  id            String    @id @default(cuid())
-  householdId   String    @map("household_id")
-  userId        String    @map("user_id")
+  id             String    @id @default(cuid())
+  householdId    String    @map("household_id")
+  userId         String    @map("user_id")
   // Expo が発行する送信先識別子（ExponentPushToken[...]）。端末ごとに一意
-  expoPushToken String    @unique @map("expo_push_token")
-  platform      String // ios | android
-  isActive      Boolean   @default(true) @map("is_active")
-  lastPushAt    DateTime? @map("last_push_at")
+  expoPushToken  String    @unique @map("expo_push_token")
+  platform       String // ios | android
+  isActive       Boolean   @default(true) @map("is_active")
+  lastPushAt     DateTime? @map("last_push_at")
   // テスト送信（POST /api/push-devices/test）のcooldown判定用。実配信のlastPushAtとは
   // 別に持つ（実アラート配信でcooldownが動いてしまうのを避けるため。S020-B01対応）
   lastTestSentAt DateTime? @map("last_test_sent_at")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  household Household      @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  household Household    @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   tickets   PushTicket[]
 
   @@index([householdId, isActive])
@@ -445,4 +452,112 @@ model BatchRunStatus {
   updatedAt  DateTime @updatedAt @map("updated_at")
 
   @@map("batch_run_status")
+}
+
+// ============================================================
+// 保管場所管理（2026-10 追加）
+// 消耗品（items）と「場所だけ管理する物」（storage_things）の置き場所・用途タグを持つ。
+// storage_things は在庫予測・通知・Gmail 自動確定の対象外にするため items とは別テーブル。
+// ============================================================
+
+// 保管場所（深さ可変の階層。箱・ケースも末端の場所として扱う）
+// 同じ親の下で名前は一意（migration の部分ユニーク index で担保。親 NULL＝最上位も含む）
+model StorageLocation {
+  id          String   @id @default(cuid())
+  householdId String   @map("household_id")
+  name        String
+  parentId    String?  @map("parent_id")
+  memo        String?
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  household  Household          @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  parent     StorageLocation?   @relation("StorageLocationParent", fields: [parentId], references: [id], onDelete: NoAction)
+  children   StorageLocation[]  @relation("StorageLocationParent")
+  placements StoragePlacement[]
+
+  @@index([householdId])
+  @@index([parentId])
+  @@map("storage_locations")
+}
+
+// 場所だけ管理する物（掃除用具など。在庫予測しない）。論理削除
+model StorageThing {
+  id          String    @id @default(cuid())
+  householdId String    @map("household_id")
+  name        String
+  memo        String?
+  isActive    Boolean   @default(true) @map("is_active")
+  deletedAt   DateTime? @map("deleted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  household     Household          @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  placements    StoragePlacement[]
+  usageTagLinks UsageTagLink[]
+
+  @@index([householdId])
+  @@map("storage_things")
+}
+
+// 置き場所（物×場所の多対多）。item_id と thing_id のどちらか一方だけを持つ（CHECK 制約）
+model StoragePlacement {
+  id          String   @id @default(cuid())
+  householdId String   @map("household_id")
+  locationId  String   @map("location_id")
+  itemId      String?  @map("item_id")
+  thingId     String?  @map("thing_id")
+  memo        String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  household Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  location  StorageLocation @relation(fields: [locationId], references: [id], onDelete: NoAction)
+  item      Item?           @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  thing     StorageThing?   @relation(fields: [thingId], references: [id], onDelete: Cascade)
+
+  @@unique([locationId, itemId])
+  @@unique([locationId, thingId])
+  @@index([householdId])
+  @@index([itemId])
+  @@index([thingId])
+  @@map("storage_placements")
+}
+
+// 用途タグ（「トイレ掃除」「旅行」など）
+model UsageTag {
+  id          String   @id @default(cuid())
+  householdId String   @map("household_id")
+  name        String
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  household Household      @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  links     UsageTagLink[]
+
+  @@unique([householdId, name])
+  @@map("usage_tags")
+}
+
+// 用途タグの付与（タグ×物の多対多）。item_id と thing_id のどちらか一方だけを持つ（CHECK 制約）
+model UsageTagLink {
+  id          String   @id @default(cuid())
+  householdId String   @map("household_id")
+  tagId       String   @map("tag_id")
+  itemId      String?  @map("item_id")
+  thingId     String?  @map("thing_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  household Household     @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  tag       UsageTag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  item      Item?         @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  thing     StorageThing? @relation(fields: [thingId], references: [id], onDelete: Cascade)
+
+  @@unique([tagId, itemId])
+  @@unique([tagId, thingId])
+  @@index([householdId])
+  @@index([itemId])
+  @@index([thingId])
+  @@map("usage_tag_links")
 }

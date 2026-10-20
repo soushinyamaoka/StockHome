@@ -24,6 +24,7 @@
     "mobile:android": "npm run android --workspace=@stockhome/mobile",
     "mobile:ios": "npm run ios --workspace=@stockhome/mobile",
     "migrate:sheet": "npm run migrate:sheet --workspace=@stockhome/api --",
+    "storage": "npm run storage --workspace=@stockhome/api --",
     "deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy.ps1"
   }
 }
