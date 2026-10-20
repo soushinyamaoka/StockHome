@@ -6,10 +6,12 @@ import { useNavigation, useRoute, type RouteProp } from '@react-navigation/nativ
 
 import {
   assignStorageTags,
+  createStorageLocation,
   createStoragePlacement,
   deleteStoragePlacement,
   deleteStorageThing,
   fetchStorageItem,
+  fetchStorageLocations,
   fetchStorageThing,
   updateStoragePlacement,
   type StoragePlacementDto,
@@ -23,7 +25,7 @@ import { StampBadge } from '../../components/StampBadge';
 import { TagEditor } from '../../components/TagEditor';
 import { TextPromptModal } from '../../components/TextPromptModal';
 import type { StorageStackParamList } from '../../navigation/types';
-import { apiErrorMessage } from '../../lib/storageEdit';
+import { UNPLACED_LOCATION_NAME, apiErrorMessage, findUnplacedRoot, notHereMemo } from '../../lib/storageEdit';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../../theme';
 
 type PickerMode = { type: 'add' } | { type: 'move'; placement: StoragePlacementDto } | null;
@@ -75,6 +77,28 @@ export default function StorageTargetScreen() {
     onSuccess: invalidate,
     onError: onError('外せませんでした'),
   });
+  // 最後の置き場所は外さず、最上位の「未登録」へ移す（無ければ作る）。場所から辿れない迷子を作らないため
+  const moveToUnplaced = useMutation({
+    mutationFn: async (p: StoragePlacementDto) => {
+      let root = findUnplacedRoot((await fetchStorageLocations()).locations);
+      if (!root) {
+        try {
+          await createStorageLocation({ name: UNPLACED_LOCATION_NAME, parentId: null });
+        } catch (e) {
+          // 同時に作られていた場合（409）は作り直さず、作られた方を使う
+          if ((e as { response?: { status?: number } })?.response?.status !== 409) throw e;
+        }
+        root = findUnplacedRoot((await fetchStorageLocations()).locations);
+        if (!root) throw new Error('unplaced location not found');
+      }
+      await updateStoragePlacement(p.id, {
+        ...(root.id === p.locationId ? {} : { locationId: root.id }),
+        memo: notHereMemo(p.pathText, p.memo, new Date()),
+      });
+    },
+    onSuccess: invalidate,
+    onError: onError(`「${UNPLACED_LOCATION_NAME}」へ移せませんでした`),
+  });
   const saveTags = useMutation({
     mutationFn: (names: string[]) => assignStorageTags({ ...ref, names }),
     onSuccess: invalidate,
@@ -89,12 +113,24 @@ export default function StorageTargetScreen() {
     onError: onError('削除できませんでした'),
   });
 
-  // 「ここに無かった」: 実際に無かった置き場所を外す。他の置き場所は残る
+  // 「ここに無かった」: 実際に無かった置き場所を外す。他の置き場所は残る。
+  // 最後の1か所なら外さずに「未登録」へ移し、いつ・どこで無かったかをメモに残す
   const confirmNotHere = (p: StoragePlacementDto) => {
-    Alert.alert('ここに無かった', `「${p.pathText}」を置き場所から外しますか？`, [
-      { text: 'やめる', style: 'cancel' },
-      { text: '外す', style: 'destructive', onPress: () => removePlacement.mutate(p.id) },
-    ]);
+    if ((data?.placements.length ?? 0) > 1) {
+      Alert.alert('ここに無かった', `「${p.pathText}」を置き場所から外しますか？`, [
+        { text: 'やめる', style: 'cancel' },
+        { text: '外す', style: 'destructive', onPress: () => removePlacement.mutate(p.id) },
+      ]);
+      return;
+    }
+    Alert.alert(
+      'ここに無かった',
+      `最後の置き場所です。「${UNPLACED_LOCATION_NAME}」へ移しますか？\n（メモに「ここに無かった」と元の場所を残します）`,
+      [
+        { text: 'やめる', style: 'cancel' },
+        { text: '移す', onPress: () => moveToUnplaced.mutate(p) },
+      ]
+    );
   };
 
   const confirmDeleteThing = () => {
@@ -119,7 +155,7 @@ export default function StorageTargetScreen() {
     );
   }
 
-  const busy = addPlacement.isPending || movePlacement.isPending || removePlacement.isPending;
+  const busy = addPlacement.isPending || movePlacement.isPending || removePlacement.isPending || moveToUnplaced.isPending;
 
   return (
     <ScrollView

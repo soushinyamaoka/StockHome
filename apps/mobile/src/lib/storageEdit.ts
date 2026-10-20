@@ -1,5 +1,5 @@
 // 置き場所の登録・編集画面で使う純粋関数
-import { normalizeStorageName } from '@stockhome/shared';
+import { STORAGE_LIMITS, normalizeStorageName } from '@stockhome/shared';
 import type { StorageLocationDto } from '../api/storage';
 
 const MAX_SUGGESTIONS = 8;
@@ -60,4 +60,25 @@ export function selfAndDescendantIds(locations: StorageLocationDto[], id: string
 export function apiErrorMessage(error: unknown, fallback: string): string {
   const message = (error as { response?: { data?: { message?: unknown } } })?.response?.data?.message;
   return typeof message === 'string' && message ? message : fallback;
+}
+
+/**
+ * 置き場所が1つも無くなった物の受け皿にする最上位の場所の名前。
+ * 最後の置き場所で「ここに無かった」を押した物はここへ移し、場所から辿れない迷子を作らない。
+ */
+export const UNPLACED_LOCATION_NAME = '未登録';
+
+/** 最上位にある受け皿の場所（名前は正規化して比べる）。無ければ null */
+export function findUnplacedRoot(locations: StorageLocationDto[]): StorageLocationDto | null {
+  return locations.find((l) => l.parentId === null && normalizeStorageName(l.name) === UNPLACED_LOCATION_NAME) ?? null;
+}
+
+/**
+ * 「ここに無かった」で受け皿へ移すときの置き方メモ。いつ・どこで見つからなかったかを先頭に残し、
+ * 元のメモは後ろに続ける（メモの上限を超える分は切る）。
+ */
+export function notHereMemo(pathText: string, previousMemo: string | null, now: Date): string {
+  const head = `ここに無かった(${now.getMonth() + 1}/${now.getDate()}) 元: ${pathText}`;
+  const memo = previousMemo ? `${head}\n${previousMemo}` : head;
+  return memo.slice(0, STORAGE_LIMITS.MAX_MEMO_LENGTH);
 }

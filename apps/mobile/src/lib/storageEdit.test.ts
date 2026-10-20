@@ -1,7 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { StorageLocationDto } from '../api/storage';
-import { addTagName, apiErrorMessage, selfAndDescendantIds, suggestTags } from './storageEdit';
+import {
+  addTagName,
+  apiErrorMessage,
+  findUnplacedRoot,
+  notHereMemo,
+  selfAndDescendantIds,
+  suggestTags,
+} from './storageEdit';
 
 const tags = [
   { name: '掃除全般', usageCount: 5 },
@@ -40,4 +47,18 @@ test('selfAndDescendantIds covers the subtree only', () => {
 test('apiErrorMessage prefers the API message', () => {
   assert.equal(apiErrorMessage({ response: { data: { message: '中に物や場所があるため削除できません' } } }, 'x'), '中に物や場所があるため削除できません');
   assert.equal(apiErrorMessage(new Error('network'), '保存できませんでした'), '保存できませんでした');
+});
+
+test('findUnplacedRoot matches only a top-level location named 未登録 after normalization', () => {
+  const root = { ...loc('u', null), name: ' 未登録 ' };
+  assert.equal(findUnplacedRoot([loc('f1', null), root])?.id, 'u');
+  assert.equal(findUnplacedRoot([loc('f1', null), { ...loc('nested', 'f1'), name: '未登録' }]), null);
+  assert.equal(findUnplacedRoot([]), null);
+});
+
+test('notHereMemo records the date and previous location, keeping the old memo within the limit', () => {
+  const now = new Date(2026, 9, 20);
+  assert.equal(notHereMemo('1階 › パントリー', null, now), 'ここに無かった(10/20) 元: 1階 › パントリー');
+  assert.equal(notHereMemo('洗面台', 'ストック', now), 'ここに無かった(10/20) 元: 洗面台\nストック');
+  assert.equal(notHereMemo('洗面台', 'あ'.repeat(600), now).length, 500);
 });
