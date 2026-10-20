@@ -183,6 +183,8 @@ secret値は記載していない。
 - job/cron: 新設なし
 - client配信: 本releaseではmobile変更なし。画面は後続のclient releaseで、本noticeの本番反映を前提条件として別途計画する
 - 隔離restore試験: 未実施（新規テーブルは通常のDB全体backup/restoreに含まれる前提）
+- `tools/review_notice_preflight.ps1`: 未実行。アプリ側PCにはWindows PowerShell 5.1しか無く、
+  スクリプトが PowerShell 7 の API（`[System.IO.Path]::GetRelativePath`）を使うため実行できなかった。VPS管理側での実行をお願いしたい
 
 ## 未解決事項
 
