@@ -209,7 +209,7 @@ secret値は記載していない。
 
 ## Approval
 
-- app owner: 未実施
+- app owner: 2026-10-20、このチャットで内容確認のうえVPS管理へ引き継ぐことを承認
 - VPS management review: 未実施
 - production approval: 未実施
 - related task_id: なし（ai-watch不使用。app ownerの指示によりClaudeが直接実装）

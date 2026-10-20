@@ -76,6 +76,7 @@ npm run api:migrate     Prisma マイグレーション
 npm run mobile:start    Expo起動
 npm run deploy          VPS再デプロイ
 npm run migrate:sheet   スプレッドシート(xlsx)からのデータ移行
+npm run storage -- lookup|search|import   保管場所のチャット経由登録（手順は docs/STORAGE_REGISTRATION.md。dry run→利用者OK→--apply）
 ```
 
 ## コミット・デプロイ時の注意

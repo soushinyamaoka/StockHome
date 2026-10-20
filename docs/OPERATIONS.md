@@ -63,6 +63,7 @@ StockHome の本番環境の構成と、変更を本番・利用者端末へ届�
 | mobile の JS・画面だけ | `eas update`（Expo cloud） | app owner（ユーザー）の明示承認 | `ops/client-releases/` |
 | mobile の native 部分（native module 追加・`app.config.js` の plugins 等） | `eas build`（APK を作り直して配布）。iOS は Expo Go が対応しているか先に確認する | app owner の明示承認 | `ops/client-releases/` |
 | GAS（`apps/gas/`） | `apps/gas/push.bat` → `deploy.bat`（clasp） | notice → VPS 管理の承認 → **ユーザーが手動で実行**（Claude・Codex は実行しない） | `ops/server-change-notices/` |
+| 保管場所の一括登録（チャット経由） | `npm run storage -- import`（API 経由の通常操作） | 利用者が確認表を見て OK すること。手順は [STORAGE_REGISTRATION.md](STORAGE_REGISTRATION.md) | — |
 | 本番 DB を直接読む・書く | 原則しない | 例外手順あり（このアプリのチャットのみ read-only 可、write は条件付き） | `ops/production-db-operations/`（git 管理外） |
 | ドキュメントだけ | commit・push のみ | 不要 | — |
 
