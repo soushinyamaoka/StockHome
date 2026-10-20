@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: planned（app owner承認待ち）
+status: delivered（2026-10-20配信済み。利用者端末での確認待ち）
 
 created_by: Claude
 
@@ -64,9 +64,21 @@ mobile側はこのnoticeで追加された`/api/storage/*`を使うだけで、A
 
 ## Approval
 
-- app owner: 未承認（このチャットで対象branch・環境・source commit・rollback先を提示し承認を求める）
+- app owner: 2026-10-20、このチャットで対象branch（`default`・`android-internal`）・環境（`preview`）・source commit（`d7988c2`）・rollback先を提示したうえで「承認します」の承認を受領。
 - 配信実施条件: `ops/client-releases/README.md`記載の配信前チェックリストに従う。
 
 ## 実施結果
 
-（配信後に記入）
+2026-10-20、明示承認後に`preview`環境から両branchへ`eas update --platform all`を実施した。
+
+- `default` group: `ec011018-dff2-42ea-b7f0-9de210868d44`
+- `android-internal` group: `f57b266d-b422-4c62-892f-d3161ab6c9a7`
+- 両groupのruntime: `exposdk:57.0.0`、platform: `android, ios`
+- message: `置き場所タブ・置き場所の登録編集 (source: d7988c2, client release: 20261020-STOCKHOME-011)`
+- EAS記録のgit commit: `f03705a`（本plan追加のみでmobileソースは`d7988c2`と同一。末尾`*`は未追跡の`ops/production-db-operations/`があったため）。
+- 配信前チェック: `eas env:list preview`で`EXPO_PUBLIC_API_BASE_URL`・`EXPO_PUBLIC_NOTICES_FEED_URL`・`GOOGLE_SERVICES_JSON`の存在を確認。
+- bundle確認: 各`eas update`が出力したローカルbundle（iOS・Androidのhbc）に`stockhome.homehub-tools.dedyn.io`（API）と
+  `console.homehub-tools.dedyn.io`（お知らせfeed）が各1件、`10.0.2.2:4002`が0件、新画面`StorageTarget`が含まれることを確認
+  （公開済みbundle自体のダウンロード検査ではない）。配信直後に`GET /health` 200。
+- 利用者端末での表示確認: 未実施（上記「配信後の確認観点」11点）。
+- production API、DB、GAS、VPS設定の変更はなし。
