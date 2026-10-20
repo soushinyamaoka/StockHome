@@ -23,6 +23,11 @@ export type ItemsStackParamList = {
   PurchaseForm: { itemId?: string; purchaseId?: string } | undefined;
 };
 
+export type StorageStackParamList = {
+  StorageHome: undefined;
+  StorageLocation: { locationId: string };
+};
+
 export type CandidatesStackParamList = {
   CandidateList: { linkCandidateId?: string; linkItemId?: string } | undefined;
 };
@@ -40,6 +45,7 @@ export type MainTabParamList = {
   HomeTab: NavigatorScreenParams<HomeStackParamList>;
   StocksTab: NavigatorScreenParams<StocksStackParamList>;
   ItemsTab: NavigatorScreenParams<ItemsStackParamList>;
+  StorageTab: NavigatorScreenParams<StorageStackParamList>;
   CandidatesTab: NavigatorScreenParams<CandidatesStackParamList>;
   SettingsTab: NavigatorScreenParams<SettingsStackParamList>;
 };

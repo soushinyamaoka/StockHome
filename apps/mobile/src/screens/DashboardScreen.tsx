@@ -30,6 +30,8 @@ import { useAuth } from '../hooks/useAuth';
 import { COLORS, FONTS, RADIUS, SHADOW, SPACING } from '../theme';
 import { remainQtyLabel, isSnoozed } from '../lib/stockUtils';
 import { buildQuickPurchaseInput, quickPurchaseMessage, stepQuickPurchaseQty } from '../lib/quickPurchase';
+import { searchStorage } from '../api/storage';
+import { placementsByItemId, stockLocationLabel } from '../lib/storageView';
 
 type UndoPurchase = {
   purchaseId: string;
@@ -63,6 +65,17 @@ export default function DashboardScreen() {
     queryKey: ['dashboard'],
     queryFn: fetchDashboard,
   });
+  // 「切れそう」の行にストック場所を出すため、置き場所のある消耗品をまとめて取る。
+  // 失敗しても行に出ないだけで、ホームの他の表示には影響させない
+  const storageItemsQuery = useQuery({
+    queryKey: ['storage', 'search', { kind: 'item' }],
+    queryFn: () => searchStorage({ kind: 'item' }),
+    retry: false,
+  });
+  const stockPlaces = React.useMemo(
+    () => placementsByItemId(storageItemsQuery.data?.results ?? []),
+    [storageItemsQuery.data]
+  );
 
   const clearUndoTimer = React.useCallback(() => {
     if (undoTimer.current) {
@@ -200,7 +213,16 @@ export default function DashboardScreen() {
         padding: SPACING.lg,
         paddingBottom: undo ? SPACING.xxl + 64 : SPACING.xxl,
       }}
-      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={COLORS.accent} />}
+      refreshControl={
+        <RefreshControl
+          refreshing={isRefetching}
+          onRefresh={() => {
+            void refetch();
+            void storageItemsQuery.refetch();
+          }}
+          tintColor={COLORS.accent}
+        />
+      }
     >
       {/* 表紙ヘッダー: 日付と挨拶。手帳の今日のページをひらいた気分に */}
       <View style={styles.hero}>
@@ -261,6 +283,7 @@ export default function DashboardScreen() {
           alerts.map((entry) => {
             const { item, snapshot, runtimeState } = entry;
             const isRecorded = undo?.itemId === item.id;
+            const stockLabel = stockLocationLabel(stockPlaces.get(item.id));
             return (
               <View key={item.id} style={styles.alertCard}>
                 <TouchableOpacity
@@ -280,6 +303,11 @@ export default function DashboardScreen() {
                     のこり {remainQtyLabel(snapshot, item.unit)}
                     {isSnoozed(runtimeState) ? '・スヌーズ中' : ''}
                   </Text>
+                  {stockLabel ? (
+                    <Text style={styles.alertStock} numberOfLines={2}>
+                      ストック: {stockLabel}
+                    </Text>
+                  ) : null}
                 </View>
                 </TouchableOpacity>
                 <View style={styles.quickPurchaseButton} accessibilityLabel={`${item.itemName}を買ったとして記録`}>
@@ -511,6 +539,7 @@ const styles = StyleSheet.create({
   qtyModalAction: { flex: 1 },
   alertName: { fontFamily: FONTS.bold, fontSize: 15, color: COLORS.ink },
   alertSub: { fontFamily: FONTS.medium, fontSize: 12, color: COLORS.inkSub, marginTop: 2 },
+  alertStock: { fontFamily: FONTS.medium, fontSize: 11, color: COLORS.indigo, marginTop: 2 },
   quickRow: { flexDirection: 'row' },
   moreLink: {
     flexDirection: 'row',

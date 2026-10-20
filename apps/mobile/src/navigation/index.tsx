@@ -21,6 +21,8 @@ import ItemFormScreen from '../screens/items/ItemFormScreen';
 import PurchaseHistoryScreen from '../screens/items/PurchaseHistoryScreen';
 import PurchaseFormScreen from '../screens/purchases/PurchaseFormScreen';
 import CandidateListScreen from '../screens/candidates/CandidateListScreen';
+import StorageHomeScreen from '../screens/storage/StorageHomeScreen';
+import StorageLocationScreen from '../screens/storage/StorageLocationScreen';
 import SettingsScreen from '../screens/settings/SettingsScreen';
 import NotificationLogScreen from '../screens/settings/NotificationLogScreen';
 import ReflectionLogScreen from '../screens/settings/ReflectionLogScreen';
@@ -34,6 +36,7 @@ import type {
   StocksStackParamList,
   ItemsStackParamList,
   CandidatesStackParamList,
+  StorageStackParamList,
   SettingsStackParamList,
   MainTabParamList,
 } from './types';
@@ -44,6 +47,7 @@ const HomeStack = createNativeStackNavigator<HomeStackParamList>();
 const StocksStack = createNativeStackNavigator<StocksStackParamList>();
 const ItemsStack = createNativeStackNavigator<ItemsStackParamList>();
 const CandidatesStack = createNativeStackNavigator<CandidatesStackParamList>();
+const StorageStack = createNativeStackNavigator<StorageStackParamList>();
 const SettingsStack = createNativeStackNavigator<SettingsStackParamList>();
 
 // 画面全体を「紙」の上に置く
@@ -110,6 +114,15 @@ function ItemsNavigator() {
   );
 }
 
+function StorageNavigator() {
+  return (
+    <StorageStack.Navigator screenOptions={HEADER_OPTIONS}>
+      <StorageStack.Screen name="StorageHome" component={StorageHomeScreen} options={{ title: '置き場所さがし' }} />
+      <StorageStack.Screen name="StorageLocation" component={StorageLocationScreen} options={{ title: '置き場所' }} />
+    </StorageStack.Navigator>
+  );
+}
+
 function CandidatesNavigator() {
   return (
     <CandidatesStack.Navigator screenOptions={HEADER_OPTIONS}>
@@ -147,6 +160,7 @@ const TAB_META: Record<string, { icon: keyof typeof Ionicons.glyphMap; label: st
   HomeTab: { icon: 'home', label: 'ホーム' },
   StocksTab: { icon: 'hourglass', label: '在庫' },
   ItemsTab: { icon: 'basket', label: '消耗品' },
+  StorageTab: { icon: 'file-tray-stacked', label: '置き場所' },
   CandidatesTab: { icon: 'mail-open', label: '取込便' },
   SettingsTab: { icon: 'settings-sharp', label: 'せってい' },
 };
@@ -202,6 +216,7 @@ function MainNavigator() {
       <Tab.Screen name="HomeTab" component={HomeNavigator} />
       <Tab.Screen name="StocksTab" component={StocksNavigator} />
       <Tab.Screen name="ItemsTab" component={ItemsNavigator} />
+      <Tab.Screen name="StorageTab" component={StorageNavigator} />
       <Tab.Screen name="CandidatesTab" component={CandidatesNavigator} />
       <Tab.Screen name="SettingsTab" component={SettingsNavigator} />
     </Tab.Navigator>
