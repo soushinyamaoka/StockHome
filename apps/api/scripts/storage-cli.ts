@@ -19,7 +19,7 @@
  *                    "tags": ["掃除全般"] } ] }
  */
 import { config } from 'dotenv';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 const API_ROOT = resolve(__dirname, '..');
@@ -58,8 +58,12 @@ async function login(): Promise<string> {
     console.error(`ログインに失敗しました (${res.status}): ${body.message ?? ''}`);
     process.exit(1);
   }
-  mkdirSync(dirname(TOKEN_FILE), { recursive: true });
-  writeFileSync(TOKEN_FILE, JSON.stringify({ baseUrl, token: body.token, savedAt: new Date().toISOString() }));
+  // トークンは本人以外が読めないようにする（Windows では mode は概ね無視されるが、他OSでの実行に備える）
+  mkdirSync(dirname(TOKEN_FILE), { recursive: true, mode: 0o700 });
+  writeFileSync(TOKEN_FILE, JSON.stringify({ baseUrl, token: body.token, savedAt: new Date().toISOString() }), {
+    mode: 0o600,
+  });
+  chmodSync(TOKEN_FILE, 0o600);
   return body.token;
 }
 
