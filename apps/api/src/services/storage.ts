@@ -35,6 +35,35 @@ export class StorageError extends Error {
 export const PATH_SEPARATOR = ' › ';
 
 // ============================================================
+// 世帯単位の直列化
+// ============================================================
+
+/** pg_advisory_xact_lock の第1キー（保管場所機能の名前空間。"STOR"） */
+const STORAGE_LOCK_NAMESPACE = 0x53544f52;
+
+/**
+ * 保管場所の更新系トランザクション。開始直後に世帯単位のアドバイザリーロックを取り、
+ * 同じ世帯の更新を1つずつ実行する。
+ * 場所の木は「世帯分を読み込んでメモリ上で循環・段数を検査してから書く」ため、ロックが無いと
+ * 同時に A→B の下、B→A の下へ移動した2つの更新がどちらも検査を通り、循環ができてしまう。
+ * ロック取得後に木を読み込むので、各トランザクションは先行の確定済み変更を見て検査できる
+ * （READ COMMITTED では文ごとに最新の確定済みデータを読む）。
+ * ロックはトランザクション終了（commit/rollback）で自動的に外れる。行ロックではないため、
+ * 購入登録など他機能の households への外部キー参照（KEY SHARE）を妨げない。
+ */
+async function storageTransaction<T>(
+  householdId: string,
+  run: (tx: Db) => Promise<T>,
+  options?: { timeout?: number; maxWait?: number }
+): Promise<T> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${STORAGE_LOCK_NAMESPACE}::int, hashtext(${householdId}))`;
+    return run(tx);
+    // ロック待ちも含めた時間。他の更新（最長は一括登録）の完了を待てるよう既定の5秒より長くする
+  }, { timeout: 20_000, maxWait: 20_000, ...options });
+}
+
+// ============================================================
 // 場所の木
 // ============================================================
 
@@ -169,7 +198,7 @@ export async function listLocations(householdId: string) {
 }
 
 export async function createLocation(householdId: string, input: StorageLocationCreateInput) {
-  return prisma.$transaction(async (tx) => {
+  return storageTransaction(householdId, async (tx) => {
     const tree = await loadLocationTree(tx, householdId);
     const parentId = input.parentId ?? null;
     if (parentId) requireLocation(tree, parentId);
@@ -190,7 +219,7 @@ export async function createLocation(householdId: string, input: StorageLocation
 }
 
 export async function updateLocation(householdId: string, id: string, input: StorageLocationUpdateInput) {
-  return prisma.$transaction(async (tx) => {
+  return storageTransaction(householdId, async (tx) => {
     const tree = await loadLocationTree(tx, householdId);
     const current = requireLocation(tree, id);
     const nextParentId = input.parentId !== undefined ? input.parentId : current.parentId;
@@ -222,7 +251,7 @@ export async function updateLocation(householdId: string, id: string, input: Sto
 }
 
 export async function deleteLocation(householdId: string, id: string) {
-  await prisma.$transaction(async (tx) => {
+  await storageTransaction(householdId, async (tx) => {
     const tree = await loadLocationTree(tx, householdId);
     requireLocation(tree, id);
     const placements = await tx.storagePlacement.count({ where: { locationId: id } });
@@ -239,7 +268,7 @@ export async function deleteLocation(householdId: string, id: string) {
  */
 export async function mergeLocation(householdId: string, sourceId: string, targetId: string) {
   if (sourceId === targetId) throw new StorageError(400, '同じ場所どうしは統合できません');
-  await prisma.$transaction(async (tx) => {
+  await storageTransaction(householdId, async (tx) => {
     const tree = await loadLocationTree(tx, householdId);
     requireLocation(tree, sourceId);
     requireLocation(tree, targetId);
@@ -330,7 +359,7 @@ function targetWhere(target: Target) {
 // ============================================================
 
 export async function createPlacement(householdId: string, input: StoragePlacementCreateInput) {
-  return prisma.$transaction(async (tx) => {
+  return storageTransaction(householdId, async (tx) => {
     await assertTargetInHousehold(tx, householdId, input);
     const tree = await loadLocationTree(tx, householdId);
     requireLocation(tree, input.locationId);
@@ -352,7 +381,7 @@ export async function createPlacement(householdId: string, input: StoragePlaceme
 }
 
 export async function updatePlacement(householdId: string, id: string, input: StoragePlacementUpdateInput) {
-  return prisma.$transaction(async (tx) => {
+  return storageTransaction(householdId, async (tx) => {
     const placement = await tx.storagePlacement.findFirst({ where: { id, householdId } });
     if (!placement) throw new StorageError(404, '置き場所が見つかりません');
     const tree = await loadLocationTree(tx, householdId);
@@ -432,7 +461,7 @@ export async function renameTag(householdId: string, id: string, name: string) {
 /** source のタグ付けを target へ移して source を削除する（表記ゆれの統合） */
 export async function mergeTag(householdId: string, sourceId: string, targetId: string) {
   if (sourceId === targetId) throw new StorageError(400, '同じタグどうしは統合できません');
-  await prisma.$transaction(async (tx) => {
+  await storageTransaction(householdId, async (tx) => {
     const [source, target] = await Promise.all([
       tx.usageTag.findFirst({ where: { id: sourceId, householdId } }),
       tx.usageTag.findFirst({ where: { id: targetId, householdId } }),
@@ -485,7 +514,7 @@ async function addTags(tx: Db, householdId: string, target: Target, names: strin
 
 /** 対象の用途タグを、指定した名前の集合に置き換える */
 export async function assignTags(householdId: string, target: Target, names: string[]) {
-  return prisma.$transaction(async (tx) => {
+  return storageTransaction(householdId, async (tx) => {
     await assertTargetInHousehold(tx, householdId, target);
     await addTags(tx, householdId, target, names);
     const links = await tx.usageTagLink.findMany({ where: targetWhere(target), include: { tag: true } });
@@ -504,7 +533,7 @@ export async function assignTags(householdId: string, target: Target, names: str
 // ============================================================
 
 export async function createThing(householdId: string, input: StorageThingCreateInput) {
-  const thingId = await prisma.$transaction(async (tx) => {
+  const thingId = await storageTransaction(householdId, async (tx) => {
     const tree = await loadLocationTree(tx, householdId);
     for (const p of input.placements) requireLocation(tree, p.locationId);
     const thing = await tx.storageThing.create({
@@ -713,7 +742,8 @@ export async function runStorageImport(
   dryRun: boolean
 ): Promise<ImportResult> {
   try {
-    return await prisma.$transaction(
+    return await storageTransaction(
+      householdId,
       async (tx) => {
         const tree = await loadLocationTree(tx, householdId);
         const plans: ImportEntryPlan[] = [];

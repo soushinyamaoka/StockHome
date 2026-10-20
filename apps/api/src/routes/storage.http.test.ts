@@ -420,3 +420,90 @@ test('database rejects a placement pointing at both an item and a thing', async 
     await scope.cleanup();
   }
 });
+
+// --- 同時更新（場所の木を世帯単位で直列化していることの回帰確認） ---
+
+/** 世帯の場所の木に循環が無いこと（どの場所から親を辿っても最上位に着く）を DB から確認する */
+async function assertNoCycle(householdId: string) {
+  const rows = await prisma.storageLocation.findMany({ where: { householdId } });
+  const parentOf = new Map(rows.map((r) => [r.id, r.parentId]));
+  for (const row of rows) {
+    const seen = new Set<string>();
+    let current: string | null = row.id;
+    while (current) {
+      assert.ok(!seen.has(current), `場所の木に循環がある: ${row.name}`);
+      seen.add(current);
+      current = parentOf.get(current) ?? null;
+    }
+  }
+}
+
+const ROUNDS = 8;
+
+test('concurrency: crossing moves (A under B and B under A at once) never create a cycle', async () => {
+  const scope = await createTestScope();
+  try {
+    for (let round = 0; round < ROUNDS; round++) {
+      const a = await createLocation(scope, `A${round}`);
+      const b = await createLocation(scope, `B${round}`);
+      const [moveA, moveB] = await Promise.all([
+        call(scope, 'PATCH', `/locations/${a}`, { parentId: b }),
+        call(scope, 'PATCH', `/locations/${b}`, { parentId: a }),
+      ]);
+      // 後から実行された方は、先の移動を見たうえで循環として拒否される
+      assert.deepEqual([moveA.statusCode, moveB.statusCode].sort(), [200, 400], `round ${round}`);
+      await assertNoCycle(scope.householdAId);
+    }
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('concurrency: merging X into Y while moving Y under X never creates a cycle', async () => {
+  const scope = await createTestScope();
+  try {
+    for (let round = 0; round < ROUNDS; round++) {
+      const x = await createLocation(scope, `X${round}`);
+      const y = await createLocation(scope, `Y${round}`);
+      const [merge, move] = await Promise.all([
+        call(scope, 'POST', `/locations/${x}/merge`, { targetId: y }),
+        call(scope, 'PATCH', `/locations/${y}`, { parentId: x }),
+      ]);
+      // 統合が先なら X は消えて移動は404、移動が先なら Y は X の配下になり統合は400
+      const statuses = [merge.statusCode, move.statusCode];
+      assert.ok(
+        (statuses[0] === 200 && statuses[1] === 404) || (statuses[0] === 400 && statuses[1] === 200),
+        `round ${round}: merge=${statuses[0]} move=${statuses[1]}`
+      );
+      await assertNoCycle(scope.householdAId);
+    }
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test('concurrency: parallel imports creating the same new path share one location chain', async () => {
+  const scope = await createTestScope();
+  try {
+    for (let round = 0; round < ROUNDS; round++) {
+      const path = [`${round}階`, '納戸', '上段'];
+      const [first, second] = await Promise.all([
+        call(scope, 'POST', '/import', { dryRun: false, entries: [{ kind: 'thing', name: `物a${round}`, locations: [{ path }] }] }),
+        call(scope, 'POST', '/import', { dryRun: false, entries: [{ kind: 'thing', name: `物b${round}`, locations: [{ path }] }] }),
+      ]);
+      assert.equal(first.statusCode, 200, first.body);
+      assert.equal(second.statusCode, 200, second.body);
+      // 2つ目は1つ目が作った場所を再利用し、同じ場所が2重にできない
+      assert.equal(first.json().summary.locationsCreated + second.json().summary.locationsCreated, 3);
+      assert.equal(await prisma.storageLocation.count({ where: { householdId: scope.householdAId, name: path[0] } }), 1);
+      const leaf = await prisma.storageLocation.findFirstOrThrow({
+        where: { householdId: scope.householdAId, name: '上段', parent: { name: '納戸', parent: { name: path[0] } } },
+        include: { placements: true },
+      });
+      assert.equal(leaf.placements.length, 2);
+    }
+    await assertNoCycle(scope.householdAId);
+  } finally {
+    await scope.cleanup();
+  }
+});
