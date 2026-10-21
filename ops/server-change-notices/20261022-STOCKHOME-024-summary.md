@@ -181,6 +181,6 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 ## Approval
 
 - app owner: 2026-10-22、このチャットで内容確認のうえVPS管理へ引き継ぐことを承認
-- VPS management review: 未
+- VPS management review: 2026-10-22、L2として技術レビュー受理（sourceと実remote mainの一致、Dockerfileの変更範囲、rollback方針を確認済み。review対象: source `f614845`・通知書 `955ebc7`）
 - production approval: 未（別承認）
 - related task_id: なし（依存・runtime更新のためClaudeが直接実施）
