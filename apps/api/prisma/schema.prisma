@@ -90,6 +90,8 @@ model Item {
   notifyTargetUserId   String?   @map("notify_target_user_id")
   notificationEnabled  Boolean   @default(true) @map("notification_enabled")
   isInventoryUnknown   Boolean   @default(false) @map("is_inventory_unknown")
+  // 消費の休止（残数を減らさない）。休止した日時。null=通常どおり消費する
+  consumptionPausedAt  DateTime? @map("consumption_paused_at")
   isActive             Boolean   @default(true) @map("is_active") // 論理削除
   deletedAt            DateTime? @map("deleted_at")
   deletedBy            String?   @map("deleted_by")
