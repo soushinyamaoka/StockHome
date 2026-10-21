@@ -201,6 +201,7 @@ secret値は記載していない。
 ## Approval
 
 - app owner: 2026-10-21、このチャットで内容確認のうえVPS管理へ引き継ぐことを承認
-- VPS management review: 第1回（2026-10-22）blocked（deployment_status表記、影響レベルL3、user_maintenance_impactの整合）→ 対応し再提出
+- VPS management review: 第1回（2026-10-22）blocked（deployment_status表記、影響レベルL3、user_maintenance_impactの整合）→ 対応し再提出。
+  第2回（2026-10-22）技術レビュー受理（前回指摘3点と実remote main `92e2a67` との一致を確認済み。review対象: source `e98200e`・通知書 `92e2a67`）
 - production approval: 未
 - related task_id: 20261021-001（ai-watch、Codex実装）
