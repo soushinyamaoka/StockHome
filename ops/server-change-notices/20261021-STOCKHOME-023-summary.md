@@ -20,7 +20,7 @@ release_commits: 16918f80393461eaeed6f66a6b7fd17c29e964f7..e98200ed33260d9a2888f
 
 impact_level: L2
 
-status: draft
+status: ready_for_review
 
 created_by: Claude
 
@@ -182,7 +182,7 @@ secret値は記載していない。
 
 ## Approval
 
-- app owner: 未（このチャットで内容確認のうえ引き継ぎ承認を得る）
+- app owner: 2026-10-21、このチャットで内容確認のうえVPS管理へ引き継ぐことを承認
 - VPS management review: 未
 - production approval: 未
 - related task_id: 20261021-001（ai-watch、Codex実装）
