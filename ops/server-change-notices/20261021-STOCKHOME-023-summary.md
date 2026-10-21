@@ -18,7 +18,7 @@ production_baseline_commit: 16918f80393461eaeed6f66a6b7fd17c29e964f7
 
 release_commits: 16918f80393461eaeed6f66a6b7fd17c29e964f7..e98200ed33260d9a2888f341bf1c70746c7bd59b
 
-impact_level: L2
+impact_level: L3
 
 status: ready_for_review
 
@@ -28,7 +28,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_applied
+deployment_status: not_started
 
 ## 変更概要
 
@@ -47,6 +47,11 @@ deployment_status: not_applied
 ## Codex実装メモ
 
 codex_implementation_note: 消費休止・再開のAPI/在庫計算とmobile表示を実装し、API/sharedビルドとmobile型検査は成功。
+
+## 変更理由
+
+app ownerの要望（2026-10-21）: 理由があって消耗品として使わなくなった品目を、在庫数はそのままリストに残したい。
+通知OFFだけでは予測上の残数が減り続けるため、在庫計算そのものを止める機能が必要。
 
 ## server_impact判定
 
@@ -84,8 +89,9 @@ server_impact: approval_required
 
 ## 利用者への影響
 
-- user_maintenance_impact: none
-- 対象利用者・機能: 単一世帯。反映直後は休止中の品目が無いため、見た目・計算・通知の変化はない。
+- user_maintenance_impact: possible
+- 対象利用者・機能: 単一世帯。反映時はAPIコンテナの短い再起動（brief-restart）があり、その間はアプリの読み込み・保存が一時的に失敗する可能性がある（再試行で回復）。
+  反映後は休止中の品目が無いため、見た目・計算・通知の変化はない。
   休止/再開の操作は後続のclient releaseで使えるようになる
 - 通知方法: 不要（client release時にアプリ内お知らせで案内予定）
 
@@ -148,6 +154,16 @@ secret値は記載していない。
 - 新しいalert条件: なし
 - secret/個人情報対策: 新しいログ出力なし
 
+## 第1回レビュー指摘と対応（2026-10-22）
+
+前回review対象: 通知書 `0969c24`（source `e98200e`）。今回の差分は本通知書の更新のみ（source・release範囲は不変）。
+
+| 指摘 | 対応 |
+|---|---|
+| `deployment_status: not_applied` は規約外 | `not_started` に修正 |
+| 影響レベルは L3 が妥当（migrationに加え、休止状態を保存し、在庫計算と通知対象を変えるため） | `impact_level: L3` に修正。L3として full template の節（「変更理由」を追加）とセルフチェックを再確認 |
+| `user_maintenance_impact: none` と brief-restart の説明が不整合 | `possible` に修正し、反映時の短い再起動の影響を「利用者への影響」に記載 |
+
 ## 提出前セルフチェック
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
@@ -158,6 +174,8 @@ secret値は記載していない。
 - [x] image rollbackとdata rollback、backup/restore条件を分けた
 - [x] job/log/retention（変更なし）、runtime/dependency（変更なし）、client配信（後続で別計画）の該当有無を確認した
 - [x] app owner、VPS review、production承認、client配信承認を分離した
+- [x] 永続データの値・計算を変えるためL3とした（第1回レビュー指摘により修正）
+- [x] `deployment_status: not_started` であることを確認した
 - [x] secret非混入とtracked working tree cleanを確認した（未追跡は `ops/production-db-operations/` のみで、git管理外・artifact対象外）
 
 未確認・該当なしの理由:
@@ -183,6 +201,6 @@ secret値は記載していない。
 ## Approval
 
 - app owner: 2026-10-21、このチャットで内容確認のうえVPS管理へ引き継ぐことを承認
-- VPS management review: 未
+- VPS management review: 第1回（2026-10-22）blocked（deployment_status表記、影響レベルL3、user_maintenance_impactの整合）→ 対応し再提出
 - production approval: 未
 - related task_id: 20261021-001（ai-watch、Codex実装）
