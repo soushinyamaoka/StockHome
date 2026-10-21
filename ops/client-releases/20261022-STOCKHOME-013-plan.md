@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: delivered（2026-10-22配信済み。利用者端末での確認待ち）
+status: delivered（2026-10-22配信済み。利用者端末で確認済み）
 
 created_by: Claude
 
@@ -59,5 +59,5 @@ related_notice_id: 20261021-STOCKHOME-023（休止・再開API。2026-10-22 prod
 - 配信前チェック: `eas env:list preview`で`EXPO_PUBLIC_API_BASE_URL`・`EXPO_PUBLIC_NOTICES_FEED_URL`・`GOOGLE_SERVICES_JSON`の存在を確認。
 - bundle確認: 各`eas update`のローカルbundle（iOS・Androidのhbc）に`stockhome.homehub-tools.dedyn.io`・`console.homehub-tools.dedyn.io`が各1件、
   `10.0.2.2:4002`が0件、今回の変更のコード文字列（`consumptionPausedAt`・`pause-circle-outline`・「消費を休止」）が含まれることを確認（公開済みbundle自体のダウンロード検査ではない）。配信直後に`GET /health` 200。
-- 利用者端末での表示確認: 未実施（上記「配信後の確認観点」4点）。
+- 利用者端末での表示確認: 2026-10-22、app ownerから「確認できました」との報告を受領（上記「配信後の確認観点」）。
 - production API、DB、GAS、VPS設定の変更はなし。
