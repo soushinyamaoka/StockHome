@@ -291,7 +291,7 @@ runtime:
   working_directory: /app/apps/api  # apps/api/Dockerfile runtimeステージの WORKDIR
   user: root                      # apps/api/Dockerfile に USER 指定がなく、ベースイメージ既定のまま（明示的な非rootユーザーへの切り替えなし）
   group: null
-  language_runtime: node:20-bookworm-slim  # apps/api/Dockerfile FROM
+  language_runtime: node:24.22.1-bookworm-slim  # apps/api/Dockerfile FROM（builder・runtime両ステージ。2026-10-22 Node.js 20 EOLにより更新）
   os_packages: [openssl]           # Prismaのクエリエンジンが必要とするため apt-get install
   restart_policy: unless-stopped   # docker-compose.prod.yml api/postgres 両サービス共通
 

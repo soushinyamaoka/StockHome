@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24.22.1'
           cache: 'npm'
       - run: npm ci
       - run: npm run build --workspace=@stockhome/shared
@@ -53,10 +53,9 @@ jobs:
           # Node.js interpreting the glob; node:test glob support arrived in Node.js v21.
           # Node 22.18 enabled --experimental-strip-types by default, which conflicts with
           # tsx's --import loader and can fail bridge.reparse.test.ts (nodejs/node#59364).
-          # Keep build-and-typecheck on Node 20 because it does not run npm test; use Node 24
-          # LTS here. The 20 -> 22 -> 24 progression preserves the glob fix and avoids that
-          # loader conflict; Claude verified all 121 API tests locally on Node 24.
-          node-version: '24'
+          # Node 24 LTS preserves the glob fix and avoids that loader conflict. Both jobs use
+          # the same version as the API image (apps/api/Dockerfile, node:24.22.1-bookworm-slim).
+          node-version: '24.22.1'
           cache: 'npm'
       - run: npm ci
       - run: npm run build --workspace=@stockhome/shared

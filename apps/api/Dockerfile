@@ -5,7 +5,7 @@
 ############
 # Builder  #
 ############
-FROM node:20-bookworm-slim AS builder
+FROM node:24.22.1-bookworm-slim AS builder
 WORKDIR /app
 
 # Prisma エンジンが OpenSSL を必要とする
@@ -29,7 +29,7 @@ RUN npm run build --workspace=@stockhome/api
 ############
 # Runtime  #
 ############
-FROM node:20-bookworm-slim AS runtime
+FROM node:24.22.1-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
