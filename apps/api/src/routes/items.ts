@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { parseBody } from '../utils/validate';
 import { serializeItem, serializeSnapshot, serializeRuntimeState } from '../utils/serialize';
-import { lockItemForAccumulation, refreshStockSnapshotForItem } from '../services/stockCalc';
+import { lockItemForAccumulation, pauseItemConsumption, refreshStockSnapshotForItem, resumeItemConsumption } from '../services/stockCalc';
 
 const itemRoutes: FastifyPluginAsync = async (app) => {
   // 一覧（既定は有効品目のみ。includeInactive=true で論理削除分も含む）
@@ -177,6 +177,26 @@ const itemRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(409).send({ message: 'この品目は削除されていません' });
     }
     return { item: serializeItem(outcome.item) };
+  });
+
+  const sendConsumptionResult = (outcome: Awaited<ReturnType<typeof pauseItemConsumption>>, reply: any) => {
+    if (outcome.kind === 'not_found') return reply.code(404).send({ message: '品目が見つかりません' });
+    if (outcome.kind === 'inactive') return reply.code(409).send({ message: '外した品目は休止・再開できません' });
+    return { item: serializeItem(outcome.item) };
+  };
+
+  app.post('/:id/pause', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const outcome = await prisma.$transaction((tx) => pauseItemConsumption(tx, id, req.auth.householdId));
+    return sendConsumptionResult(outcome, reply);
+  });
+
+  app.post('/:id/resume', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const outcome = await prisma.$transaction((tx) =>
+      resumeItemConsumption(tx, id, req.auth.householdId, req.auth.userId)
+    );
+    return sendConsumptionResult(outcome, reply);
   });
 };
 

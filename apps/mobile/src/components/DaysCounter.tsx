@@ -7,6 +7,7 @@ interface Props {
   snapshot: SnapshotDto | null;
   /** 在庫不明品目（カウンター無効表示） */
   unknown?: boolean;
+  paused?: boolean;
   /** 大きさ: hero=在庫カードの主役 / compact=一覧の脇役 */
   size?: 'hero' | 'compact';
 }
@@ -14,14 +15,14 @@ interface Props {
 // 残り日数の「日めくり」カウンター。この画面の主役。
 // 数字は Fraunces（表情のあるセリフ）で大きく、状態で色が変わる:
 //   朱=切迫 / からし=注意 / 墨=じゅうぶん
-export const DaysCounter: React.FC<Props> = ({ snapshot, unknown, size = 'hero' }) => {
+export const DaysCounter: React.FC<Props> = ({ snapshot, unknown, paused, size = 'hero' }) => {
   const hero = size === 'hero';
   const days = snapshot?.estimatedDaysLeft;
 
-  if (unknown || days == null) {
+  if (paused || unknown || days == null) {
     return (
       <View style={[styles.box, hero ? styles.boxHero : styles.boxCompact, styles.boxUnknown]}>
-        <Text style={[styles.unknownText, { fontSize: hero ? 14 : 11 }]}>在庫{'\n'}不明</Text>
+        <Text style={[styles.unknownText, { fontSize: hero ? 14 : 11 }]}>{paused ? '休止\n中' : '在庫\n不明'}</Text>
       </View>
     );
   }

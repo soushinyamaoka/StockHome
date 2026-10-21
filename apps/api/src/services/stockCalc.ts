@@ -72,6 +72,10 @@ export function calculateStock(
 ): StockCalcResult {
   const daysPerUnit = item.daysPerUnit > 0 ? item.daysPerUnit : 1;
   const threshold = item.lowStockThresholdQty;
+  const paused = item.consumptionPausedAt != null;
+  const calculationToday = paused
+    ? new Date(Math.min(today.getTime(), jstDateOnly(item.consumptionPausedAt!).getTime()))
+    : today;
 
   const result: StockCalcResult = {
     itemId: item.id,
@@ -115,7 +119,7 @@ export function calculateStock(
   let estimatedRemainingQty: number;
   if (useOverride && state && overrideDate) {
     // 補正値起点: 補正日時からの消費を引く
-    const daysSinceOverride = Math.max(0, diffDays(today, overrideDate));
+    const daysSinceOverride = Math.max(0, diffDays(calculationToday, overrideDate));
     estimatedRemainingQty = state.manualOverrideQty! - daysSinceOverride / daysPerUnit;
     if (latestPurchase) {
       result.latestPurchaseDate = latestPurchase.purchasedAt;
@@ -125,7 +129,7 @@ export function calculateStock(
     // 通常計算: 最新購入日からの消費を引く
     result.latestPurchaseDate = latestPurchase.purchasedAt;
     result.latestPurchaseQty = latestPurchase.qty;
-    const daysSincePurchase = Math.max(0, diffDays(today, latestPurchase.purchasedAt));
+    const daysSincePurchase = Math.max(0, diffDays(calculationToday, latestPurchase.purchasedAt));
     estimatedRemainingQty = latestPurchase.qty - daysSincePurchase / daysPerUnit;
   } else {
     return result;
@@ -154,6 +158,12 @@ export function calculateStock(
     alertNeeded = false;
   }
 
+  if (paused) {
+    daysAlertNeeded = false;
+    qtyAlertNeeded = false;
+    alertNeeded = false;
+  }
+
   // 最近購入後の通知抑止（inventory_effective_at から3日以内）
   if (alertNeeded && latestPurchase?.inventoryEffectiveAt) {
     const daysSinceEffective = diffDays(today, latestPurchase.inventoryEffectiveAt);
@@ -165,12 +175,56 @@ export function calculateStock(
   }
 
   result.estimatedRemainingQty = estimatedRemainingQty;
-  result.estimatedDaysLeft = estimatedDaysLeft;
-  result.predictedOutOfStockDate = predictedOutOfStockDate;
+  result.estimatedDaysLeft = paused ? null : estimatedDaysLeft;
+  result.predictedOutOfStockDate = paused ? null : predictedOutOfStockDate;
   result.daysAlertNeeded = daysAlertNeeded;
   result.qtyAlertNeeded = qtyAlertNeeded;
   result.alertNeeded = alertNeeded;
   return result;
+}
+
+export async function pauseItemConsumption(
+  tx: Prisma.TransactionClient,
+  itemId: string,
+  householdId: string
+): Promise<{ kind: 'not_found' } | { kind: 'inactive' } | { kind: 'ok'; item: Item }> {
+  await lockItemForAccumulation(tx, itemId);
+  const current = await tx.item.findFirst({ where: { id: itemId, householdId } });
+  if (!current) return { kind: 'not_found' };
+  if (!current.isActive) return { kind: 'inactive' };
+  const item = current.consumptionPausedAt
+    ? current
+    : await tx.item.update({ where: { id: itemId }, data: { consumptionPausedAt: new Date() } });
+  await refreshStockSnapshotForItem(itemId, tx);
+  return { kind: 'ok', item };
+}
+
+export async function resumeItemConsumption(
+  tx: Prisma.TransactionClient,
+  itemId: string,
+  householdId: string,
+  userId: string | null
+): Promise<{ kind: 'not_found' } | { kind: 'inactive' } | { kind: 'ok'; item: Item }> {
+  await lockItemForAccumulation(tx, itemId);
+  const current = await tx.item.findFirst({
+    where: { id: itemId, householdId },
+    include: { runtimeState: true },
+  });
+  if (!current) return { kind: 'not_found' };
+  if (!current.isActive) return { kind: 'inactive' };
+  if (!current.consumptionPausedAt) return { kind: 'ok', item: current };
+
+  const latestPurchase = await getLatestCountedPurchase(tx, itemId);
+  const calc = calculateStock(current, latestPurchase);
+  if (calc.estimatedRemainingQty != null) {
+    const reason = isAccumulatedOverrideReason(current.runtimeState?.manualOverrideReason)
+      ? 'purchase_accumulated_resume'
+      : 'consumption_resume';
+    await setManualOverrideQty(tx, itemId, householdId, calc.estimatedRemainingQty, userId, reason);
+  }
+  const item = await tx.item.update({ where: { id: itemId }, data: { consumptionPausedAt: null } });
+  await refreshStockSnapshotForItem(itemId, tx);
+  return { kind: 'ok', item };
 }
 
 // 計算結果を stock_snapshot に upsert する

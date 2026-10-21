@@ -31,6 +31,7 @@ export function serializeItem(item: Item) {
     notifyTargetUserId: item.notifyTargetUserId,
     notificationEnabled: item.notificationEnabled,
     isInventoryUnknown: item.isInventoryUnknown,
+    consumptionPausedAt: item.consumptionPausedAt?.toISOString() ?? null,
     isActive: item.isActive,
     createdAt: item.createdAt.toISOString(),
     updatedAt: item.updatedAt.toISOString(),

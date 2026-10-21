@@ -88,7 +88,7 @@ export default function StockListScreen() {
         ]}
       >
         <View style={styles.cardMain}>
-          <DaysCounter snapshot={snapshot} unknown={item.isInventoryUnknown} size="hero" />
+          <DaysCounter snapshot={snapshot} unknown={item.isInventoryUnknown} paused={item.consumptionPausedAt != null} size="hero" />
 
           <View style={styles.cardBody}>
             <View style={styles.nameRow}>
@@ -98,13 +98,14 @@ export default function StockListScreen() {
             </View>
             <Text style={styles.detail}>
               のこり {remainQtyLabel(snapshot, item.unit)}
-              ・切れる日 {shortDate(snapshot?.predictedOutOfStockDate ?? null)}
+              ・切れる日 {item.consumptionPausedAt ? '休止中' : shortDate(snapshot?.predictedOutOfStockDate ?? null)}
             </Text>
             <Text style={styles.detailSub}>
               最終購入 {shortDate(snapshot?.latestPurchaseDate ?? null)}
             </Text>
             <View style={styles.badgeRow}>
               {alert ? <StampBadge label="そろそろ" color={COLORS.accent} tilt /> : null}
+              {item.consumptionPausedAt ? <StampBadge label="休止中" color={COLORS.indigo} /> : null}
               {snoozed ? <StampBadge label="スヌーズ中" color={COLORS.indigo} /> : null}
               {needsPaceReview(item.daysPerUnit, entry.suggestedDaysPerUnit) ? (
                 <TouchableOpacity

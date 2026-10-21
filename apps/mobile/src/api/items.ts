@@ -42,6 +42,16 @@ export async function toggleItemNotification(id: string, enabled: boolean): Prom
   return res.data;
 }
 
+export async function pauseItemConsumption(id: string): Promise<{ item: ItemDto }> {
+  const res = await api.post(`/api/items/${id}/pause`, {});
+  return res.data;
+}
+
+export async function resumeItemConsumption(id: string): Promise<{ item: ItemDto }> {
+  const res = await api.post(`/api/items/${id}/resume`, {});
+  return res.data;
+}
+
 export async function deleteItem(id: string): Promise<void> {
   await api.delete(`/api/items/${id}`);
 }

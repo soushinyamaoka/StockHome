@@ -14,7 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigation } from '@react-navigation/native';
 
-import { deleteItem, fetchItems, restoreItem, toggleItemNotification } from '../../api/items';
+import { deleteItem, fetchItems, pauseItemConsumption, restoreItem, resumeItemConsumption, toggleItemNotification } from '../../api/items';
 import type { ItemWithStock } from '../../api/types';
 import { DaysCounter } from '../../components/DaysCounter';
 import { ErrorState } from '../../components/ErrorState';
@@ -72,6 +72,27 @@ export default function ItemListScreen() {
     onSuccess: invalidate,
   });
 
+  const consumptionMutation = useMutation({
+    mutationFn: ({ id, paused }: { id: string; paused: boolean }) =>
+      paused ? resumeItemConsumption(id) : pauseItemConsumption(id),
+    onSuccess: invalidate,
+    onError: (error: any) => Alert.alert('エラー', error?.response?.data?.message ?? '時間をおいてやり直してください'),
+  });
+
+  const confirmConsumption = (item: ItemWithStock) => {
+    const paused = item.consumptionPausedAt != null;
+    Alert.alert(
+      paused ? '消費を再開' : '消費を休止',
+      paused
+        ? `「${item.itemName}」の消費を再開しますか？\n今日から残数の減少を再開します`
+        : `「${item.itemName}」の消費を休止しますか？\n残数を今の数のまま止め、切れそうの表示・通知も出さなくなります`,
+      [
+        { text: 'やめる', style: 'cancel' },
+        { text: paused ? '再開する' : '休止する', onPress: () => consumptionMutation.mutate({ id: item.id, paused }) },
+      ]
+    );
+  };
+
   const confirmRestore = (item: ItemWithStock) => {
     Alert.alert('復元確認', `「${item.itemName}」を元に戻しますか？`, [
       { text: 'やめる', style: 'cancel' },
@@ -93,17 +114,18 @@ export default function ItemListScreen() {
   const renderItem = ({ item }: { item: ItemWithStock }) => (
     <View style={[styles.card, !item.isActive && { opacity: 0.55 }]}>
       <View style={styles.cardMain}>
-        <DaysCounter snapshot={item.snapshot} unknown={item.isInventoryUnknown} size="compact" />
+        <DaysCounter snapshot={item.snapshot} unknown={item.isInventoryUnknown} paused={item.consumptionPausedAt != null} size="compact" />
         <View style={styles.cardBody}>
           <Text style={styles.name} numberOfLines={2}>
             {item.itemName}
           </Text>
           <Text style={styles.sub}>
             {item.category || '未分類'}・のこり {remainQtyLabel(item.snapshot, item.unit)}
-            ・切れる日 {shortDate(item.snapshot?.predictedOutOfStockDate ?? null)}
+            ・切れる日 {item.consumptionPausedAt ? '休止中' : shortDate(item.snapshot?.predictedOutOfStockDate ?? null)}
           </Text>
           <View style={styles.badgeRow}>
             {!item.isActive ? <StampBadge label="削除済み" color={COLORS.accentDeep} filled /> : null}
+            {item.consumptionPausedAt ? <StampBadge label="休止中" color={COLORS.indigo} /> : null}
             {item.isInventoryUnknown ? <StampBadge label="在庫不明" color={COLORS.inkFaint} /> : null}
           </View>
         </View>
@@ -129,6 +151,12 @@ export default function ItemListScreen() {
       ) : null}
 
       <View style={styles.actionRow}>
+        {item.isActive ? (
+          <TouchableOpacity style={styles.tool} onPress={() => confirmConsumption(item)}>
+            <Ionicons name={item.consumptionPausedAt ? 'play-circle-outline' : 'pause-circle-outline'} size={16} color={COLORS.indigo} />
+            <Text style={[styles.toolText, { color: COLORS.indigo }]}>{item.consumptionPausedAt ? '再開' : '休止'}</Text>
+          </TouchableOpacity>
+        ) : null}
         <View style={styles.notifWrap}>
           <Ionicons
             name={item.notificationEnabled ? 'notifications' : 'notifications-off-outline'}
@@ -281,6 +309,7 @@ const styles = StyleSheet.create({
   altText: { fontFamily: FONTS.body, fontSize: 12, color: COLORS.inkSub, marginTop: 2 },
   actionRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     marginTop: SPACING.md,
     paddingTop: SPACING.sm,
@@ -288,6 +317,7 @@ const styles = StyleSheet.create({
     borderTopColor: COLORS.border,
     borderStyle: 'dashed',
     gap: SPACING.lg,
+    rowGap: SPACING.sm,
   },
   notifWrap: { flexDirection: 'row', alignItems: 'center' },
   switch: { transform: [{ scale: 0.8 }], marginLeft: -4 },

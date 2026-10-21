@@ -18,6 +18,7 @@ export interface ItemDto {
   notifyTargetUserId: string | null;
   notificationEnabled: boolean;
   isInventoryUnknown: boolean;
+  consumptionPausedAt: string | null;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
