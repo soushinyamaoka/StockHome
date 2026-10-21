@@ -34,24 +34,28 @@ deployment_status: not_started
 
 API の本番依存パッケージの脆弱性対応。`package-lock.json` のみを更新する（`package.json` は不変、既存のsemver範囲内）。
 
-| パッケージ | 変更 | 依存元 | 解消するadvisory |
+| パッケージ | 変更 | 依存元 | 解消するadvisory（件数と深刻度の内訳） |
 |---|---|---|---|
-| `fast-jwt` | 6.2.4 → 6.3.5 | `@fastify/jwt@10.1.0`（`^6.2.0`） | critical 6件（GHSA-x937-hj6v-793p、GHSA-8wpc-h4q6-8fxv、GHSA-ww5h-9m49-7xx4、GHSA-687g-22h4-j4w4、GHSA-5hjw-83fp-phq9、GHSA-g3jj-5cmm-3hxx） |
-| `fast-uri` | 3.1.6 → 3.1.9 | `fastify`内の`@fastify/ajv-compiler`・`ajv`・`fast-json-stringify@6` | high 3件（GHSA-qw65-cvwx-89v3、GHSA-58mr-gqgx-xq4g、GHSA-hrr3-gc8f-f4qj） |
+| `fast-jwt` | 6.2.4 → 6.3.5 | `@fastify/jwt@10.1.0`（`^6.2.0`） | 6件: critical 1（GHSA-ww5h-9m49-7xx4）、high 3（GHSA-8wpc-h4q6-8fxv、GHSA-5hjw-83fp-phq9、GHSA-g3jj-5cmm-3hxx）、moderate 2（GHSA-x937-hj6v-793p、GHSA-687g-22h4-j4w4） |
+| `fast-uri` | 3.1.6 → 3.1.9 | `fastify`内の`@fastify/ajv-compiler`・`ajv`・`fast-json-stringify@6` | 3件: high 2（GHSA-qw65-cvwx-89v3、GHSA-58mr-gqgx-xq4g）、moderate 1（GHSA-hrr3-gc8f-f4qj） |
 | `fast-uri`（fastify直下の別copy） | 4.2.1 → 4.2.3 | `fast-json-stringify@7` | （advisory対象外。`npm update fast-uri` で同時にpatch更新） |
 
 アプリコード・schema・migration・env・Dockerfile・compose の変更なし。
 
+**advisory単位とnpm audit集計の区別**: 上表の件数・深刻度は advisory 単位で、GitHub Advisory Database（`gh api advisories/<GHSA ID>`、2026-10-22確認）の各advisoryの severity による
+（GitHub上の `medium` を moderate と表記）。一方、下記の `npm audit` の「critical 1・high 1・moderate 2」は**パッケージ単位の集計**で、
+1パッケージを、そのパッケージに該当するadvisoryの最も高い深刻度で1件と数えたもの（`fast-jwt`→critical 1、`fast-uri`→high 1、`uuid`・`node-cron`→moderate 2）。
+
 ## 変更理由
 
 notice 024 の production build 時に、VPS管理側から既存依存パッケージの脆弱性警告の確認依頼があった（2026-10-22）。
-アプリ側で `npm audit --omit=dev`（api・shared workspace）を実行したところ、本番依存に critical 1件（`fast-jwt`）、high 1件（`fast-uri`）、moderate 2件（`uuid`／`node-cron`経由）があった。
+アプリ側で `npm audit --omit=dev`（api・shared workspace）を実行したところ、パッケージ単位の集計で本番依存に critical 1件（`fast-jwt`）、high 1件（`fast-uri`）、moderate 2件（`uuid`・`node-cron`）があった（advisory単位の内訳は「変更概要」の表）。
 
 ### 本アプリへの実影響（更新前の評価）
 
 - `fast-jwt`: 6件とも、空のkey・公開鍵/JWKを使う方式（RSA・JWK）・検証cacheの有効化・`clockTolerance: Infinity`・claim validator の利用等が成立条件。
   本アプリは `@fastify/jwt` を十分な長さのHS256共有秘密（`JWT_SECRET`、production起動時に未設定を拒否）だけで使い、cache・clockTolerance・独自claim validatorを設定していないため、
-  **実際に悪用できる条件は確認されなかった**。critical のまま残す理由が無いため更新する
+  **実際に悪用できる条件は確認されなかった**。critical 1件を含むadvisoryを残す理由が無いため更新する
 - `fast-uri`: 外部入力のURIを組み立て直す処理をアプリでは使っていない。Fastify内部のschema処理用。影響は小さいが同時に更新
 - `uuid`（moderate、`node-cron@3.0.3` 経由）: 問題はbuf引数を渡すv3/v5/v6の使い方のみで、`node-cron` はその使い方をしていない。
   解消には `node-cron` v4（破壊的変更）への更新が必要なため、**本noticeでは対象外**とし残置する
@@ -72,7 +76,7 @@ dependency/lockfile の変更のため full template を使用した。
 |---|---|---|
 | `fast-jwt` | 6.2.4 | 6.3.5 |
 | `fast-uri` | 3.1.6 ／ 4.2.1 | 3.1.9 ／ 4.2.3 |
-| `npm audit --omit=dev`（api・shared） | critical 1・high 1・moderate 2 | moderate 2（`uuid`／`node-cron`、上記理由で残置） |
+| `npm audit --omit=dev`（api・shared、パッケージ単位の集計） | critical 1・high 1・moderate 2 | moderate 2（`uuid`／`node-cron`、上記理由で残置） |
 | base image・Node.js | `node:24.22.1-bookworm-slim` | 変更なし |
 | `package.json` | — | 変更なし |
 
@@ -147,6 +151,15 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 - log量/形式/保存先変更: なし
 - 新しいalert条件: なし
 
+## 第1回レビュー指摘と対応（2026-10-22）
+
+前回review対象: 通知書 `0eff8f8`（source `e6984b0`）。今回の差分は本通知書の記載修正のみ（source・release範囲・lockfile・テスト結果は不変）。
+
+| 指摘 | 対応 |
+|---|---|
+| `fast-jwt` の6件をすべて critical、`fast-uri` の3件をすべて high と記載していたが、advisoryごとの深刻度が異なる | GitHub Advisory Database で9件の severity を確認し、「変更概要」の表を advisory単位の内訳（`fast-jwt`: critical 1・high 3・moderate 2、`fast-uri`: high 2・moderate 1）に訂正 |
+| advisory件数と `npm audit` のパッケージ単位の集計（critical 1・high 1・moderate 2）を区別する | 「変更概要」に両者の数え方の違いを追記し、「変更理由」「現在と変更後」の `npm audit` の値に「パッケージ単位の集計」と明記 |
+
 ## 提出前セルフチェック
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
@@ -184,6 +197,6 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 ## Approval
 
 - app owner: 2026-10-22、このチャットで内容確認のうえVPS管理へ引き継ぐことを承認
-- VPS management review: 未
+- VPS management review: 第1回（2026-10-22）blocked（advisoryの深刻度内訳の誤記、npm audit集計との区別）→ 記載を訂正し、`0eff8f8` からの増分再レビューを依頼
 - production approval: 未（別承認）
 - related task_id: なし（依存更新のためClaudeが直接実施）
