@@ -20,7 +20,7 @@ release_commits: e98200ed33260d9a2888f341bf1c70746c7bd59b..f6148459f4caa7abc92da
 
 impact_level: L2
 
-status: draft
+status: ready_for_review
 
 created_by: Claude
 
@@ -180,7 +180,7 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 
 ## Approval
 
-- app owner: 未
+- app owner: 2026-10-22、このチャットで内容確認のうえVPS管理へ引き継ぐことを承認
 - VPS management review: 未
 - production approval: 未（別承認）
 - related task_id: なし（依存・runtime更新のためClaudeが直接実施）
