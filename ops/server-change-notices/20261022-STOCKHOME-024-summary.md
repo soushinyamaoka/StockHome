@@ -28,7 +28,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_started
+deployment_status: verified
 
 ## 変更概要
 
@@ -178,9 +178,23 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20261022-STOCKHOME-024-summary.md`
 
+## 本番反映結果（2026-10-22）
+
+- VPS管理側: 指定commit `f614845` で本番反映。Node.js v24.22.1で起動、health・認証境界・migration状態を確認済み。
+  build時に既存依存パッケージの脆弱性警告あり（本noticeの変更とは別に、アプリ側で確認する）
+- アプリ側の read-only 確認（同日）:
+  - 稼働中image `stockhome-api:git-f6148459f4caa7abc92daa7251c8396bf34c155e`（StartedAt 2026-10-21T23:09:51Z、running、RestartCount 0）
+  - コンテナ内 `node -v` = v24.22.1
+  - 起動ログ: `migration_end status=success`（15 migrations）→ `startup`。直近2時間に error/fatal ログなし
+  - `_prisma_migrations` は15行で最新は `20261021120000_add_item_consumption_paused_at`（新しいmigrationなし）
+  - `GET /health` 200、`GET /api/items`・`POST /api/items/:id/pause`（認証なし）401
+  - 認証付き `GET /api/items`（app ownerのCLIトークン、読み取りのみ）200、有効品目25件
+  - production_change: none（アプリ側は参照のみ）
+- 以上により `deployment_status: verified` へ更新
+
 ## Approval
 
 - app owner: 2026-10-22、このチャットで内容確認のうえVPS管理へ引き継ぐことを承認
 - VPS management review: 2026-10-22、L2として技術レビュー受理（sourceと実remote mainの一致、Dockerfileの変更範囲、rollback方針を確認済み。review対象: source `f614845`・通知書 `955ebc7`）
-- production approval: 未（別承認）
+- production approval: 2026-10-22、app ownerの承認とVPS管理側の承認・実行で本番反映（指定commit `f614845`）
 - related task_id: なし（依存・runtime更新のためClaudeが直接実施）
