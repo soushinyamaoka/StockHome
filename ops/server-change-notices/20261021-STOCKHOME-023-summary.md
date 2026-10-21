@@ -28,7 +28,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_started
+deployment_status: verified
 
 ## 変更概要
 
@@ -198,10 +198,22 @@ secret値は記載していない。
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20261021-STOCKHOME-023-summary.md`
 
+## 本番反映結果（2026-10-22）
+
+- VPS管理側: 指定commit `e98200e` で本番反映。deploy成功、migration適用、health・認証境界（休止・再開APIの未認証401）確認済み、DB volumeの変更なし
+- アプリ側の read-only 確認（同日）:
+  - 稼働中image `stockhome-api:git-e98200ed33260d9a2888f341bf1c70746c7bd59b`（StartedAt 2026-10-21T21:51:09Z、running）
+  - `_prisma_migrations` に `20261021120000_add_item_consumption_paused_at` が適用済み（finished・rollbackなし）
+  - `items.consumption_paused_at` は `timestamp without time zone`・nullable。休止中の品目は0件（items 32行）
+  - `GET /health` 200、`POST /api/items/:id/pause`・`/resume`（認証なし）401
+  - 認証付き `GET /api/items`（app ownerのCLIトークン、読み取りのみ）200。有効品目25件すべてに `consumptionPausedAt` 項目があり、値はすべてnull
+  - production_change: none（アプリ側は参照のみ）
+- 以上により `deployment_status: verified` へ更新
+
 ## Approval
 
 - app owner: 2026-10-21、このチャットで内容確認のうえVPS管理へ引き継ぐことを承認
 - VPS management review: 第1回（2026-10-22）blocked（deployment_status表記、影響レベルL3、user_maintenance_impactの整合）→ 対応し再提出。
   第2回（2026-10-22）技術レビュー受理（前回指摘3点と実remote main `92e2a67` との一致を確認済み。review対象: source `e98200e`・通知書 `92e2a67`）
-- production approval: 未
+- production approval: 2026-10-22、app ownerの承認とVPS管理側の承認・実行で本番反映（指定commit `e98200e`）
 - related task_id: 20261021-001（ai-watch、Codex実装）
