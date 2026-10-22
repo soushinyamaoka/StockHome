@@ -28,7 +28,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_started
+deployment_status: verified
 
 ## 変更概要
 
@@ -194,10 +194,25 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 - VPS管理チャットへ渡すローカル絶対path:
   `C:\work\PRG\HomeTools\StockHome\StockHome\ops\server-change-notices\20261022-STOCKHOME-025-summary.md`
 
+## 本番反映結果（2026-10-22）
+
+- VPS管理側: 指定commit `e6984b0` で本番反映。deploy runner は exit code 0・`DEPLOY_RESULT=success`、health matrix 4点成功、
+  `/health` 内部・公開とも200、未認証API 401、migration 15件適用済み、DB image・volume維持、rollback用に baseline `f614845` のimageを保全、日次backupのmanifest検証成功。
+  build時の監査は runtime に moderate 2件、builder に moderate 2件・high 1件（いずれも本noticeに記載した残存依存の範囲）
+- アプリ側の read-only 確認（同日）:
+  - 稼働中image `stockhome-api:git-e6984b0b5fb3a15d4bb75f8c2dc61382ed0e0687`（`sha256:3ef8be8f476f5585e309ca1c33ba9591cc4f0349f0c8226fa12c188c01a08f42`、StartedAt 2026-10-22T00:01:55Z、running、RestartCount 0）
+  - コンテナ内: Node v24.22.1、`fast-jwt` 6.3.5、`fast-uri` 3.1.9、`fastify/node_modules/fast-uri` 4.2.3
+  - 起動ログ: `migration_end status=success`（15 migrations）→ `startup`。直近1時間に error/fatal ログなし
+  - `_prisma_migrations` 15行すべて finished・rollbackなし
+  - `GET /health` 200、`GET /api/items`（認証なし）401、不正なトークンで401
+  - **既存JWTでの認証付き読み取り**: 反映前（2026-10-20）に発行済みの app owner のCLIトークンで `GET /api/items` 200。`fast-jwt` 更新後も既存トークンが有効で、再ログイン不要であることを確認
+  - production_change: none（アプリ側は参照のみ）
+- 以上により `deployment_status: verified` へ更新
+
 ## Approval
 
 - app owner: 2026-10-22、このチャットで内容確認のうえVPS管理へ引き継ぐことを承認
 - VPS management review: 第1回（2026-10-22）blocked（advisoryの深刻度内訳の誤記、npm audit集計との区別）→ 記載を訂正し、`0eff8f8` からの増分再レビューを依頼。
   第2回（2026-10-22）増分再レビューで技術レビュー受理（advisory単位の深刻度とnpm auditのパッケージ単位集計の区別、GHSA公開情報との整合、preflight `ready_with_manual_checks`・blocker 0、local・cached origin・実remote mainの一致を確認済み。review対象: source `e6984b0`・通知書 `9aeba11`）
-- production approval: 未（別承認）
+- production approval: 2026-10-22、app ownerの承認とVPS管理側の承認・実行で本番反映（指定commit `e6984b0`）
 - related task_id: なし（依存更新のためClaudeが直接実施）
