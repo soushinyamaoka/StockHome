@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: 段階1 delivered（2026-10-23、iPhone実機確認済み）／段階2 実施中
+status: 段階1 delivered（2026-10-23、iPhone実機確認済み）／段階2 delivered（2026-10-23、Android実機確認待ち）
 
 created_by: Claude
 
@@ -79,4 +79,19 @@ iPhoneで開けなくなった（2026-10-23、app ownerから報告）。SDK 58�
 - bundle確認: ローカルbundle（iOS hbc）に`stockhome.homehub-tools.dedyn.io`・`console.homehub-tools.dedyn.io`が各1件、
   `10.0.2.2:4002`が0件（公開済みbundle自体のダウンロード検査ではない）。配信直後に`GET /health` 200
 - 利用者端末での表示確認: 2026-10-23、app ownerから「iPhone問題なさそう」との報告を受領
+- production API、DB、GAS、VPS設定の変更はなし
+
+### 段階2（2026-10-23）
+
+明示承認後に以下を実施した。
+
+- APK build: `eas build --profile android-internal --platform android`
+  - build ID `db7f1d7b-36b3-4d64-9e8b-7eefa99db71e`、SDK 58.0.0、runtime `exposdk:58.0.0`、channel `android-internal`、
+    version code 1、fingerprint `ebae92157456d2b1d5fbb27ea9e1cc066e960fcc`、commit `add7e52`（mobileソースは`923b236`と同一）
+  - インストールURL: `https://expo.dev/accounts/soushin.yamaoka/projects/stockhome/builds/db7f1d7b-36b3-4d64-9e8b-7eefa99db71e`
+  - 旧APK（SDK 57、build `8a6417e7-…`）からの上書きインストールを想定（同じEAS管理の署名鍵）
+- OTA: `eas update --branch android-internal --platform android`（`preview`環境）
+  - `android-internal` group: `56355df5-27f9-407a-98b7-e992ef8c700d`（Android update `01a1678d-caa7-70fd-8e85-1c0c8e561293`）、runtime `exposdk:58.0.0`
+- bundle確認: ローカルbundle（Android hbc）に`stockhome.homehub-tools.dedyn.io`・`console.homehub-tools.dedyn.io`が各1件、`10.0.2.2:4002`が0件。配信直後に`GET /health` 200
+- 利用者端末での確認: 未（新APKのインストールと起動確認をapp ownerに依頼中。R8既定有効化の影響も合わせて確認）
 - production API、DB、GAS、VPS設定の変更はなし
