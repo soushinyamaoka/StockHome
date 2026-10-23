@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: 段階1 delivered（2026-10-23、iPhone実機確認待ち）／段階2 承認待ち
+status: 段階1 delivered（2026-10-23、iPhone実機確認済み）／段階2 実施中
 
 created_by: Claude
 
@@ -64,7 +64,7 @@ iPhoneで開けなくなった（2026-10-23、app ownerから報告）。SDK 58�
 ## Approval
 
 - app owner（段階1）: 2026-10-23、このチャットで配信先（`default`）・platform（iOS）・環境（`preview`）・source（`923b236`）・rollback先が無いことを提示し、「iPhoneの方お願いします」の承認を受領
-- app owner（段階2）: 未
+- app owner（段階2）: 2026-10-23、iPhone確認後に「Androidもお願いします」の承認を受領（APK再ビルド・`android-internal`への配信）
 
 ## 実施結果
 
@@ -78,5 +78,5 @@ iPhoneで開けなくなった（2026-10-23、app ownerから報告）。SDK 58�
 - EAS記録のgit commit: `9c09238`（本plan追加のみでmobileソースは`923b236`と同一。`*`は未追跡の`ops/production-db-operations/`によるもの）
 - bundle確認: ローカルbundle（iOS hbc）に`stockhome.homehub-tools.dedyn.io`・`console.homehub-tools.dedyn.io`が各1件、
   `10.0.2.2:4002`が0件（公開済みbundle自体のダウンロード検査ではない）。配信直後に`GET /health` 200
-- 利用者端末での表示確認: 未（app ownerに依頼中）
+- 利用者端末での表示確認: 2026-10-23、app ownerから「iPhone問題なさそう」との報告を受領
 - production API、DB、GAS、VPS設定の変更はなし
