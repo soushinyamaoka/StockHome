@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: planned（段階1 承認待ち）
+status: 段階1 delivered（2026-10-23、iPhone実機確認待ち）／段階2 承認待ち
 
 created_by: Claude
 
@@ -63,9 +63,20 @@ iPhoneで開けなくなった（2026-10-23、app ownerから報告）。SDK 58�
 
 ## Approval
 
-- app owner（段階1）: 未
+- app owner（段階1）: 2026-10-23、このチャットで配信先（`default`）・platform（iOS）・環境（`preview`）・source（`923b236`）・rollback先が無いことを提示し、「iPhoneの方お願いします」の承認を受領
 - app owner（段階2）: 未
 
 ## 実施結果
 
-（未実施）
+### 段階1（2026-10-23）
+
+明示承認後に`preview`環境から`eas update --branch default --platform ios`を実施した。
+
+- `default` group: `825d6586-aa8d-43b6-8e14-ca7e2d2974dd`（iOS update `01a1667d-f4ac-75f3-9e9c-4b78c54d7495`）
+- runtime: `exposdk:58.0.0`、platform: `ios`
+- message: `Expo SDK 58へ更新 (source: 923b236, client release: 20261023-STOCKHOME-014)`
+- EAS記録のgit commit: `9c09238`（本plan追加のみでmobileソースは`923b236`と同一。`*`は未追跡の`ops/production-db-operations/`によるもの）
+- bundle確認: ローカルbundle（iOS hbc）に`stockhome.homehub-tools.dedyn.io`・`console.homehub-tools.dedyn.io`が各1件、
+  `10.0.2.2:4002`が0件（公開済みbundle自体のダウンロード検査ではない）。配信直後に`GET /health` 200
+- 利用者端末での表示確認: 未（app ownerに依頼中）
+- production API、DB、GAS、VPS設定の変更はなし
