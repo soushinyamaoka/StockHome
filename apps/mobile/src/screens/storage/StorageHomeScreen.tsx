@@ -154,7 +154,7 @@ export default function StorageHomeScreen() {
         ListEmptyComponent={
           searchQuery.isError ? (
             <ErrorState onRetry={() => void searchQuery.refetch()} />
-          ) : searchQuery.isLoading ? null : query && activeTag ? (
+          ) : searchQuery.isLoading ? undefined : query && activeTag ? (
             // キーワードと用途タグは両方に当てはまるものだけを出すため、タグを外せば見つかることがある
             <View>
               <Text style={styles.empty}>「{query}」で #{activeTag.name} のものは見つかりませんでした</Text>

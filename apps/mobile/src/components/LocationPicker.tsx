@@ -131,7 +131,7 @@ export const LocationPicker: React.FC<Props> = ({
             <Text style={styles.empty}>{current ? 'この中にはまだ場所がありません' : 'まだ場所がありません'}</Text>
           }
           ListFooterComponent={
-            currentExcluded ? null : (
+            currentExcluded ? undefined : (
               <View style={styles.newRow}>
                 <TextInput
                   style={styles.newInput}

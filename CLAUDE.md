@@ -57,8 +57,8 @@ GAS 版からの移行プロジェクト。仕様の正は `apps/gas/StockHome_�
 
 ## 技術スタック
 
-- mobile: Expo SDK 57 / RN 0.86 / React 19.2 / React Navigation v7 / TanStack Query v5 / react-hook-form
-  - 2026-09-04 に SDK 54→55→56→57（最新安定版）へ1段階ずつアップグレード済み。SDK を上げる際は
+- mobile: Expo SDK 58 / RN 0.88 / React 19.3 / React Navigation v7 / TanStack Query v5 / react-hook-form
+  - 2026-09-04 に SDK 54→55→56→57、2026-10-23 に SDK 58 へアップグレード済み。SDK を上げる際は
     `npx expo install expo@^<次のメジャー>.0.0` → `npx expo install --fix` → `npx expo-doctor` の順で1段階ずつ進め、
     各段階で TypeScript コンパイルと `npx expo export --platform android` が通ることを確認する。
 - api: Node.js + Fastify 5 + Prisma 5 + PostgreSQL 16（開発 DB ポート **5434**、API ポート **4002**。HomeAsset と並行稼働するため番号をずらしている）

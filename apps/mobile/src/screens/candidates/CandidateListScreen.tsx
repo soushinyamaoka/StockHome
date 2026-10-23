@@ -331,7 +331,7 @@ export default function CandidateListScreen() {
         keyExtractor={(c) => c.id}
         renderItem={renderItem}
         contentContainerStyle={{ padding: SPACING.lg, paddingBottom: SPACING.xxl }}
-        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} />}
         ListEmptyComponent={
           <Text style={styles.empty}>
             {isLoading

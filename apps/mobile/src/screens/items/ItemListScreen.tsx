@@ -248,7 +248,7 @@ export default function ItemListScreen() {
         keyExtractor={(i) => i.id}
         renderItem={renderItem}
         contentContainerStyle={{ padding: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: SPACING.xxl }}
-        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={COLORS.accent} />}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={COLORS.accent} />}
         ListEmptyComponent={
           isError ? <ErrorState onRetry={refetch} /> : <Text style={styles.empty}>
             {isLoading

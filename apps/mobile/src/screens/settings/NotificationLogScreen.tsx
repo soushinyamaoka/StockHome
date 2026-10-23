@@ -22,7 +22,7 @@ export default function NotificationLogScreen() {
       contentContainerStyle={{ padding: SPACING.lg, paddingBottom: SPACING.xxl }}
       data={data?.notifications ?? []}
       keyExtractor={(n) => n.id}
-      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
+      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} />}
       renderItem={({ item: n }) => (
         <Card style={styles.card}>
           <Text style={styles.date}>

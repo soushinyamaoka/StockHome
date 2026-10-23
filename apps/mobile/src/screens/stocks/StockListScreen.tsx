@@ -208,8 +208,8 @@ export default function StockListScreen() {
         keyExtractor={(s) => s.item.id}
         renderItem={renderItem}
         contentContainerStyle={{ padding: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: SPACING.xxl }}
-        ListHeaderComponent={isError && data ? <OfflineNotice updatedAt={dataUpdatedAt} onRetry={refetch} /> : null}
-        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={COLORS.accent} />}
+        ListHeaderComponent={isError && data ? <OfflineNotice updatedAt={dataUpdatedAt} onRetry={refetch} /> : undefined}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={COLORS.accent} />}
         onScrollToIndexFailed={(info) => {
           // FlatListの仮想化で対象indexがまだ計測されていないと失敗する。
           // 近似位置へ移動してから1回だけ再試行する（highlightItemId変更時にリセット）

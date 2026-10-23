@@ -57,7 +57,7 @@ export default function ReflectionLogScreen() {
         data={reflections}
         keyExtractor={(reflection) => reflection.id}
         contentContainerStyle={{ padding: SPACING.lg, paddingBottom: SPACING.xxl }}
-        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} />}
         renderItem={({ item: reflection }) => (
           <Card style={styles.card}>
             <View style={styles.headerRow}>

@@ -133,7 +133,7 @@ export default function PurchaseHistoryScreen() {
             </View>
             <PriceSparkline points={pricePoints} />
           </Card>
-        ) : null
+        ) : undefined
       }
       renderItem={({ item: entry }) => entry.kind === 'correction' ? renderCorrection(entry.correction, entry.date) : (() => {
         const p = entry.purchase;
