@@ -197,5 +197,13 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 
 - app owner: 承認（2026-11-03、app ownerがVPS管理チャットへ引き継ぎ済み）
 - VPS management review: 技術レビュー受理（2026-11-03。preflight ready_with_manual_checks・blocker 0件、通知commit `a8c167e` がlocal・実remote mainで一致、L2判定妥当。production反映の承認ではない）
-- production approval: 未
+- production approval: 承認（2026-11-03、app owner）。VPS管理側で反映済み（task 20261103-002、稼働source `378bf05`、DEPLOY_RESULT=success、状態applied）
 - related task_id: なし（依存更新のためClaudeが直接実施）
+
+## 反映後のアプリ側確認（read-only、2026-11-03）
+
+- `GET /health` 200、`GET /api/items` 認証なし401・不正なトークン401
+- 利用者アカウントの既存トークンで `GET /api/stocks` 200（27品目、提案値のある品目14件で反映前と同じ）、`GET /api/items` 200、`GET /api/storage/search` 200
+- 不正な検索条件（`kind=bad`）で400。応答形式 `{ message, errors: { formErrors, fieldErrors } }` は従来どおりで、既定メッセージが zod 4 の文言
+  （`Invalid option: expected one of "item"|"thing"`）になっていることから、本番で zod 4 が動いていることを確認
+- 書き込み操作は行っていない
