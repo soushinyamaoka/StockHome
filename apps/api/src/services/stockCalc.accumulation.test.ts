@@ -137,6 +137,27 @@ test('消費ペース実績提案: 購入間隔と数量から正しい平均値
   assert.equal(result!.sampleCount, 3);
 });
 
+test('消費ペース実績提案: 同じ日の購入は数量を合計し、並び順に関わらず同じ値になる', () => {
+  const base = new Date('2026-04-17T00:00:00.000Z').getTime();
+  const logs = [
+    { purchasedAt: new Date(base), qty: 24 },
+    { purchasedAt: new Date(base), qty: 1 }, // 同日（合計25）
+    { purchasedAt: new Date(base + 12 * MS_PER_DAY), qty: 24 }, // 12日後
+    { purchasedAt: new Date(base + 27 * MS_PER_DAY), qty: 24 }, // 15日後
+  ];
+  const forward = computeSuggestedDaysPerUnit(logs);
+  const reversed = computeSuggestedDaysPerUnit([...logs].reverse());
+  assert.deepEqual(forward, reversed);
+  // (12/25 + 15/24) / 2 = 0.5525 -> 0.6
+  assert.equal(forward!.value, 0.6);
+  assert.equal(forward!.sampleCount, 2);
+});
+
+test('消費ペース実績提案: 購入が同じ日だけなら提案しない', () => {
+  const day = new Date('2026-07-01T00:00:00.000Z');
+  assert.equal(computeSuggestedDaysPerUnit([{ purchasedAt: day, qty: 114 }, { purchasedAt: day, qty: 3 }]), null);
+});
+
 test('消費ペース実績提案: 購入が1件以下なら提案しない', () => {
   assert.equal(computeSuggestedDaysPerUnit([]), null);
   assert.equal(computeSuggestedDaysPerUnit([{ purchasedAt: new Date(), qty: 1 }]), null);

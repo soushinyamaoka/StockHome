@@ -16,13 +16,21 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const SUGGESTION_SAMPLE_INTERVALS = 5;
 
 // 消費ペースの実績提案（直近 SUGGESTION_SAMPLE_INTERVALS 回の購入間隔 ÷ 直前購入数量、の平均）。
-// 同日購入等で間隔が0日の区間は消費ペースの参考にならないため除外する。
+// 同じ日の購入は数量を合計して1回の購入として扱う。以前は同日の購入のうちどれを「直前の購入」と
+// みなすかが入力の並び順で変わり、在庫一覧と品目画面で提案値が食い違っていた。
 // 有効な区間が1件も無ければ提案しない
 export function computeSuggestedDaysPerUnit(
   logs: { purchasedAt: Date; qty: number }[]
 ): { value: number; sampleCount: number } | null {
-  if (logs.length < 2) return null;
-  const asc = [...logs].sort((a, b) => a.purchasedAt.getTime() - b.purchasedAt.getTime());
+  const qtyByDay = new Map<number, number>();
+  for (const log of logs) {
+    const day = Math.round(log.purchasedAt.getTime() / MS_PER_DAY);
+    qtyByDay.set(day, (qtyByDay.get(day) ?? 0) + log.qty);
+  }
+  if (qtyByDay.size < 2) return null;
+  const asc = [...qtyByDay.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([day, qty]) => ({ purchasedAt: new Date(day * MS_PER_DAY), qty }));
   const samples: number[] = [];
   for (let i = asc.length - 1; i > 0 && samples.length < SUGGESTION_SAMPLE_INTERVALS; i--) {
     const days = Math.round((asc[i].purchasedAt.getTime() - asc[i - 1].purchasedAt.getTime()) / MS_PER_DAY);
