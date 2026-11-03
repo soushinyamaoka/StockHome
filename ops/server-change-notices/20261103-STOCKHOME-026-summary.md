@@ -173,6 +173,6 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 ## Approval
 
 - app owner: 承認（2026-11-03、app ownerがVPS管理チャットへ引き継ぎ済み）
-- VPS management review: 未
+- VPS management review: 技術レビュー受理（2026-11-03。preflight blocker 0件、local/cached origin/実remoteのmainが`4eb71f5`で一致、L2判定妥当。production反映の承認ではない）
 - production approval: 未
 - related task_id: なし（app ownerの指示によりClaudeが直接修正）

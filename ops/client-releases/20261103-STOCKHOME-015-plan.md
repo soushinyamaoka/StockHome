@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: planned（承認待ち）
+status: delivered（利用者端末での確認待ち）
 
 created_by: Claude
 
@@ -43,8 +43,22 @@ related_notice_id: 20261103-STOCKHOME-026（API側の提案値の修正。本配
 
 ## Approval
 
-- app owner: 未
+- app owner: 承認（2026-11-03、チャットで「アプリ配信はしてokです」）
 
 ## 実施結果
 
-（未実施）
+### 2026-11-03
+
+明示承認後に`preview`環境から以下を実施した（native変更なしのためAPK再buildは不要）。
+
+- `eas update --branch default --platform ios`
+  - `default` group: `04c73a9c-9627-499d-8652-9429115ef67a`（iOS update `01a1a0a4-1a88-7e25-aafa-5c1a7228a992`）、runtime `exposdk:58.0.0`
+- `eas update --branch android-internal --platform android`
+  - `android-internal` group: `960d861f-0a23-463e-aa74-d7cb6c430c2b`（Android update `01a1a0a4-d408-7f69-bab5-23314436611f`）、runtime `exposdk:58.0.0`
+- message: `品目編集画面の上書き不具合を修正 (source: 1268d4d, client release: 20261103-STOCKHOME-015)`
+- EAS記録のgit commit: `f427b2b`（ops記録の追加のみでmobileソースは`1268d4d`と同一。`*`は未追跡の`ops/production-db-operations/`によるもの）
+- bundle確認: ローカルbundle（Android hbc）に`stockhome.homehub-tools.dedyn.io`・`console.homehub-tools.dedyn.io`が各1件、`10.0.2.2:4002`が0件、
+  sourcemapに修正後の`ItemFormContent`を確認（公開済みbundle自体のダウンロード検査ではない。iOS bundleはAndroidの書き出しで上書きされたため個別には未確認）。
+  配信直後に`GET /health` 200
+- 利用者端末での確認: 未
+- production API、DB、GAS、VPS設定の変更はなし
