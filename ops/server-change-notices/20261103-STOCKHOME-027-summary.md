@@ -28,7 +28,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_started
+deployment_status: verified
 
 ## 変更概要
 
@@ -207,3 +207,4 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 - 不正な検索条件（`kind=bad`）で400。応答形式 `{ message, errors: { formErrors, fieldErrors } }` は従来どおりで、既定メッセージが zod 4 の文言
   （`Invalid option: expected one of "item"|"thing"`）になっていることから、本番で zod 4 が動いていることを確認
 - 書き込み操作は行っていない
+- 以上をVPS管理側が確認し、2026-11-03に `deployment_status: verified` へ更新（production台帳・変更通知台帳に記録）
