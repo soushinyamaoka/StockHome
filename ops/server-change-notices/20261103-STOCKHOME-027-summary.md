@@ -195,7 +195,7 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 
 ## Approval
 
-- app owner: 未
-- VPS management review: 未
+- app owner: 承認（2026-11-03、app ownerがVPS管理チャットへ引き継ぎ済み）
+- VPS management review: 技術レビュー受理（2026-11-03。preflight ready_with_manual_checks・blocker 0件、通知commit `a8c167e` がlocal・実remote mainで一致、L2判定妥当。production反映の承認ではない）
 - production approval: 未
 - related task_id: なし（依存更新のためClaudeが直接実施）
