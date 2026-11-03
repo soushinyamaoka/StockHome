@@ -28,7 +28,7 @@ production_change: required
 
 vps_management_handoff: required
 
-deployment_status: not_started
+deployment_status: verified
 
 ## 変更概要
 
@@ -184,4 +184,5 @@ secret値は記載していない。検証では使い捨ての値のみを使�
   `suggestedDaysPerUnit`（値・件数）が両経路で一致（食い違い0件）
 - 「ペース見直し?」対象は事前の想定どおり3品目（実際の消費ペースのずれによるもので、本変更とは無関係）
 - 書き込み操作は行っていない
+- 以上をVPS管理側が確認し、2026-11-03に `deployment_status: verified` へ更新（反映記録にアプリ側記録 `7787e07` を記載）
 - 参考: VPS管理側のbuildログにnpm auditの指摘（runtime high 1件、builder high 2件）あり。本noticeは依存変更を含まず、別途確認する
