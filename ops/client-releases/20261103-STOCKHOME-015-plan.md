@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: delivered（利用者端末での確認待ち）
+status: delivered（利用者端末で確認済み）
 
 created_by: Claude
 
@@ -60,5 +60,5 @@ related_notice_id: 20261103-STOCKHOME-026（API側の提案値の修正。本配
 - bundle確認: ローカルbundle（Android hbc）に`stockhome.homehub-tools.dedyn.io`・`console.homehub-tools.dedyn.io`が各1件、`10.0.2.2:4002`が0件、
   sourcemapに修正後の`ItemFormContent`を確認（公開済みbundle自体のダウンロード検査ではない。iOS bundleはAndroidの書き出しで上書きされたため個別には未確認）。
   配信直後に`GET /health` 200
-- 利用者端末での確認: 未
+- 利用者端末での確認: 2026-11-03、app ownerから「アプリの動作確認できました」との報告を受領
 - production API、DB、GAS、VPS設定の変更はなし
