@@ -172,7 +172,7 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 
 ## Approval
 
-- app owner: 未
+- app owner: 承認（2026-11-03、app ownerがVPS管理チャットへ引き継ぎ済み）
 - VPS management review: 未
 - production approval: 未
 - related task_id: なし（app ownerの指示によりClaudeが直接修正）
