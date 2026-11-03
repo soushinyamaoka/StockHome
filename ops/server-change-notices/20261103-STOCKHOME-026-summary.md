@@ -174,5 +174,14 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 
 - app owner: 承認（2026-11-03、app ownerがVPS管理チャットへ引き継ぎ済み）
 - VPS management review: 技術レビュー受理（2026-11-03。preflight blocker 0件、local/cached origin/実remoteのmainが`4eb71f5`で一致、L2判定妥当。production反映の承認ではない）
-- production approval: 未
+- production approval: 承認（2026-11-03、app owner）。VPS管理側で反映済み（稼働source `1268d4d`、DEPLOY_RESULT=success、health matrix 4点成功、状態applied）
 - related task_id: なし（app ownerの指示によりClaudeが直接修正）
+
+## 反映後のアプリ側確認（read-only、2026-11-03）
+
+- `GET /health` 200、`GET /api/items`（認証なし）401
+- 利用者アカウントでの `GET /api/stocks` と `GET /api/items/:itemId/purchases`: 提案値のある14品目（全27品目中）すべてで、
+  `suggestedDaysPerUnit`（値・件数）が両経路で一致（食い違い0件）
+- 「ペース見直し?」対象は事前の想定どおり3品目（実際の消費ペースのずれによるもので、本変更とは無関係）
+- 書き込み操作は行っていない
+- 参考: VPS管理側のbuildログにnpm auditの指摘（runtime high 1件、builder high 2件）あり。本noticeは依存変更を含まず、別途確認する
