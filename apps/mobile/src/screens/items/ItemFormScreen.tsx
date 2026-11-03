@@ -43,7 +43,16 @@ interface AltRow {
   note: string;
 }
 
+// 在庫タブの「ペース見直し?」等から別タブ経由で開くと、表示中の画面がparamsだけ差し替えて
+// 再利用されることがある。入力値は初回読込時にしか反映しないため、そのままだと前の品目の入力値で
+// 別の品目を上書き保存してしまう。対象（品目・取込候補）が変わったら作り直す
 export default function ItemFormScreen() {
+  const route = useRoute<any>();
+  const { itemId, prefillName, returnToCandidateId } = route.params ?? {};
+  return <ItemFormContent key={JSON.stringify([itemId, prefillName, returnToCandidateId])} />;
+}
+
+function ItemFormContent() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const itemId: string | undefined = route.params?.itemId;
