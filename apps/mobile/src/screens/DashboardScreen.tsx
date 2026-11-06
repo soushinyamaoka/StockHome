@@ -342,7 +342,7 @@ export default function DashboardScreen() {
         <Button
           title="買ったよ！を記録する"
           icon={<Ionicons name="basket" size={18} color="#FFFDF6" />}
-          onPress={() => navigation.navigate('ItemsTab', { screen: 'PurchaseForm', params: {} })}
+          onPress={() => navigation.navigate('ItemsTab', { screen: 'PurchaseForm', params: {}, initial: false })}
         />
         <View style={{ height: SPACING.md }} />
         <View style={styles.quickRow}>
@@ -351,7 +351,7 @@ export default function DashboardScreen() {
               title="消耗品を追加"
               variant="outline"
               small
-              onPress={() => navigation.navigate('ItemsTab', { screen: 'ItemForm', params: {} })}
+              onPress={() => navigation.navigate('ItemsTab', { screen: 'ItemForm', params: {}, initial: false })}
             />
           </View>
           <View style={{ width: SPACING.sm }} />

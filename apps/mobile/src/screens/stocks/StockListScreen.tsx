@@ -109,7 +109,7 @@ export default function StockListScreen() {
               {snoozed ? <StampBadge label="スヌーズ中" color={COLORS.indigo} /> : null}
               {needsPaceReview(item.daysPerUnit, entry.suggestedDaysPerUnit) ? (
                 <TouchableOpacity
-                  onPress={() => navigation.navigate('ItemsTab', { screen: 'ItemForm', params: { itemId: item.id } })}
+                  onPress={() => navigation.navigate('ItemsTab', { screen: 'ItemForm', params: { itemId: item.id }, initial: false })}
                   activeOpacity={0.7}
                 >
                   <StampBadge label="ペース見直し?" color={COLORS.inkSub} />

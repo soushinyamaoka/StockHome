@@ -294,6 +294,7 @@ export default function CandidateListScreen() {
                 navigation.navigate('ItemsTab', {
                   screen: 'ItemForm',
                   params: { prefillName: c.itemNameRaw ?? '', returnToCandidateId: c.id },
+                  initial: false,
                 })
               }
             >
