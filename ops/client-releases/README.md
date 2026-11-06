@@ -36,6 +36,9 @@ runtime-contract の対象には含めず、StockHomeアプリ側でこのディ
   （`verified`等）を実施前提条件として明記する。
 - 配信は、対象branch/channel・update groupを特定したapp ownerの明示承認を得てから
   実施する。
+- 配信のたびに`apps/mobile/src/lib/clientRelease.ts`の番号・配信日をそのclient releaseに
+  合わせてから`eas update`する（設定画面の「アプリの版」に表示され、利用者が開き直し済みかを
+  確かめる手段になる。2026-11-06、client release 016で導入）。
 - 配信後は同じfileに実施結果（update group ID、配信時刻、対象端末での反映確認結果）を
   追記する。
 
