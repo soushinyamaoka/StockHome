@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: planned（配信前）
+status: delivered（利用者端末での確認待ち）
 
 created_by: Claude
 
@@ -49,8 +49,22 @@ related_notice_id: なし（API・サーバーの変更なし）
 
 ## Approval
 
-- app owner: 未（2026-11-06に戻れない不具合の修正の配信は承認済みだったが、その後「まって」で保留。版表示・再起動ボタンを追加して内容が変わったため改めて承認を得る）
+- app owner: 承認（2026-11-06、内容追加後に改めてチャットで「配信おねがいします」）
 
 ## 実施結果
 
-（未実施）
+### 2026-11-06
+
+明示承認後に`preview`環境から以下を実施した（native変更なしのためAPK再buildは不要）。
+
+- `eas update --branch default --platform ios`
+  - `default` group: `48d21a6e-e5f3-4706-a5b1-33911c9a8328`（iOS update `01a1af4a-e0ed-7446-9001-8bf9b71e1610`）、runtime `exposdk:58.0.0`
+- `eas update --branch android-internal --platform android`
+  - `android-internal` group: `65c1e96f-e7ee-4acd-9cd5-9459e4b51b99`（Android update `01a1af4c-1d97-79b5-9295-fed754014dfa`）、runtime `exposdk:58.0.0`
+- message: `戻れない不具合の修正・アプリの版表示・再起動ボタン (source: 863c62f, client release: 20261106-STOCKHOME-016)`
+- EAS記録のgit commit: `84bd3dd`（計画追加のみでmobileソースは`863c62f`と同一。`*`は未追跡の`ops/production-db-operations/`によるもの）
+- bundle確認: 各配信直後のローカルbundle（iOS・Android hbc）に`stockhome.homehub-tools.dedyn.io`・`console.homehub-tools.dedyn.io`が各1件、
+  `10.0.2.2:4002`が0件。iOSに版表示の文言と`016`、Androidに再起動のお知らせ文言を確認（公開済みbundle自体のダウンロード検査ではない）。
+  配信直後に`GET /health` 200
+- 利用者端末での確認: 未（app ownerに2回の開き直しと、設定画面の「アプリの版 016」の確認を依頼）
+- production API、DB、GAS、VPS設定の変更はなし
