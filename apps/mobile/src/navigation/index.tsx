@@ -6,6 +6,7 @@ import { createBottomTabNavigator, type BottomTabBarProps } from '@react-navigat
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNotices } from '../hooks/useNoticesFeed';
+import { UpdateBanner } from '../components/UpdateBanner';
 
 import { useAuth } from '../hooks/useAuth';
 import { COLORS, FONTS, HEADER_OPTIONS, SPACING } from '../theme';
@@ -178,6 +179,8 @@ function PaperTabBar({ state, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const { unreadCount } = useNotices();
   return (
+    <View style={styles.tabBarArea}>
+    <UpdateBanner />
     <View style={[styles.tabBar, { paddingBottom: Math.max(insets.bottom, SPACING.sm) }]}>
       {state.routes.map((route, index) => {
         const focused = state.index === index;
@@ -211,6 +214,7 @@ function PaperTabBar({ state, navigation }: BottomTabBarProps) {
           </TouchableOpacity>
         );
       })}
+    </View>
     </View>
   );
 }
@@ -255,6 +259,7 @@ export const RootNavigator: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
+  tabBarArea: { backgroundColor: COLORS.paper },
   tabBar: {
     flexDirection: 'row',
     backgroundColor: COLORS.paper,
