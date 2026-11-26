@@ -203,5 +203,14 @@ VPS管理レビュー（blocked）の指摘: 管理者が発行した書き込�
   VPS1の稼働imageは baseline `378bf05` と一致。指摘1件: 書き込み可トークンから夜間バッチを起動でき、他世帯の端末を無効化し得る）→ 対応済み（上記「差し戻しへの対応」）。
   再レビュー: 受理（accepted、2026-11-26。指摘 S028-B01 解消。書き込み可のadminトークンでも夜間バッチ起動前に403となることをコードで確認、
   preflight 機械判定blocker 0件、GitHub main が通知書 `0a73085` と一致。APIテスト221件はアプリ側報告に基づく。production反映の承認ではない）
-- production approval: 未
+- production approval: 承認（2026-11-26、app owner）。VPS管理側で反映済み（稼働source `27dc6ef`、migration適用、health 200、未認証のトークン管理API 401）
 - related task_id: なし（app ownerの指示によりClaudeが直接実装）
+
+## 反映後のアプリ側確認（read-only、2026-11-26）
+
+- `GET /health` 200
+- 認証なし: `GET /api/items` 401、`GET /api/api-tokens` 401
+- 存在しない外部連携用トークン（`shk_` 形式）で `GET /api/storage/search` 401
+- 利用者アカウントの既存JWTで `GET /api/items` 200（28品目）、`GET /api/stocks` 200（28品目）、`GET /api/storage/search` 200（34件）、`GET /api/auth/me` 200、
+  `GET /api/api-tokens` 200（0件。migration適用後のテーブルを参照できている）
+- 書き込み操作（トークン発行を含む）は行っていない。トークンの発行・利用の確認は client release 017 配信後に利用者の操作で行う
