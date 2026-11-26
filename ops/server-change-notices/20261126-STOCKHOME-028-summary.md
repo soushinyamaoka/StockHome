@@ -12,11 +12,11 @@ app: stockhome
 
 source_branch: main
 
-source_commit: b33b0cf7408e492e63aaf6cacb4a05568b7098f5
+source_commit: 5534375c314d2e48236734213324712f01d75113
 
 production_baseline_commit: 378bf05f34df567f33f4866ceb3a1359749cc48a
 
-release_commits: 378bf05f34df567f33f4866ceb3a1359749cc48a..b33b0cf7408e492e63aaf6cacb4a05568b7098f5
+release_commits: 378bf05f34df567f33f4866ceb3a1359749cc48a..5534375c314d2e48236734213324712f01d75113
 
 impact_level: L3
 
@@ -32,12 +32,14 @@ deployment_status: not_started
 
 ## 変更概要
 
-アプリ以外のサービス（app owner 世帯で利用する Muse のカスタムコネクタ）から API を呼ぶための**外部連携用トークン**を追加する（`b33b0cf`）。
+アプリ以外のサービス（app owner 世帯で利用する Muse のカスタムコネクタ）から API を呼ぶための**外部連携用トークン**を追加する（`b33b0cf`、個人情報を返すAPIの除外 `5534375`）。
 
 - 利用者がアプリの設定画面で自分のトークンを発行する。トークンは `shk_` で始まる32バイトの乱数で、発行時に1度だけ表示する
 - `Authorization: Bearer shk_...` で認証し、**発行した本人として**動く（その人の家庭のデータだけを扱う）。期限なし・取り消すまで有効
 - 既定は**読み取り専用**（GET・HEAD のみ）。書き込みはトークンごとにアプリで許可する。許可していないトークンの書き込みは 403
-- 書き込みを許可していても、トークンの管理（`/api/api-tokens`）、`/api/auth/*`（`me`・`change-password` など）、家族メンバーの追加・変更（`/api/users` の GET 以外）は 403
+- 書き込みを許可していても、次は参照も含めて 403: トークンの管理（`/api/api-tokens`）、`/api/auth/*`（`me`・`change-password` など）、
+  利用者の個人情報を返すAPI（`/api/users`＝メールアドレス、`/api/push-devices`、Gmail取込の `/api/import-candidates`・`/api/reflections`＝取り込んだ人のメールアドレス・メールの件名と本文の一部）。
+  app owner の指示（2026-11-26「ユーザー情報の参照ができないようにしたい」）による
 - トークン本体は保存せず SHA-256 のみを `api_tokens` テーブルに保存する。最終利用日時を最大10分に1回記録する
 - 管理API（JWT のみ）: `GET/POST /api/api-tokens`、`PATCH/DELETE /api/api-tokens/:id`。メンバーは自分の分、admin は家族全員の分を一覧・切り替え・取り消しできる。発行は本人の分のみ、1人10個まで
 - mobile の設定画面「外部連携」は client release 017 で別途配信する（本noticeの反映後）
@@ -61,10 +63,10 @@ impact_level の判断: **L3** とした。認証経路の追加（secret/auth �
 
 ## 現在と変更後
 
-| 項目 | 現在（`378bf05`） | 変更後（`b33b0cf`） |
+| 項目 | 現在（`378bf05`） | 変更後（`5534375`） |
 |---|---|---|
 | 認証必須APIの認証方式 | JWT（90日） | JWT（不変）＋外部連携用トークン（`shk_`、期限なし・取り消し可） |
-| 外部連携用トークンの権限 | — | 発行者本人として動作。既定は GET・HEAD のみ。書き込みはトークンごとの許可制。トークン管理・`/api/auth/*`・家族メンバーの変更は常に不可 |
+| 外部連携用トークンの権限 | — | 発行者本人として動作。既定は GET・HEAD のみ。書き込みはトークンごとの許可制。トークン管理・`/api/auth/*`・個人情報を返すAPI（users・push-devices・import-candidates・reflections）は常に不可 |
 | 新しいendpoint | — | `GET/POST /api/api-tokens`、`PATCH/DELETE /api/api-tokens/:id`（JWT のみ） |
 | DB | — | `api_tokens` テーブル追加（hash・先頭10文字・書き込み可否・最終利用・取り消し日時） |
 | Authorization が `Bearer shk_...` の場合 | JWT として検証され 401 | `api_tokens` で照合。無効・取り消し済みは 401、利用者無効は 403 |
@@ -74,7 +76,7 @@ impact_level の判断: **L3** とした。認証経路の追加（secret/auth �
 - service/container: `stockhome-api-prod`（image再build・再作成）。`stockhome-postgres-prod` は migration でテーブル追加のみ
 - URL/port/health: 変更なし（`127.0.0.1:4002` bind、`/health` 不変、認証不要 endpoint の追加なし）
 - cron/timer/worker: 変更なし
-- dependency: なし（`378bf05..b33b0cf` で `package.json`・`package-lock.json`・Dockerfile・compose に差分なし）
+- dependency: なし（`378bf05..5534375` で `package.json`・`package-lock.json`・Dockerfile・compose に差分なし）
 - data/DB/volume: `api_tokens` テーブル追加（household・user への外部キー、ON DELETE CASCADE）。既存テーブルは不変
 - log/monitoring: 最終利用日時の記録に失敗した場合のみ warn（`event: api_token_last_used_update_failed`）。トークン値はログに出さない
 - mobile: 現行（client release 016）は新APIを呼ばないため、そのまま動作する。設定画面は client release 017 で、本noticeの反映後に配信する
@@ -83,7 +85,7 @@ impact_level の判断: **L3** とした。認証経路の追加（secret/auth �
 ## production変更
 
 - 必要性: あり
-- 想定作業: 通常のAPI deploy（`npm run deploy -- -Commit b33b0cf7408e492e63aaf6cacb4a05568b7098f5`）。起動時の `prisma migrate deploy` で migration が適用される
+- 想定作業: 通常のAPI deploy（`npm run deploy -- -Commit 5534375c314d2e48236734213324712f01d75113`）。起動時の `prisma migrate deploy` で migration が適用される
 - 適用されるmigration: `20261126120000_add_api_tokens`（`CREATE TABLE api_tokens`、index 3件、外部キー2件のみ）
 - downtime: 既存と同じ（brief-restart）
 - maintenance window: 不要
@@ -123,16 +125,18 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 
 - health contract変更: なし
 - 実施テスト（Claude、2026-11-26、アプリ側PCのDocker。本番への接続なし。使い捨てのPostgreSQL 16コンテナを使用）:
-  - **既存テスト＋追加テスト**: `TZ=Asia/Tokyo`、使い捨てのPostgreSQL 16 に `prisma migrate deploy` 後、`apps/api` の全テストを実行し **218件すべて成功**
-    （追加7件: 発行と hash 保存、読み取り専用の拒否と許可の切り替え、許可済みでもトークン管理・家族メンバー変更は不可、取り消し・不正・利用者無効、
-    メンバー／admin の一覧・取り消し範囲、発行者の家庭への書き込み、1人10個の上限。ほか単体テスト2件）。実行環境はアプリ側PCの Node v24.16（builder image 内ではない）
+  - **既存テスト＋追加テスト**: `TZ=Asia/Tokyo`、使い捨てのPostgreSQL 16 に `prisma migrate deploy` 後、`apps/api` の全テストを実行し **220件すべて成功**
+    （追加7件: 発行と hash 保存、読み取り専用の拒否と許可の切り替え、許可済みでもトークン管理・家族メンバー変更は不可、取り消し・不正・利用者無効、家族一覧の参照不可、
+    メンバー／admin の一覧・取り消し範囲、発行者の家庭への書き込み、1人10個の上限。ほか単体テスト2件。除外するAPIの一覧を含む）。実行環境はアプリ側PCの Node v24.16（builder image 内ではない）
   - **型チェック**: `apps/api`・`packages/shared`・`apps/mobile`（テスト以外）とも `tsc --noEmit` でエラー0。mobile 単体テスト62件成功、`npx expo export --platform android` 成功
-  - **Docker build**（`b33b0cf` を `git archive` で取り出した build context）: 成功
+  - **Docker build**（`b33b0cf` と `5534375` をそれぞれ `git archive` で取り出した build context）: 成功
   - **コンテナ起動と結合確認**: runtime image を使い捨ての空DBに接続して起動。`migration_start` → `migration_end` → `startup`、`GET /health` 200。
     その上で、テスト用アカウントで次を確認:
     トークン発行 201（既定 `allowWrite=false`）→ トークンで `GET /api/storage/search`・`GET /api/items` 200 → `POST /api/storage/locations` 403 →
     `GET /api/auth/me`・`POST /api/auth/change-password`・`GET /api/api-tokens` 403 → JWT で書き込み許可 → `POST /api/storage/locations` 201・`change-password` は 403 のまま →
-    取り消し 204 → トークンで 401、JWT は 200 のまま。DB の `token_hash` は64桁の16進のみ、`last_used_at` 記録済み
+    取り消し 204 → トークンで 401、JWT は 200 のまま。DB の `token_hash` は64桁の16進のみ、`last_used_at` 記録済み（以上 `b33b0cf`）。
+    `5534375` では、書き込みを許可したトークンで `GET /api/storage/search`・`/api/items`・`/api/stocks` 200、`/api/users`・`/api/push-devices`・`/api/import-candidates`・
+    `/api/reflections`・`/api/auth/me`・`/api/api-tokens` 403、JWT での `/api/users` は 200 のまま
   - 検証用のコンテナ・ネットワーク・image・DBはすべて削除済み
 - 未実施テストと理由: production相当データでの実行（本番接続は行わない方針のため）。反映後にVPS管理側のhealth確認とアプリ側のread-only確認で補う
 
@@ -145,7 +149,7 @@ secret値は記載していない。検証では使い捨ての値のみを使�
 
 正本: `C:\work\PRG\Sakura\Dev\vps-server-management\docs\templates\server_change_notice_pre_submission_checklist.md`
 
-- [x] production baselineとrelease全commit・build入力差分を確認した（`378bf05..b33b0cf` の API build 入力差分は `apps/api/prisma/`（schema・migration）、
+- [x] production baselineとrelease全commit・build入力差分を確認した（`378bf05..5534375` の API build 入力差分は `apps/api/prisma/`（schema・migration）、
   `apps/api/src/`（auth plugin・server・apiTokens の service/route/テスト）、`packages/shared/src/`（apiToken schema）。他は mobile・docs・ops記録で artifact 外）
 - [x] source commitをremoteの対象branchへpushした（通知書のcommitも引き継ぎ時にremote一致を伝える）
 - [x] lockfileと全workspace manifestを含む実際のbuild contextでbuildした
