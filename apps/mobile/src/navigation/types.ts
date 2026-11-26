@@ -43,6 +43,7 @@ export type SettingsStackParamList = {
   ChangePassword: undefined;
   Family: undefined;
   OperatorNotices: undefined;
+  ApiTokens: undefined;
 };
 
 export type MainTabParamList = {

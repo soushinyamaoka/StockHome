@@ -18,6 +18,7 @@ import appConfigRoutes from './routes/appConfig';
 import bridgeRoutes from './routes/bridge';
 import pushDeviceRoutes from './routes/pushDevices';
 import storageRoutes from './routes/storage';
+import apiTokenRoutes from './routes/apiTokens';
 import { registerHttpErrorHandling } from './lib/httpErrorHandling';
 import { appLogger, LOG_EVENTS, type AppLogger } from './lib/logger';
 import { runDailyBatch } from './services/batch';
@@ -76,6 +77,7 @@ async function buildServer(logger: AppLogger) {
     await instance.register(appConfigRoutes, { prefix: '/api/app-config' });
     await instance.register(pushDeviceRoutes, { prefix: '/api/push-devices' });
     await instance.register(storageRoutes, { prefix: '/api/storage' });
+    await instance.register(apiTokenRoutes, { prefix: '/api/api-tokens' });
   });
 
   return app;

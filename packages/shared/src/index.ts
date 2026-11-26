@@ -10,3 +10,4 @@ export * from './schemas/priceReparse';
 export * from './schemas/appConfig';
 export * from './schemas/pushDevice';
 export * from './schemas/storage';
+export * from './schemas/apiToken';
