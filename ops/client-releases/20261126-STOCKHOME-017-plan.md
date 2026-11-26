@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: planned（配信前）
+status: delivered（利用者端末での確認待ち）
 
 created_by: Claude
 
@@ -14,7 +14,7 @@ related_notice_id: 20261126-STOCKHOME-028（外部連携用トークンのAPI。
 
 ## 対象
 
-- **source commit**: 本planのcommit（`apps/mobile/src/lib/clientRelease.ts` を 017 に更新）。前回client release（`20261106-STOCKHOME-016`、source `863c62f`）以降のmobileに入る変更:
+- **source commit**: `ead74a9`（本planのcommit。`apps/mobile/src/lib/clientRelease.ts` を 017 に更新）。前回client release（`20261106-STOCKHOME-016`、source `863c62f`）以降のmobileに入る変更:
   1. `b33b0cf` 設定画面に「外部連携（Museなど）」を追加。外部連携用トークンの発行（1度だけ表示・コピー）、一覧（最後に使われた日時）、
      書き込み許可の切り替え（ONにするとき確認あり）、取り消し。管理者は家族全員の分を表示・操作できる
   2. 設定画面の「アプリの版」を 017 に更新
@@ -49,8 +49,22 @@ related_notice_id: 20261126-STOCKHOME-028（外部連携用トークンのAPI。
 
 ## Approval
 
-- app owner: 未
+- app owner: 承認（2026-11-26、チャットで「配信してください」）
 
 ## 実施結果
 
-（未実施）
+### 2026-11-26
+
+明示承認後に`preview`環境から以下を実施した（native変更なしのためAPK再buildは不要）。実施前に`env:list`で`EXPO_PUBLIC_API_BASE_URL`・`EXPO_PUBLIC_NOTICES_FEED_URL`の設定を確認。
+
+- `eas update --branch default --platform ios`
+  - `default` group: `5a2341f4-a54b-4033-8a8a-ba4f8c0835fc`（iOS update `01a216ba-7553-7838-847a-fdba7aa52317`）、runtime `exposdk:58.0.0`
+- `eas update --branch android-internal --platform android`
+  - `android-internal` group: `390f634a-d0a6-462e-b24f-d84ea8dcb3ef`（Android update `01a216bb-4cfa-7419-97de-cc676c91ce70`）、runtime `exposdk:58.0.0`
+- message: `外部連携（Museなど）の設定画面 (source: ead74a9, client release: 20261126-STOCKHOME-017)`
+- EAS記録のgit commit: `ead74a9`（`*`は未追跡の`ops/production-db-operations/`によるもの）
+- bundle確認: 各配信直後のローカルbundle（iOS・Android hbc）に`stockhome.homehub-tools.dedyn.io`・`console.homehub-tools.dedyn.io`が各1件、
+  `10.0.2.2:4002`が0件。両方に「外部連携」の文言と`017`、Androidに再起動のお知らせ文言を確認（公開済みbundle自体のダウンロード検査ではない）。
+  配信直後に`GET /health` 200
+- 利用者端末での確認: 未（Androidの再起動ボタンの表示、iPhoneの「アプリの版 017」、トークン発行を依頼）
+- production API、DB、GAS、VPS設定の変更はなし
