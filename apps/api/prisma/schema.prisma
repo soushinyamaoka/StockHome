@@ -569,19 +569,21 @@ model UsageTagLink {
 // 外部連携用トークン（Museなど、アプリ以外からAPIを呼ぶ用）。発行した本人として動く。
 // 期限なし・取り消すまで有効。トークン本体は保存せず SHA-256 だけを持つ
 model ApiToken {
-  id          String    @id @default(cuid())
-  householdId String    @map("household_id")
-  userId      String    @map("user_id")
-  name        String
-  tokenHash   String    @unique @map("token_hash")
+  id            String    @id @default(cuid())
+  householdId   String    @map("household_id")
+  userId        String    @map("user_id")
+  name          String
+  tokenHash     String    @unique @map("token_hash")
   // 一覧で見分けるための先頭部分（例: shk_ab12cd）。これだけでは認証に使えない
-  tokenPrefix String    @map("token_prefix")
+  tokenPrefix   String    @map("token_prefix")
   // false なら参照（GET）だけ許可する
-  allowWrite  Boolean   @default(false) @map("allow_write")
-  lastUsedAt  DateTime? @map("last_used_at")
-  revokedAt   DateTime? @map("revoked_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  allowWrite    Boolean   @default(false) @map("allow_write")
+  lastUsedAt    DateTime? @map("last_used_at")
+  // 拒否された操作を本人へプッシュ通知した日時（通知は24時間に1回まで）
+  lastAlertedAt DateTime? @map("last_alerted_at")
+  revokedAt     DateTime? @map("revoked_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
   household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)

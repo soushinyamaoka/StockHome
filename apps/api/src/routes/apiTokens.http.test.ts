@@ -3,15 +3,22 @@ import 'dotenv/config';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
+import pino from 'pino';
 import authPlugin from '../plugins/auth';
 import { prisma } from '../lib/prisma';
+import { registerHttpErrorHandling } from '../lib/httpErrorHandling';
 import apiTokenRoutes from './apiTokens';
 import dashboardRoutes from './dashboard';
 import storageRoutes from './storage';
 import userRoutes from './users';
 
-async function buildAuthedApp() {
-  const app = Fastify();
+// production と同じログ経路（registerHttpErrorHandling）を通す。logLines を渡すと出力をそこへ集める
+async function buildAuthedApp(logLines: Record<string, unknown>[] = []) {
+  const app = Fastify({
+    loggerInstance: pino({ level: 'info' }, { write: (line: string) => void logLines.push(JSON.parse(line)) }),
+    disableRequestLogging: true,
+  });
+  registerHttpErrorHandling(app);
   await app.register(authPlugin);
   await app.register(async (instance) => {
     instance.addHook('preHandler', instance.authenticate);
@@ -56,9 +63,9 @@ async function createScope() {
 }
 type Scope = Awaited<ReturnType<typeof createScope>>;
 
-async function withScope(run: (app: App, scope: Scope) => Promise<void>) {
+async function withScope(run: (app: App, scope: Scope) => Promise<void>, logLines?: Record<string, unknown>[]) {
   const scope = await createScope();
-  const app = await buildAuthedApp();
+  const app = await buildAuthedApp(logLines);
   try {
     await run(app, scope);
   } finally {
@@ -276,3 +283,106 @@ test('書き込みを許可した管理者のトークンでも夜間バッチ�
       await prisma.user.deleteMany({ where: { id: otherUser.id } });
     }
   }));
+
+// --- 悪用の検知（拒否の通知とログ） ---
+
+// Expo のプッシュ送信を数えるスタブ。送信内容（タイトル・本文）も記録する
+function stubExpoPush() {
+  const sent: { title: string; body: string }[] = [];
+  const originalFetch = globalThis.fetch;
+  (globalThis as any).fetch = async (_url: string, init: { body: string }) => {
+    const messages = JSON.parse(init.body) as { title: string; body: string }[];
+    sent.push(...messages.map((m) => ({ title: m.title, body: m.body })));
+    return new Response(JSON.stringify({ data: messages.map((_, i) => ({ status: 'ok', id: `alert-ticket-${Date.now()}-${i}` })) }), {
+      status: 200,
+    });
+  };
+  return { sent, restore: () => ((globalThis as any).fetch = originalFetch) };
+}
+
+const settle = () => new Promise((r) => setTimeout(r, 300));
+
+async function addDevice(householdId: string, userId: string) {
+  return prisma.pushDevice.create({
+    data: { householdId, userId, expoPushToken: `ExponentPushToken[alert-${Date.now()}-${++scopeCounter}]`, platform: 'android' },
+  });
+}
+
+test('読み取り専用のトークンで書き込みが試されると、発行した本人へ24時間に1回だけ通知する', () =>
+  withScope(async (app, { member, household }) => {
+    await addDevice(household.id, member.id);
+    const { token, apiToken } = await issue(app, member.id, { name: '妻のMuse' });
+    const push = stubExpoPush();
+    try {
+      const write = () =>
+        app.inject({ method: 'POST', url: '/api/storage/locations', headers: tokenHeader(token), payload: { name: '棚' } });
+      assert.equal((await write()).statusCode, 403);
+      await settle();
+      assert.equal(push.sent.length, 1);
+      assert.match(push.sent[0].body, /「妻のMuse」で、読み取り専用なのに書き込みが試されました/);
+      const row = await prisma.apiToken.findUniqueOrThrow({ where: { id: apiToken.id } });
+      assert.ok(row.lastAlertedAt);
+
+      // 24時間以内の2回目以降は通知しない（拒否はする）
+      assert.equal((await write()).statusCode, 403);
+      const users = await app.inject({ method: 'GET', url: '/api/users', headers: tokenHeader(token) });
+      assert.equal(users.statusCode, 403);
+      await settle();
+      assert.equal(push.sent.length, 1);
+    } finally {
+      push.restore();
+    }
+  }));
+
+test('取り消したトークンが使われると、発行した本人へ通知する。正しい使い方では通知しない', () =>
+  withScope(async (app, { admin, household }) => {
+    await addDevice(household.id, admin.id);
+    const { token, apiToken } = await issue(app, admin.id);
+    const push = stubExpoPush();
+    try {
+      assert.equal((await app.inject({ method: 'GET', url: '/api/storage/search', headers: tokenHeader(token) })).statusCode, 200);
+      await settle();
+      assert.equal(push.sent.length, 0);
+
+      await app.inject({ method: 'DELETE', url: `/api/api-tokens/${apiToken.id}`, headers: jwtHeader(app, admin.id) });
+      assert.equal((await app.inject({ method: 'GET', url: '/api/storage/search', headers: tokenHeader(token) })).statusCode, 401);
+      await settle();
+      assert.equal(push.sent.length, 1);
+      assert.match(push.sent[0].body, /取り消したトークンが使われました/);
+    } finally {
+      push.restore();
+    }
+  }));
+
+test('ログに誰の・どのトークンのリクエストかと拒否の理由が残り、トークン本体は残らない', () => {
+  const lines: Record<string, unknown>[] = [];
+  return withScope(async (app, { admin }) => {
+    const { token, apiToken } = await issue(app, admin.id);
+    await app.inject({ method: 'GET', url: '/api/storage/search', headers: tokenHeader(token) });
+    await app.inject({ method: 'POST', url: '/api/storage/locations', headers: tokenHeader(token), payload: { name: '棚' } });
+    await app.inject({ method: 'GET', url: '/api/storage/search', headers: tokenHeader('shk_not-a-real-token') });
+    await settle();
+
+    const requests = lines.filter((l) => l.event === 'http_request' && l.route === '/api/storage/search');
+    const viaToken = requests.find((l) => l.status === 200);
+    assert.equal(viaToken?.auth_kind, 'api_token');
+    assert.equal(viaToken?.api_token_id, apiToken.id);
+    assert.equal(viaToken?.user_id, admin.id);
+    const issueLine = lines.find((l) => l.event === 'http_request' && l.route === '/api/api-tokens' && l.method === 'POST');
+    assert.equal(issueLine?.auth_kind, 'jwt');
+    assert.equal(issueLine?.user_id, admin.id);
+    assert.equal(issueLine?.api_token_id, undefined);
+
+    const denied = lines.filter((l) => l.event === 'api_token_denied');
+    assert.deepEqual(
+      denied.map((l) => [l.reason, l.api_token_id ?? null, l.route]),
+      [
+        ['write_not_allowed', apiToken.id, '/api/storage/locations'],
+        ['unknown', null, '/api/storage/search'],
+      ]
+    );
+    const all = JSON.stringify(lines);
+    assert.ok(!all.includes(token));
+    assert.ok(!all.includes('shk_not-a-real-token'));
+  }, lines);
+});

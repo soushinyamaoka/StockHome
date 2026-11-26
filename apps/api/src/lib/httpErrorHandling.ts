@@ -38,12 +38,16 @@ export function registerHttpErrorHandling<
   TypeProvider extends FastifyTypeProvider,
 >(app: FastifyInstance<RawServer, RawRequest, RawReply, Logger, TypeProvider>): void {
   app.addHook('onResponse', async (request, reply) => {
+    // 認証済みなら、誰の（外部連携用トークンならどのトークンの）リクエストかを残す。メールアドレス等は出さない
+    const auth = (request as { auth?: FastifyRequest['auth'] }).auth;
     const line = {
       event: LOG_EVENTS.HTTP_REQUEST,
       method: request.method,
       route: routePattern(request),
       status: reply.statusCode,
       duration_ms: Math.round(reply.elapsedTime),
+      ...(auth ? { user_id: auth.userId, auth_kind: auth.apiTokenId ? 'api_token' : 'jwt' } : {}),
+      ...(auth?.apiTokenId ? { api_token_id: auth.apiTokenId } : {}),
     };
     if (reply.statusCode >= 500) {
       request.log.error(line);

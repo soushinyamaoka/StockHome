@@ -28,6 +28,11 @@ export const LOG_EVENTS = {
   PUSH_RECEIPT_CHECK_FAILED: 'push_receipt_check_failed',
   PUSH_DEVICE_REGISTERED: 'push_device_registered',
   PUSH_TICKETS_CLEANED: 'push_tickets_cleaned',
+  // 外部連携用トークンでの認証・操作が拒否された（トークン値は出さない）
+  API_TOKEN_DENIED: 'api_token_denied',
+  API_TOKEN_ALERT_SENT: 'api_token_alert_sent',
+  API_TOKEN_ALERT_FAILED: 'api_token_alert_failed',
+  API_TOKEN_LAST_USED_UPDATE_FAILED: 'api_token_last_used_update_failed',
 } as const;
 
 export const ERROR_KINDS = {
