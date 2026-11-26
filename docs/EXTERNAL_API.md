@@ -22,11 +22,13 @@
 連携先は正しく使えば拒否されないため、拒否そのものを「想定外の使われ方」の合図として扱う。
 
 - 次の拒否があると、トークンを発行した本人の端末へプッシュ通知する（同じトークンについて24時間に1回まで。`apps/api/src/services/apiTokenAlerts.ts`）。
-  通知を受けるには、本人の端末でプッシュ通知が有効になっている必要がある
+  通知を受けるには、本人の端末でプッシュ通知が有効になっている必要がある。発行した本人が無効化されているか、その家庭から外れている場合は送らない
   - 読み取り専用のトークンでの書き込み
   - トークンでは使えないAPI（上記）の呼び出し
   - 取り消したトークンの利用
 - 拒否はすべて API のログに `event: api_token_denied`（`reason`・`api_token_id`・`method`・`route`）で残る。存在しないトークンは `reason: unknown`
+- 通知の結果もログに残る: `api_token_alert_sent`（1台以上で受理）、`api_token_alert_no_target`（`cause`: `owner_inactive`・`owner_not_member`・`no_active_device`）、
+  `api_token_alert_failed`（`cause`: `push_not_accepted`＝送る先はあったが受理0台、`exception`＝処理の例外）。24時間以内の2回目以降はログを出さない
 - 各リクエストのログ（`event: http_request`）に、認証済みなら `user_id`・`auth_kind`（`jwt`／`api_token`）・`api_token_id` が入る
 - トークン値・メールアドレスはログに出さない
 
