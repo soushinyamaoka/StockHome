@@ -212,5 +212,14 @@ VPS管理レビュー（差し戻し）の指摘2点と対応（`6512adf`）:
 - VPS management review: 差し戻し（2026-11-26。通知結果のログ分類と、取り消し済みトークン利用時の通知先確認の2点。対象なし・全件失敗、発行者の無効化・所属解除の回帰テストを求める）
   → 対応済み（上記「差し戻しへの対応」）。
   再レビュー: 受理（accepted、2026-11-26。通知結果の分類と発行者の確認、いずれも修正済みと確認。production反映の承認ではない）
-- production approval: 未
+- production approval: 承認（2026-11-26、app owner）。VPS管理側で反映済み（稼働source `6512adf`、migration適用確認済み）
 - related task_id: なし（app ownerの指示によりClaudeが直接実装）
+
+## 反映後のアプリ側確認（read-only、2026-11-26）
+
+- `GET /health` 200
+- 認証なし: `GET /api/items` 401、`GET /api/api-tokens` 401。存在しない外部連携用トークン（`shk_` 形式）で `GET /api/storage/search` 401
+- 利用者アカウントの既存JWTで `GET /api/items` 200（28品目）、`GET /api/stocks` 200（28品目）、`GET /api/storage/search` 200（34件）、`GET /api/auth/me` 200、
+  `GET /api/api-tokens` 200（app owner の読み取り専用トークン1件）、`GET /api/push-devices` 200（有効な端末1台、Android）
+- 書き込み操作は行っていない
+- 通知の到達確認（拒否を1回起こす。業務データの変更なし、当該トークンに24時間の通知制限がかかる）は app owner の操作で別途行う
