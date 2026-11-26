@@ -200,6 +200,8 @@ VPS管理レビュー（blocked）の指摘: 管理者が発行した書き込�
 
 - app owner: 承認（2026-11-26、app ownerがVPS管理チャットへ引き継ぎ済み。VPS管理側の受理台帳に記録）
 - VPS management review: 差し戻し（blocked、2026-11-26。preflight ready_with_manual_checks・機械判定のblocker 0件、通知commit `aaa4a77` が GitHub main と一致、
-  VPS1の稼働imageは baseline `378bf05` と一致。指摘1件: 書き込み可トークンから夜間バッチを起動でき、他世帯の端末を無効化し得る）→ 対応済み（上記「差し戻しへの対応」）、再レビュー待ち
+  VPS1の稼働imageは baseline `378bf05` と一致。指摘1件: 書き込み可トークンから夜間バッチを起動でき、他世帯の端末を無効化し得る）→ 対応済み（上記「差し戻しへの対応」）。
+  再レビュー: 受理（accepted、2026-11-26。指摘 S028-B01 解消。書き込み可のadminトークンでも夜間バッチ起動前に403となることをコードで確認、
+  preflight 機械判定blocker 0件、GitHub main が通知書 `0a73085` と一致。APIテスト221件はアプリ側報告に基づく。production反映の承認ではない）
 - production approval: 未
 - related task_id: なし（app ownerの指示によりClaudeが直接実装）
