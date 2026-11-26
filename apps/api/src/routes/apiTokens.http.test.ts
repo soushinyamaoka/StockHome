@@ -6,6 +6,7 @@ import Fastify from 'fastify';
 import authPlugin from '../plugins/auth';
 import { prisma } from '../lib/prisma';
 import apiTokenRoutes from './apiTokens';
+import dashboardRoutes from './dashboard';
 import storageRoutes from './storage';
 import userRoutes from './users';
 
@@ -17,6 +18,7 @@ async function buildAuthedApp() {
     await instance.register(userRoutes, { prefix: '/api/users' });
     await instance.register(storageRoutes, { prefix: '/api/storage' });
     await instance.register(apiTokenRoutes, { prefix: '/api/api-tokens' });
+    await instance.register(dashboardRoutes, { prefix: '/api/dashboard' });
   });
   await app.ready();
   return app;
@@ -228,4 +230,49 @@ test('1人が持てる有効なトークンは10個まで', () =>
       payload: { name: 'over' },
     });
     assert.equal(res.statusCode, 409);
+  }));
+
+// notice 028 差し戻し（2026-11-26）の回帰テスト: 夜間バッチ内のプッシュ通知の配信結果確認は世帯を限定しないため、
+// 書き込みを許可したトークンからは起動できず、他世帯の端末・配信記録に触れないこと
+test('書き込みを許可した管理者のトークンでも夜間バッチは起動できず、他世帯の通知の配信結果確認も走らない', () =>
+  withScope(async (app, { admin }) => {
+    const tag = `${Date.now()}-${++scopeCounter}`;
+    const other = await prisma.household.create({ data: { name: `api-token-other-${tag}` } });
+    const otherUser = await prisma.user.create({
+      data: { email: `api-token-other-${tag}@example.invalid`, name: 'Other', passwordHash: 'test-only' },
+    });
+    await prisma.householdMember.create({ data: { householdId: other.id, userId: otherUser.id, role: 'admin' } });
+    const device = await prisma.pushDevice.create({
+      data: { householdId: other.id, userId: otherUser.id, expoPushToken: `ExponentPushToken[api-token-${tag}]`, platform: 'ios' },
+    });
+    const ticket = await prisma.pushTicket.create({ data: { pushDeviceId: device.id, expoTicketId: `api-token-ticket-${tag}` } });
+    const batchBefore = await prisma.batchRunStatus.findUnique({ where: { jobName: 'daily_batch' } });
+
+    // 配信結果の問い合わせ（Expo）が呼ばれたら数える。呼ばれれば他世帯の端末を無効化しうる応答を返す
+    let fetchCalls = 0;
+    const originalFetch = globalThis.fetch;
+    (globalThis as any).fetch = async () => {
+      fetchCalls++;
+      return new Response(
+        JSON.stringify({ data: { [ticket.expoTicketId]: { status: 'error', details: { error: 'DeviceNotRegistered' } } } }),
+        { status: 200 }
+      );
+    };
+    try {
+      const { token } = await issue(app, admin.id, { name: 'Muse', allowWrite: true });
+      const res = await app.inject({ method: 'POST', url: '/api/dashboard/run-batch', headers: tokenHeader(token) });
+      assert.equal(res.statusCode, 403);
+
+      assert.equal(fetchCalls, 0);
+      const ticketAfter = await prisma.pushTicket.findUniqueOrThrow({ where: { id: ticket.id } });
+      assert.equal(ticketAfter.status, 'pending');
+      const deviceAfter = await prisma.pushDevice.findUniqueOrThrow({ where: { id: device.id } });
+      assert.equal(deviceAfter.isActive, true);
+      const batchAfter = await prisma.batchRunStatus.findUnique({ where: { jobName: 'daily_batch' } });
+      assert.equal(batchAfter?.runId ?? null, batchBefore?.runId ?? null);
+    } finally {
+      (globalThis as any).fetch = originalFetch;
+      await prisma.household.deleteMany({ where: { id: other.id } });
+      await prisma.user.deleteMany({ where: { id: otherUser.id } });
+    }
   }));

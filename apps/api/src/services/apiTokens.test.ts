@@ -15,6 +15,7 @@ test('外部連携用トークンでは、トークン管理・ログイン系�
     '/api/import-candidates',
     '/api/import-candidates/:id/confirm',
     '/api/reflections',
+    '/api/dashboard/run-batch',
   ]) {
     assert.equal(isDeniedForApiToken(route), true, route);
   }

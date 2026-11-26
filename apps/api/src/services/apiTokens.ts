@@ -26,12 +26,14 @@ export function generateApiToken() {
 /**
  * 外部連携用トークンでは、書き込みを許可していても使えないAPI。
  * - トークンの発行・切り替え、ログイン・パスワード変更（トークンから権限を広げられないようにする）
+ * - 夜間バッチの手動実行（バッチ内のプッシュ通知の配信結果確認は世帯を限定しないため、アプリのログインに限る）
  * - 利用者の個人情報を返すもの: 家族メンバー（メールアドレス）、プッシュ通知の端末、
  *   Gmail取込の候補と反映記録（取り込んだ人のメールアドレス・メールの件名と本文の一部）
  */
 const API_TOKEN_DENIED_ROUTE_PREFIXES = [
   '/api/api-tokens',
   '/api/auth/',
+  '/api/dashboard/run-batch',
   '/api/users',
   '/api/push-devices',
   '/api/import-candidates',
