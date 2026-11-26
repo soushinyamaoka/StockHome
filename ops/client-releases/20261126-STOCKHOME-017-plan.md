@@ -6,7 +6,7 @@ record_type: client_release
 
 app: stockhome
 
-status: delivered（利用者端末での確認待ち）
+status: delivered（app owner端末でトークン発行・Muse連携を確認。一部観点は確認待ち）
 
 created_by: Claude
 
@@ -66,5 +66,7 @@ related_notice_id: 20261126-STOCKHOME-028（外部連携用トークンのAPI。
 - bundle確認: 各配信直後のローカルbundle（iOS・Android hbc）に`stockhome.homehub-tools.dedyn.io`・`console.homehub-tools.dedyn.io`が各1件、
   `10.0.2.2:4002`が0件。両方に「外部連携」の文言と`017`、Androidに再起動のお知らせ文言を確認（公開済みbundle自体のダウンロード検査ではない）。
   配信直後に`GET /health` 200
-- 利用者端末での確認: 未（Androidの再起動ボタンの表示、iPhoneの「アプリの版 017」、トークン発行を依頼）
+- 利用者端末での確認: 2026-11-26、app ownerが017の画面からトークンを発行し、Museとの連携完了を報告。
+  アプリ側でトークン一覧をread-onlyで確認: app owner の読み取り専用トークン1件（16:23 JST発行、16:26 JST に最終利用）。
+  未確認: Androidの再起動ボタンの表示、iPhoneの「アプリの版 017」、家族（2人目）のトークン発行
 - production API、DB、GAS、VPS設定の変更はなし
