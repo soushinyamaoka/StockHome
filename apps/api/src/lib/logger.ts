@@ -30,7 +30,9 @@ export const LOG_EVENTS = {
   PUSH_TICKETS_CLEANED: 'push_tickets_cleaned',
   // 外部連携用トークンでの認証・操作が拒否された（トークン値は出さない）
   API_TOKEN_DENIED: 'api_token_denied',
+  // 拒否の本人通知の結果。sent=1台以上で受理 / no_target=送る先なし / failed=送る先はあったが受理0台か処理の例外
   API_TOKEN_ALERT_SENT: 'api_token_alert_sent',
+  API_TOKEN_ALERT_NO_TARGET: 'api_token_alert_no_target',
   API_TOKEN_ALERT_FAILED: 'api_token_alert_failed',
   API_TOKEN_LAST_USED_UPDATE_FAILED: 'api_token_last_used_update_failed',
 } as const;

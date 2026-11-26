@@ -386,3 +386,49 @@ test('ログに誰の・どのトークンのリクエストかと拒否の理�
     assert.ok(!all.includes('shk_not-a-real-token'));
   }, lines);
 });
+
+// notice 029 差し戻し（2026-11-26）の回帰テスト: 取り消し済みトークンは発行者の状態を問わず 401 まで届くため、
+// 無効化された人・家庭から外れた人へ通知しないこと
+for (const [label, detach] of [
+  ['無効化された', async (s: Scope) => void (await prisma.user.update({ where: { id: s.member.id }, data: { isActive: false } }))],
+  [
+    '家庭から外れた',
+    async (s: Scope) =>
+      void (await prisma.householdMember.deleteMany({ where: { householdId: s.household.id, userId: s.member.id } })),
+  ],
+] as const) {
+  test(`${label}発行者の取り消し済みトークンが使われても、401を返し、発行者へは通知しない`, () =>
+    withScope(async (app, scope) => {
+      await addDevice(scope.household.id, scope.member.id);
+      const { token, apiToken } = await issue(app, scope.member.id, { name: '妻のMuse' });
+      await app.inject({ method: 'DELETE', url: `/api/api-tokens/${apiToken.id}`, headers: jwtHeader(app, scope.member.id) });
+      await detach(scope);
+      const push = stubExpoPush();
+      try {
+        const res = await app.inject({ method: 'GET', url: '/api/storage/search', headers: tokenHeader(token) });
+        assert.equal(res.statusCode, 401);
+        await settle();
+        assert.equal(push.sent.length, 0);
+        const row = await prisma.apiToken.findUniqueOrThrow({ where: { id: apiToken.id } });
+        assert.equal(row.lastAlertedAt, null);
+      } finally {
+        push.restore();
+      }
+    }));
+}
+
+test('家庭から外れた発行者の有効なトークンは403で、通知しない', () =>
+  withScope(async (app, scope) => {
+    await addDevice(scope.household.id, scope.member.id);
+    const { token } = await issue(app, scope.member.id);
+    await prisma.householdMember.deleteMany({ where: { householdId: scope.household.id, userId: scope.member.id } });
+    const push = stubExpoPush();
+    try {
+      const res = await app.inject({ method: 'POST', url: '/api/storage/locations', headers: tokenHeader(token), payload: { name: '棚' } });
+      assert.equal(res.statusCode, 403);
+      await settle();
+      assert.equal(push.sent.length, 0);
+    } finally {
+      push.restore();
+    }
+  }));

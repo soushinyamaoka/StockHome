@@ -96,7 +96,13 @@ async function authenticateApiToken(req: FastifyRequest, reply: FastifyReply, to
     if (apiToken && alert) {
       // 応答を待たせないよう、通知の失敗はログだけにする
       alertApiTokenDenied(apiToken, alert).catch((err) =>
-        req.log.warn({ err: safeErr(err), event: LOG_EVENTS.API_TOKEN_ALERT_FAILED, api_token_id: apiToken.id })
+        req.log.warn({
+          err: safeErr(err),
+          event: LOG_EVENTS.API_TOKEN_ALERT_FAILED,
+          api_token_id: apiToken.id,
+          reason: alert,
+          cause: 'exception',
+        })
       );
     }
     return reply.code(statusCode).send({ message });
