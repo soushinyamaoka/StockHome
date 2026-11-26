@@ -24,15 +24,22 @@ export function generateApiToken() {
 }
 
 /**
- * 外部連携用トークンでは使えない操作か。
- * トークンの発行・切り替え、ログイン・パスワード変更、家族メンバーの追加・変更は、
- * 書き込みを許可したトークンでも受け付けない（トークンから権限を広げられないようにする）
+ * 外部連携用トークンでは、書き込みを許可していても使えないAPI。
+ * - トークンの発行・切り替え、ログイン・パスワード変更（トークンから権限を広げられないようにする）
+ * - 利用者の個人情報を返すもの: 家族メンバー（メールアドレス）、プッシュ通知の端末、
+ *   Gmail取込の候補と反映記録（取り込んだ人のメールアドレス・メールの件名と本文の一部）
  */
-export function isDeniedForApiToken(method: string, routeUrl: string): boolean {
-  if (routeUrl.startsWith('/api/api-tokens')) return true;
-  if (routeUrl.startsWith('/api/auth/')) return true;
-  if (routeUrl.startsWith('/api/users') && !isReadMethod(method)) return true;
-  return false;
+const API_TOKEN_DENIED_ROUTE_PREFIXES = [
+  '/api/api-tokens',
+  '/api/auth/',
+  '/api/users',
+  '/api/push-devices',
+  '/api/import-candidates',
+  '/api/reflections',
+];
+
+export function isDeniedForApiToken(routeUrl: string): boolean {
+  return API_TOKEN_DENIED_ROUTE_PREFIXES.some((prefix) => routeUrl.startsWith(prefix));
 }
 
 export function isReadMethod(method: string): boolean {

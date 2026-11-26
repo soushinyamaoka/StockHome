@@ -93,7 +93,7 @@ async function authenticateApiToken(req: FastifyRequest, reply: FastifyReply, to
   if (!apiToken.user.isActive) {
     return reply.code(403).send({ message: 'このアカウントは利用できません' });
   }
-  if (isDeniedForApiToken(req.method, req.routeOptions.url ?? req.url)) {
+  if (isDeniedForApiToken(req.routeOptions.url ?? req.url)) {
     return reply.code(403).send({ message: '外部連携用のトークンでは使えない操作です' });
   }
   if (!apiToken.allowWrite && !isReadMethod(req.method)) {

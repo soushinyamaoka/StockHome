@@ -2,17 +2,25 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateApiToken, hashApiToken, isApiTokenFormat, isDeniedForApiToken } from './apiTokens';
 
-test('外部連携用トークンでは、トークン管理・ログイン系・家族メンバーの変更を受け付けない', () => {
-  assert.equal(isDeniedForApiToken('GET', '/api/api-tokens'), true);
-  assert.equal(isDeniedForApiToken('DELETE', '/api/api-tokens/:id'), true);
-  assert.equal(isDeniedForApiToken('GET', '/api/auth/me'), true);
-  assert.equal(isDeniedForApiToken('POST', '/api/auth/change-password'), true);
-  assert.equal(isDeniedForApiToken('POST', '/api/users'), true);
-  assert.equal(isDeniedForApiToken('PATCH', '/api/users/:id'), true);
-
-  assert.equal(isDeniedForApiToken('GET', '/api/users'), false);
-  assert.equal(isDeniedForApiToken('GET', '/api/storage/search'), false);
-  assert.equal(isDeniedForApiToken('POST', '/api/purchases'), false);
+test('外部連携用トークンでは、トークン管理・ログイン系・個人情報を返すAPIを受け付けない', () => {
+  for (const route of [
+    '/api/api-tokens',
+    '/api/api-tokens/:id',
+    '/api/auth/me',
+    '/api/auth/change-password',
+    '/api/users',
+    '/api/users/:id',
+    '/api/push-devices',
+    '/api/push-devices/test',
+    '/api/import-candidates',
+    '/api/import-candidates/:id/confirm',
+    '/api/reflections',
+  ]) {
+    assert.equal(isDeniedForApiToken(route), true, route);
+  }
+  for (const route of ['/api/storage/search', '/api/items', '/api/stocks', '/api/purchases', '/api/dashboard']) {
+    assert.equal(isDeniedForApiToken(route), false, route);
+  }
 });
 
 test('トークンは目印付きの乱数で、毎回異なり、ハッシュで照合できる', () => {

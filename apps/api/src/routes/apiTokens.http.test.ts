@@ -114,7 +114,7 @@ test('読み取り専用のトークンは書き込みを拒否し、許可に�
     assert.equal((await create()).statusCode, 201);
   }));
 
-test('書き込みを許可したトークンでも、トークン管理と家族メンバーの変更はできない', () =>
+test('書き込みを許可したトークンでも、トークン管理と家族メンバー（メールアドレス）は扱えない', () =>
   withScope(async (app, { admin }) => {
     const { token } = await issue(app, admin.id, { name: 'Muse', allowWrite: true });
     const list = await app.inject({ method: 'GET', url: '/api/api-tokens', headers: tokenHeader(token) });
@@ -133,9 +133,12 @@ test('書き込みを許可したトークンでも、トークン管理と家�
       payload: { email: `added-${Date.now()}@example.invalid`, name: 'x', password: 'password123' },
     });
     assert.equal(addMember.statusCode, 403);
-    // 家族一覧の参照はできる
+    // 家族一覧はメールアドレスを含むため、参照もできない
     const users = await app.inject({ method: 'GET', url: '/api/users', headers: tokenHeader(token) });
-    assert.equal(users.statusCode, 200);
+    assert.equal(users.statusCode, 403);
+    // 消耗品・置き場所の参照はできる
+    const search = await app.inject({ method: 'GET', url: '/api/storage/search', headers: tokenHeader(token) });
+    assert.equal(search.statusCode, 200);
   }));
 
 test('取り消したトークン・存在しないトークン・無効化した利用者のトークンは使えない', () =>
